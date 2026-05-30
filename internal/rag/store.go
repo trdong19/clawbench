@@ -85,6 +85,12 @@ func NewStore(dbPath string, duckdbOpts map[string]string) (*Store, error) {
 		dsn = dbPath + "?" + params.Encode()
 	}
 
+	// Disable floating-point exceptions before opening DuckDB to prevent
+	// SIGFPE crashes on older CPUs (e.g. Intel Haswell i3-4010U) where
+	// DuckDB's internal FP operations can trigger unexpected exceptions.
+	// Safe to call multiple times (guarded by sync.Once). (ISS-155)
+	disableFPE()
+
 	db, err := sql.Open("duckdb", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open duckdb: %w", err)
