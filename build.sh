@@ -60,8 +60,16 @@ LDFLAGS="-X 'clawbench/internal/version.Version=$FULL_VERSION'"
 VERSION_CODE=$(git rev-list --count HEAD 2>/dev/null || echo "1")
 echo "  Version: $FULL_VERSION (code: $VERSION_CODE, release: $IS_RELEASE)"
 
-# 1. Build Go backend
-echo "[1/3] Building Go backend..."
+# 1. Lint Go code
+echo "[1/4] Linting Go code..."
+if command -v golangci-lint >/dev/null 2>&1; then
+    ./scripts/lint-go.sh
+else
+    echo "  golangci-lint not found, skipping lint"
+fi
+
+# 2. Build Go backend
+echo "[2/4] Building Go backend..."
 if command -v go >/dev/null 2>&1; then
     if [ -n "$TARGET_OS" ] && [ -n "$TARGET_ARCH" ]; then
         BINARY_NAME="$NAME"
@@ -78,8 +86,8 @@ else
     echo "  Go not found, skipping backend build"
 fi
 
-# 2. Build Vue frontend
-echo "[2/3] Building Vue frontend..."
+# 3. Build Vue frontend
+echo "[3/4] Building Vue frontend..."
 if [ -f "package.json" ] && command -v npm >/dev/null 2>&1; then
     if [ ! -d "node_modules" ]; then
         echo "  Installing dependencies..."
@@ -95,7 +103,7 @@ fi
 
 # 3. Build Android APK (optional)
 if [ -n "$BUILD_ANDROID" ]; then
-    echo "[3/3] Building Android APK..."
+    echo "[4/4] Building Android APK..."
     if [ -d "android" ] && [ -f "android/gradlew" ]; then
         (cd android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew assembleRelease \
             -PversionCode=$VERSION_CODE -PversionName="$FULL_VERSION")
@@ -104,7 +112,7 @@ if [ -n "$BUILD_ANDROID" ]; then
         echo "  Android project not found, skipping APK build"
     fi
 else
-    echo "[3/3] Android APK skipped (use --android to build)"
+    echo "[4/4] Android APK skipped (use --android to build)"
 fi
 
 echo ""
