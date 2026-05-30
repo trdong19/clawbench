@@ -4,7 +4,7 @@ package ai
 func buildQoderStreamArgs(req ChatRequest) []string {
 	args := []string{
 		"--print",
-		"--output-format", "stream-json",
+		"--output-format", "stream-json", //nolint:goconst // JSON 字段名/协议字符串
 	}
 
 	if req.Resume {

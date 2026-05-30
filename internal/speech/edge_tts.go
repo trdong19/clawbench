@@ -3,6 +3,12 @@ package speech
 const (
 	// edgeDefaultVoice is the default Chinese voice for edge-tts.
 	edgeDefaultVoice = "zh-CN-XiaoxiaoNeural"
+
+	// edgeDefaultRate is the default speech rate (no adjustment).
+	edgeDefaultRate = "+0%"
+
+	// edgeFlagVoice is the CLI flag for specifying the voice.
+	edgeFlagVoice = "--voice"
 )
 
 // EdgeTTSProvider implements SpeechProvider using edge-tts (Microsoft Edge TTS).
@@ -19,20 +25,20 @@ type EdgeTTSProvider struct {
 func NewEdgeTTSProvider() *EdgeTTSProvider {
 	p := &EdgeTTSProvider{
 		Voice: edgeDefaultVoice,
-		Rate:  "+0%",
+		Rate:  edgeDefaultRate,
 	}
 
 	p.CLISpeechProvider = newCLISpeechProvider(SynthesizeOptions{
 		RelativePath: ".venv/bin/edge-tts",
 		TextSource:   TextViaTempFile,
 		LogName:      "edge-tts",
-		ExtraArgs: func(cliPath string, text string, outputPath string, _ string) []string {
+		ExtraArgs: func(_ string, text string, outputPath string, _ string) []string {
 			args := []string{
-				"--voice", p.Voice,
+				edgeFlagVoice, p.Voice,
 				"--file", text,
 				"--write-media", outputPath,
 			}
-			if p.Rate != "" && p.Rate != "+0%" {
+			if p.Rate != "" && p.Rate != edgeDefaultRate {
 				args = append(args, "--rate", p.Rate)
 			}
 			return args

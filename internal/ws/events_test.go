@@ -31,12 +31,15 @@ func TestEventsHandler_ExtractsLocaleFromHeader(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"X-Locale": []string{"zh"},
 		},
 	})
 	require.NoError(t, err, "WebSocket connection should succeed")
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Verify locale is stored in the subscription
@@ -72,12 +75,15 @@ func TestEventsHandler_ExtractsLocaleFromCookie(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"Cookie": []string{"clawbench-locale=en"},
 		},
 	})
 	require.NoError(t, err, "WebSocket connection should succeed")
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Verify locale is stored from cookie
@@ -112,8 +118,11 @@ func TestEventsHandler_DefaultLocaleWhenNoneProvided(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err, "WebSocket connection should succeed")
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Verify locale defaults to empty (English via i18n fallback)

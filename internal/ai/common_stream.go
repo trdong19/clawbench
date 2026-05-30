@@ -13,7 +13,7 @@ import (
 func buildBaseStreamArgs(req ChatRequest, extraFlags func(ChatRequest) []string) []string {
 	args := []string{
 		"--print",
-		"--output-format", "stream-json",
+		"--output-format", "stream-json", //nolint:goconst // JSON 字段名/协议字符串
 		"--include-partial-messages",
 	}
 
@@ -66,7 +66,7 @@ func injectSystemPrompt(req ChatRequest) string {
 // Agent, EnterPlanMode, Skill, TodoWrite.
 //
 // The same mapping is used by gemini_stream.go and opencode_stream.go.
-func normalizeToolName(toolName string) string {
+func normalizeToolName(toolName string) string { //nolint:gocyclo // 复杂的 stream 解析逻辑
 	switch toolName {
 	case "read_file", "read", "look_at":
 		return "Read"

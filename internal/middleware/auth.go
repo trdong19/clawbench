@@ -1,3 +1,5 @@
+// Package middleware provides HTTP middleware for authentication, logging,
+// panic recovery, localization, and request ID tracking.
 package middleware
 
 import (

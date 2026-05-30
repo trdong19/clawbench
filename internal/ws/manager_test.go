@@ -16,7 +16,7 @@ import (
 func newTestManager(jpush *push.JPushClient) *Manager {
 	return &Manager{
 		subscriptions: make(map[string]*ClientSubscription),
-		jpush:        jpush,
+		jpush:         jpush,
 	}
 }
 
@@ -173,7 +173,7 @@ func TestManager_RegisterPushID_Dedup(t *testing.T) {
 	s1.mu.Unlock()
 }
 
-func TestManager_BroadcastEvent_NoSubscription(t *testing.T) {
+func TestManager_BroadcastEvent_NoSubscription(_ *testing.T) {
 	mgr := newTestManager(nil)
 	// Should not panic
 	mgr.BroadcastEvent(ServerMessage{Type: "event", Event: "session_update"})
@@ -203,8 +203,8 @@ func TestManager_BroadcastEvent_Disconnected(t *testing.T) {
 	}
 }
 
-func TestManager_BroadcastEvent_JPushWhenDisconnected(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestManager_BroadcastEvent_JPushWhenDisconnected(_ *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)
 		w.Write([]byte(`{"sendno":"123","msg_id":"456"}`))
 	}))
@@ -229,7 +229,7 @@ func TestManager_BroadcastEvent_JPushWhenDisconnected(t *testing.T) {
 	// If we get here without panic, JPush was called
 }
 
-func TestManager_BroadcastEvent_JPushDisabled(t *testing.T) {
+func TestManager_BroadcastEvent_JPushDisabled(_ *testing.T) {
 	mgr := newTestManager(nil) // nil jpush = disabled
 	var writeMu sync.Mutex
 
@@ -274,7 +274,7 @@ func TestManager_BroadcastEvent_MultipleClients(t *testing.T) {
 func TestBufferEvent_MaxSize(t *testing.T) {
 	sub := &ClientSubscription{}
 
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		sub.bufferEvent(ServerMessage{ID: string(rune('a' + i%26))})
 	}
 
@@ -520,9 +520,9 @@ func TestManager_BroadcastEvent_JPushAlert_WithSessionTitle(t *testing.T) {
 		ID:    "evt_1",
 		Event: "session_update",
 		Data: &SessionUpdateData{
-			SessionID:      "s1",
-			Status:         "completed",
-			HasNewMessages: true,
+			SessionID:       "s1",
+			Status:          "completed",
+			HasNewMessages:  true,
 			SessionTitle:    "帮我写一个Go HTTP服务器",
 			ResponsePreview: "AI回复的预览内容",
 		},
@@ -573,9 +573,9 @@ func TestManager_BroadcastEvent_JPushAlert_WithResponsePreview(t *testing.T) {
 		ID:    "evt_1",
 		Event: "session_update",
 		Data: &SessionUpdateData{
-			SessionID:      "s1",
-			Status:         "completed",
-			HasNewMessages: true,
+			SessionID:       "s1",
+			Status:          "completed",
+			HasNewMessages:  true,
 			ResponsePreview: "AI回复的预览内容",
 		},
 	}
@@ -628,10 +628,10 @@ func TestManager_BroadcastEvent_JPushAlert_TruncatesLongPreview(t *testing.T) {
 		ID:    "evt_1",
 		Event: "session_update",
 		Data: &SessionUpdateData{
-			SessionID:      "s1",
-			Status:         "completed",
-			HasNewMessages: true,
-			SessionTitle:   "测试标题",
+			SessionID:       "s1",
+			Status:          "completed",
+			HasNewMessages:  true,
+			SessionTitle:    "测试标题",
 			ResponsePreview: longPreview,
 		},
 	}
@@ -736,9 +736,9 @@ func TestManager_BroadcastEvent_JPushAlert_TaskUpdate(t *testing.T) {
 		ID:    "evt_1",
 		Event: "task_update",
 		Data: &TaskUpdateData{
-			TaskID:         "t1",
-			Status:         "completed",
-			SessionTitle:   "自动修复Bug",
+			TaskID:          "t1",
+			Status:          "completed",
+			SessionTitle:    "自动修复Bug",
 			ResponsePreview: "已修复空指针异常，添加了nil检查",
 		},
 	}
@@ -754,7 +754,7 @@ func TestManager_BroadcastEvent_JPushAlert_TaskUpdate(t *testing.T) {
 
 func TestManager_BroadcastEvent_JPushNotSentForRunning(t *testing.T) {
 	pushCalled := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		pushCalled = true
 		w.WriteHeader(200)
 		w.Write([]byte(`{"sendno":"123","msg_id":"456"}`))
@@ -801,7 +801,7 @@ func TestManager_BroadcastEvent_JPushNotSentForRunning(t *testing.T) {
 
 func TestManager_BroadcastEvent_JPushSentForCompleted(t *testing.T) {
 	pushCalled := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		pushCalled = true
 		w.WriteHeader(200)
 		w.Write([]byte(`{"sendno":"123","msg_id":"456"}`))
@@ -840,7 +840,7 @@ func TestManager_BroadcastEvent_JPushSentForCompleted(t *testing.T) {
 
 func TestManager_BroadcastEvent_JPushNotSentForTaskRunning(t *testing.T) {
 	pushCalled := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		pushCalled = true
 		w.WriteHeader(200)
 		w.Write([]byte(`{"sendno":"123","msg_id":"456"}`))
@@ -879,7 +879,7 @@ func TestManager_BroadcastEvent_JPushNotSentForTaskRunning(t *testing.T) {
 
 func TestManager_BroadcastEvent_JPushSentForCancelled(t *testing.T) {
 	pushCalled := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		pushCalled = true
 		w.WriteHeader(200)
 		w.Write([]byte(`{"sendno":"123","msg_id":"456"}`))
@@ -899,7 +899,7 @@ func TestManager_BroadcastEvent_JPushSentForCancelled(t *testing.T) {
 	mgr.RegisterPushID("reg-123", "client-1")
 	mgr.DisconnectClient("client-1")
 
-	// session_update with status "cancelled" — SHOULD trigger JPush
+	// session_update with terminal status — SHOULD trigger JPush
 	msg := ServerMessage{
 		Type:  "event",
 		ID:    "evt_1",
@@ -912,7 +912,7 @@ func TestManager_BroadcastEvent_JPushSentForCancelled(t *testing.T) {
 	mgr.BroadcastEvent(msg)
 
 	if !pushCalled {
-		t.Error("JPush should be called for cancelled status")
+		t.Error("JPush should be called for canceled status")
 	}
 }
 
@@ -920,7 +920,7 @@ func TestManager_BroadcastEvent_JPushDedupSameRegID(t *testing.T) {
 	// Two disconnected subscriptions with the same pushRegID (same device)
 	// should only result in one JPush notification.
 	pushCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		pushCount++
 		w.WriteHeader(200)
 		w.Write([]byte(`{"sendno":"123","msg_id":"456"}`))
@@ -1085,7 +1085,7 @@ func TestManager_BroadcastEvent_JPushExtras_TaskWithSessionAndProjectPath(t *tes
 func TestManager_BroadcastEvent_JPushWhenNoWS(t *testing.T) {
 	// When all subscriptions for a regID are disconnected, JPush should fire.
 	pushCalled := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		pushCalled = true
 		w.WriteHeader(200)
 		w.Write([]byte(`{"sendno":"123","msg_id":"456"}`))

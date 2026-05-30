@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -81,9 +82,9 @@ func TestHTTPDo_NonJSONResponse(t *testing.T) {
 	origCfg := model.ConfigInstance
 	t.Cleanup(func() { model.ConfigInstance = origCfg })
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("not json"))
+		_, _ = w.Write([]byte("not json"))
 	}))
 	defer server.Close()
 
@@ -200,12 +201,14 @@ func TestHTTPDoWithProject_SetsCookie(t *testing.T) {
 
 	// We can't easily override apiURL() to point to our test server,
 	// so we test the cookie-setting logic by constructing a request manually
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/test", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/api/test", http.NoBody)
 	assert.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{
-		Name:  "clawbench_project",
-		Value: "/my/project",
+		Name:     "clawbench_project",
+		Value:    "/my/project",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	resp, err := httpClient.Do(req)
@@ -222,7 +225,7 @@ func TestHTTPDoWithProject_SetsCookie(t *testing.T) {
 
 // ---------- fmt helper (ensure no import issues) ----------
 
-func TestCLIHelpers_NoDeadCode(t *testing.T) {
+func TestCLIHelpers_NoDeadCode(_ *testing.T) {
 	// Just verify all the imports are used
 	_ = fmt.Sprintf
 	_ = flag.NewFlagSet

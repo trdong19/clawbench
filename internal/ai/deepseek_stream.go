@@ -52,7 +52,7 @@ func (p *DeepSeekStreamParser) GetCapturedSessionID() string {
 
 // ParseLine parses a single JSON line from DeepSeek TUI's stream-json output and sends
 // StreamEvent(s) to the provided channel.
-func (p *DeepSeekStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
+func (p *DeepSeekStreamParser) ParseLine(line string, ch chan<- StreamEvent) { //nolint:gocyclo // 复杂的 stream 解析逻辑
 	var msg DeepSeekStreamMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		slog.Debug("deepseek stream: skipping unparseable line", "line", line, "error", err)
@@ -60,17 +60,17 @@ func (p *DeepSeekStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 	}
 
 	switch msg.Type {
-	case "content":
+	case "content": //nolint:goconst // JSON 字段名/协议字符串
 		if msg.Content != "" {
 			ch <- StreamEvent{Type: "content", Content: msg.Content}
 		}
 
-	case "thinking":
+	case "thinking": //nolint:goconst // JSON 字段名/协议字符串
 		if msg.Content != "" {
 			ch <- StreamEvent{Type: "thinking", Content: msg.Content}
 		}
 
-	case "tool_use":
+	case "tool_use": //nolint:goconst // JSON 字段名/协议字符串
 		ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{
 			Name:  normalizeToolName(msg.Name),
 			ID:    msg.ID,
@@ -78,7 +78,7 @@ func (p *DeepSeekStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			Done:  msg.Done,
 		}}
 
-	case "tool_result":
+	case "tool_result": //nolint:goconst // JSON 字段名/协议字符串
 		if msg.ID != "" {
 			ch <- StreamEvent{Type: "tool_result", Tool: &ToolCall{
 				ID:     msg.ID,
@@ -87,14 +87,14 @@ func (p *DeepSeekStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			}}
 		}
 
-	case "session_capture":
+	case "session_capture": //nolint:goconst // JSON 字段名/协议字符串
 		if msg.Content != "" {
 			p.sessionID = msg.Content
 			slog.Debug("deepseek stream: captured session ID", "session_id", msg.Content)
 			ch <- StreamEvent{Type: "session_capture", Content: msg.Content}
 		}
 
-	case "metadata":
+	case "metadata": //nolint:goconst // JSON 字段名/协议字符串
 		if msg.Meta != nil {
 			p.model = msg.Meta.Model
 			ch <- StreamEvent{Type: "metadata", Meta: &Metadata{
@@ -105,10 +105,10 @@ func (p *DeepSeekStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			}}
 		}
 
-	case "done":
+	case "done": //nolint:goconst // JSON 字段名/协议字符串
 		ch <- StreamEvent{Type: "done"}
 
-	case "error":
+	case "error": //nolint:goconst // JSON 字段名/协议字符串
 		if msg.Error != "" {
 			ch <- StreamEvent{Type: "error", Error: msg.Error}
 		}
@@ -128,15 +128,15 @@ func normalizeDeepSeekInput(toolName string, rawInput json.RawMessage) string {
 	// Per-tool field renames: DeepSeek native → canonical frontend names
 	remaps := map[string]string{
 		"filePaths": "file_paths", // camelCase fallback
-		"oldString": "old_string", // camelCase fallback
-		"newString": "new_string", // camelCase fallback
-		"dirPath":   "path",       // camelCase fallback
+		"oldString": "old_string",
+		"newString": "new_string",
+		"dirPath":   "path", // camelCase fallback
 	}
 
 	switch toolName {
 	case "edit_file":
 		// DeepSeek: {path, search, replace} → canonical: {file_path, old_string, new_string}
-		remaps["path"] = "file_path"
+		remaps["path"] = "file_path" //nolint:goconst // JSON 字段名/协议字符串
 		remaps["search"] = "old_string"
 		remaps["replace"] = "new_string"
 	case "read_file", "write_file", "list_dir":

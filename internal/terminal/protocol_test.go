@@ -11,7 +11,7 @@ import (
 
 func TestClientMessage_Input(t *testing.T) {
 	msg := ClientMessage{
-		Type: "input",
+		Type: msgTypeInput,
 		Data: "ls -la\n",
 	}
 	data, err := json.Marshal(msg)
@@ -56,7 +56,7 @@ func TestClientMessage_Close(t *testing.T) {
 
 func TestServerMessage_Output(t *testing.T) {
 	msg := ServerMessage{
-		Type:      "output",
+		Type:      msgTypeOutput,
 		SessionID: "abc123",
 		Data:      "\x1b[32mhello\x1b[0m",
 	}
@@ -109,8 +109,8 @@ func TestServerMessage_Status(t *testing.T) {
 
 func TestServerMessage_Exit(t *testing.T) {
 	msg := ServerMessage{
-		Type:  "exit",
-		Code:  0,
+		Type: "exit",
+		Code: 0,
 	}
 	data, err := json.Marshal(msg)
 	assert.NoError(t, err)

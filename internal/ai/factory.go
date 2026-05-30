@@ -15,11 +15,11 @@ func NewBackend(backendType string) (AIBackend, error) {
 		return opencodeBackend, nil
 	case "gemini":
 		return geminiBackend, nil
-	case "codex":
+	case "codex": //nolint:goconst // JSON 字段名/协议字符串
 		return &CodexBackend{}, nil
 	case "qoder":
 		return &AutoResumeBackend{inner: qoderBackend}, nil
-	case "vecli":
+	case "vecli": //nolint:goconst // 4 occurrences across factory+vecli.go
 		return NewVeCLIBackend(), nil
 	case "deepseek":
 		return &AutoResumeBackend{inner: deepseekBackend}, nil

@@ -8,19 +8,36 @@ import (
 	"strings"
 )
 
+const (
+	subcmdCreate    = "create"
+	subcmdDelete    = "delete"
+	subcmdPause     = "pause"
+	subcmdUpdate    = "update"
+	subcmdResume    = "resume"
+	subcmdTrigger   = "trigger"
+	flagName        = "name"
+	flagPrompt      = "prompt"
+	repeatLimited   = "limited"
+	repeatUnlimited = "unlimited"
+	flagTypeString  = "string"
+	flagTypeInt     = "int"
+	descProjectPath = "Project path"
+	jsonKeyAction   = "action"
+)
+
 // ---------- Help definitions ----------
 
 var taskSubcommands = []CmdHelp{
-	{Name: "create", Desc: "Create a new scheduled task"},
+	{Name: subcmdCreate, Desc: "Create a new scheduled task"},
 	{Name: "list", Desc: "List all tasks"},
 	{Name: "get", Desc: "Get task details by ID"},
 	{Name: "list-exec", Desc: "List recent task executions"},
-	{Name: "update", Desc: "Update an existing task"},
-	{Name: "delete", Desc: "Delete a task"},
+	{Name: subcmdUpdate, Desc: "Update an existing task"},
+	{Name: subcmdDelete, Desc: "Delete a task"},
 	{Name: "delete-exec", Desc: "Delete a task execution record"},
-	{Name: "pause", Desc: "Pause a task's cron schedule"},
-	{Name: "resume", Desc: "Resume a paused task"},
-	{Name: "trigger", Desc: "Run a task immediately"},
+	{Name: subcmdPause, Desc: "Pause a task's cron schedule"},
+	{Name: subcmdResume, Desc: "Resume a paused task"},
+	{Name: subcmdTrigger, Desc: "Run a task immediately"},
 	{Name: "list-agents", Desc: "List available agent IDs and descriptions"},
 }
 
@@ -28,13 +45,13 @@ var createHelp = HelpInfo{
 	Usage:       "clawbench task create [flags]",
 	Description: "Create a new scheduled task.",
 	Flags: []FlagHelp{
-		{Name: "name", Type: "string", Desc: "Brief task name", Required: true},
-		{Name: "cron", Type: "string", Desc: "5-field cron expression (min hour day month weekday)", Required: true},
-		{Name: "agent", Type: "string", Desc: "Agent ID (run 'clawbench task list-agents' to see available)", Required: true},
-		{Name: "prompt", Type: "string", Desc: "Full prompt text, or @path to read from file", Required: true},
-		{Name: "repeat", Type: "string", Default: "unlimited", Desc: "Repeat mode: once|limited|unlimited"},
-		{Name: "max-runs", Type: "int", Default: "0", Desc: "Max runs (required when --repeat=limited)"},
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: flagName, Type: flagTypeString, Desc: "Brief task name", Required: true},
+		{Name: "cron", Type: flagTypeString, Desc: "5-field cron expression (min hour day month weekday)", Required: true},
+		{Name: "agent", Type: flagTypeString, Desc: "Agent ID (run 'clawbench task list-agents' to see available)", Required: true},
+		{Name: flagPrompt, Type: flagTypeString, Desc: "Full prompt text, or @path to read from file", Required: true},
+		{Name: "repeat", Type: flagTypeString, Default: repeatUnlimited, Desc: "Repeat mode: once|limited|unlimited"},
+		{Name: "max-runs", Type: flagTypeInt, Default: "0", Desc: "Max runs (required when --repeat=limited)"},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task create --name "Daily Review" --cron "0 9 * * *" --agent codebuddy --prompt "Review recent changes" --repeat unlimited`,
@@ -56,7 +73,7 @@ var listHelp = HelpInfo{
 	Usage:       "clawbench task list --project PATH",
 	Description: "List all scheduled tasks for the project.",
 	Flags: []FlagHelp{
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task list --project /path/to/project`,
@@ -71,7 +88,7 @@ var getHelp = HelpInfo{
 	Description: "Get detailed information about a specific task by ID, including running executions.",
 	Positional:  "TASK_ID  (required) ID of the task to retrieve",
 	Flags: []FlagHelp{
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task get 1 --project /path/to/project`,
@@ -83,13 +100,13 @@ var updateHelp = HelpInfo{
 	Description: "Update an existing task. Only provide fields you want to change. Updating a completed task reactivates it.",
 	Positional:  "TASK_ID  (required) ID of the task to update",
 	Flags: []FlagHelp{
-		{Name: "name", Type: "string", Desc: "Task name"},
-		{Name: "cron", Type: "string", Desc: "Cron expression"},
-		{Name: "agent", Type: "string", Desc: "Agent ID"},
-		{Name: "prompt", Type: "string", Desc: "Prompt text, or @path to read from file"},
-		{Name: "repeat", Type: "string", Desc: "Repeat mode: once|limited|unlimited"},
-		{Name: "max-runs", Type: "int", Default: "-1", Desc: "Max runs"},
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: "name", Type: flagTypeString, Desc: "Task name"},
+		{Name: "cron", Type: flagTypeString, Desc: "Cron expression"},
+		{Name: "agent", Type: flagTypeString, Desc: "Agent ID"},
+		{Name: "prompt", Type: flagTypeString, Desc: "Prompt text, or @path to read from file"},
+		{Name: "repeat", Type: flagTypeString, Desc: "Repeat mode: once|limited|unlimited"},
+		{Name: "max-runs", Type: flagTypeInt, Default: "-1", Desc: "Max runs"},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task update 1 --cron "0 10 * * 1-5"`,
@@ -103,7 +120,7 @@ var deleteHelp = HelpInfo{
 	Description: "Delete a task permanently.",
 	Positional:  "TASK_ID  (required) ID of the task to delete",
 	Flags: []FlagHelp{
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task delete 1`,
@@ -115,7 +132,7 @@ var deleteExecHelp = HelpInfo{
 	Description: "Delete a single task execution record. Running executions cannot be deleted.",
 	Positional:  "TASK_ID  (required) ID of the task\nEXEC_ID  (required) ID of the execution to delete",
 	Flags: []FlagHelp{
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task delete-exec 1 5 --project /path/to/project`,
@@ -127,8 +144,8 @@ var listExecHelp = HelpInfo{
 	Description: "List recent task executions with status and summary.",
 	Positional:  "TASK_ID  (required) ID of the task",
 	Flags: []FlagHelp{
-		{Name: "limit", Type: "int", Default: "1", Desc: "Max number of executions to return"},
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: "limit", Type: flagTypeInt, Default: "1", Desc: "Max number of executions to return"},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task list-exec 1 --project /path/to/project`,
@@ -141,7 +158,7 @@ var pauseHelp = HelpInfo{
 	Description: "Pause a task's cron schedule. The task will not execute until resumed.",
 	Positional:  "TASK_ID  (required) ID of the task to pause",
 	Flags: []FlagHelp{
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task pause 1`,
@@ -153,7 +170,7 @@ var resumeHelp = HelpInfo{
 	Description: "Resume a paused task. The cron schedule is reactivated.",
 	Positional:  "TASK_ID  (required) ID of the task to resume",
 	Flags: []FlagHelp{
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task resume 1`,
@@ -165,7 +182,7 @@ var triggerHelp = HelpInfo{
 	Description: "Run a task immediately, regardless of the cron schedule. Does not affect the schedule.",
 	Positional:  "TASK_ID  (required) ID of the task to trigger",
 	Flags: []FlagHelp{
-		{Name: "project", Type: "string", Desc: "Project path", Required: true},
+		{Name: flagProject, Type: flagTypeString, Desc: descProjectPath, Required: true},
 	},
 	Examples: []string{
 		`clawbench task trigger 1`,
@@ -188,7 +205,7 @@ var listAgentsHelp = HelpInfo{
 // Security: @path is restricted to files under the project directory to prevent
 // arbitrary file reads by AI agents (ISS-026). If projectPath is empty, the
 // restriction is not applied (allows non-task CLI usage).
-func readFlagOrFile(val string, projectPath string) (string, error) {
+func readFlagOrFile(val, projectPath string) (string, error) {
 	if !strings.HasPrefix(val, "@") {
 		return val, nil
 	}
@@ -205,29 +222,30 @@ func readFlagOrFile(val string, projectPath string) (string, error) {
 
 	// Security: only allow reading files within the project directory
 	if projectPath != "" {
-		absProject, err := filepath.Abs(projectPath)
-		if err != nil {
-			return "", fmt.Errorf("invalid project path %s: %w", projectPath, err)
+		absProject, projectErr := filepath.Abs(projectPath)
+		if projectErr != nil {
+			return "", fmt.Errorf("invalid project path %s: %w", projectPath, projectErr)
 		}
 		// Resolve symlinks on both sides for robust containment check
-		evalProject, err := filepath.EvalSymlinks(absProject)
-		if err == nil {
+		evalProject, projectErr := filepath.EvalSymlinks(absProject)
+		if projectErr == nil {
 			absProject = evalProject
 		}
 		// For the file path, try to resolve; if file doesn't exist, resolve parent
-		evalPath, err := filepath.EvalSymlinks(absPath)
-		if err == nil {
+		evalPath, resolveErr := filepath.EvalSymlinks(absPath)
+		switch {
+		case resolveErr == nil:
 			absPath = evalPath
-		} else if os.IsNotExist(err) {
+		case os.IsNotExist(resolveErr):
 			// File doesn't exist yet — resolve the parent directory
 			parent := filepath.Dir(absPath)
-			evalParent, err := filepath.EvalSymlinks(parent)
-			if err != nil {
-				return "", fmt.Errorf("cannot resolve parent directory for %s: %w", path, err)
+			evalParent, parentErr := filepath.EvalSymlinks(parent)
+			if parentErr != nil {
+				return "", fmt.Errorf("cannot resolve parent directory for %s: %w", path, parentErr)
 			}
 			absPath = filepath.Join(evalParent, filepath.Base(absPath))
-		} else {
-			return "", fmt.Errorf("cannot resolve path %s: %w", path, err)
+		default:
+			return "", fmt.Errorf("cannot resolve path %s: %w", path, resolveErr)
 		}
 
 		if !strings.HasPrefix(absPath, absProject+string(filepath.Separator)) && absPath != absProject {
@@ -247,7 +265,8 @@ func readFlagOrFile(val string, projectPath string) (string, error) {
 // where parsing stops at the first non-flag argument.
 //
 // Example: ["1", "--prompt", "hello", "--project", "/path"]
-//       → ["--prompt", "hello", "--project", "/path", "1"]
+//
+//	→ ["--prompt", "hello", "--project", "/path", "1"]
 func reorderFlagsFirst(args []string) []string {
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {
@@ -279,7 +298,7 @@ func RunTaskCommand(args []string) int {
 	}
 
 	// Handle top-level --help
-	if args[0] == "--help" || args[0] == "-h" {
+	if args[0] == flagHelp || args[0] == "-h" {
 		printGroupHelp("clawbench task <subcommand> [options]", "Manage scheduled AI tasks with cron-based execution.", taskSubcommands)
 		return 0
 	}
@@ -339,7 +358,7 @@ func runCreate(args []string) int {
 	if *name == "" || *cronExpr == "" || *agentID == "" || *prompt == "" || *projectPath == "" {
 		return outputError("missing required fields: --name, --cron, --agent, --prompt, --project")
 	}
-	if *repeatMode != "once" && *repeatMode != "limited" && *repeatMode != "unlimited" {
+	if *repeatMode != "once" && *repeatMode != repeatLimited && *repeatMode != "unlimited" {
 		return outputError("invalid --repeat: must be once|limited|unlimited")
 	}
 	if *repeatMode == "limited" && *maxRuns <= 0 {
@@ -455,15 +474,10 @@ func runListExec(args []string) int {
 
 func runUpdate(args []string) int {
 	// Anti-recursion: scheduled executions cannot modify tasks either.
-	// While 'create' creates new tasks, 'update' can modify existing task
-	// prompts/crons to achieve recursive behavior (ISS-031).
 	if os.Getenv("CLAWBENCH_SCHEDULED") == "1" {
 		return outputError("scheduled execution cannot modify tasks")
 	}
 
-	// Go's flag package stops parsing at the first non-flag argument.
-	// "clawbench task update task-ID --prompt text" would fail because task-ID
-	// comes before --prompt. Reorder so all flags come first, then positional args.
 	args = reorderFlagsFirst(args)
 
 	fs := flagSet("update")
@@ -486,44 +500,19 @@ func runUpdate(args []string) int {
 		return outputError("missing required flag: --project")
 	}
 
-	// Resolve @file syntax for prompt
-	promptVal := ""
-	if *prompt != "" {
-		val, err := readFlagOrFile(*prompt, *projectPath)
-		if err != nil {
-			return outputError(fmt.Sprintf("%v", err))
-		}
-		promptVal = val
-	}
-
-	body := map[string]any{
-		"action": "update",
-	}
-	if *name != "" {
-		body["name"] = *name
-	}
-	if *cronExpr != "" {
-		body["cron_expr"] = *cronExpr
-	}
-	if *agentID != "" {
-		body["agent_id"] = *agentID
-	}
-	if promptVal != "" {
-		body["prompt"] = promptVal
-	}
-	if *repeatMode != "" {
-		if *repeatMode != "once" && *repeatMode != "limited" && *repeatMode != "unlimited" {
-			return outputError("invalid --repeat: must be once|limited|unlimited")
-		}
-		body["repeat_mode"] = *repeatMode
-	}
-	if *maxRuns >= 0 {
-		body["max_runs"] = *maxRuns
-	}
-
-	result, status, err := httpDoWithProject(http.MethodPut, "/api/tasks/"+taskID, body, *projectPath)
+	promptVal, err := resolvePrompt(*prompt, *projectPath)
 	if err != nil {
-		return outputError(fmt.Sprintf("failed to update task: %v", err))
+		return outputError(fmt.Sprintf("%v", err))
+	}
+
+	body := buildUpdateBody(*name, *cronExpr, *agentID, promptVal, *repeatMode, *maxRuns)
+	if body == nil {
+		return outputError("invalid --repeat: must be once|limited|unlimited")
+	}
+
+	result, status, httpErr := httpDoWithProject(http.MethodPut, "/api/tasks/"+taskID, body, *projectPath)
+	if httpErr != nil {
+		return outputError(fmt.Sprintf("failed to update task: %v", httpErr))
 	}
 	if err := checkHTTPResponse(result, status, "update task"); err != nil {
 		return outputError(err.Error())
@@ -531,6 +520,42 @@ func runUpdate(args []string) int {
 
 	fmt.Println(mustMarshal(result))
 	return 0
+}
+
+func resolvePrompt(prompt, projectPath string) (string, error) {
+	if prompt == "" {
+		return "", nil
+	}
+	return readFlagOrFile(prompt, projectPath)
+}
+
+func buildUpdateBody(name, cronExpr, agentID, promptVal, repeatMode string, maxRuns int) map[string]any {
+	if repeatMode != "" && repeatMode != "once" && repeatMode != repeatLimited && repeatMode != repeatUnlimited {
+		return nil
+	}
+
+	body := map[string]any{
+		jsonKeyAction: "update",
+	}
+	if name != "" {
+		body["name"] = name
+	}
+	if cronExpr != "" {
+		body["cron_expr"] = cronExpr
+	}
+	if agentID != "" {
+		body["agent_id"] = agentID
+	}
+	if promptVal != "" {
+		body["prompt"] = promptVal
+	}
+	if repeatMode != "" {
+		body["repeat_mode"] = repeatMode
+	}
+	if maxRuns >= 0 {
+		body["max_runs"] = maxRuns
+	}
+	return body
 }
 
 func runDelete(args []string) int {
@@ -577,7 +602,7 @@ func runDeleteExec(args []string) int {
 	execID := remaining[1]
 
 	body := map[string]any{
-		"action":      "deleteExecution",
+		jsonKeyAction: "deleteExecution",
 		"executionId": execID,
 	}
 	result, status, err := httpDoWithProject(http.MethodPut, "/api/tasks/"+taskID, body, *projectPath)
@@ -607,7 +632,7 @@ func runPause(args []string) int {
 	}
 	taskID := remaining[0]
 
-	body := map[string]any{"action": "pause"}
+	body := map[string]any{jsonKeyAction: "pause"}
 	result, status, err := httpDoWithProject(http.MethodPut, "/api/tasks/"+taskID, body, *projectPath)
 	if err != nil {
 		return outputError(fmt.Sprintf("failed to pause task: %v", err))
@@ -635,7 +660,7 @@ func runResume(args []string) int {
 	}
 	taskID := remaining[0]
 
-	body := map[string]any{"action": "resume"}
+	body := map[string]any{jsonKeyAction: "resume"}
 	result, status, err := httpDoWithProject(http.MethodPut, "/api/tasks/"+taskID, body, *projectPath)
 	if err != nil {
 		return outputError(fmt.Sprintf("failed to resume task: %v", err))
@@ -663,7 +688,7 @@ func runTrigger(args []string) int {
 	}
 	taskID := remaining[0]
 
-	body := map[string]any{"action": "trigger"}
+	body := map[string]any{jsonKeyAction: "trigger"}
 	result, status, err := httpDoWithProject(http.MethodPut, "/api/tasks/"+taskID, body, *projectPath)
 	if err != nil {
 		return outputError(fmt.Sprintf("failed to trigger task: %v", err))

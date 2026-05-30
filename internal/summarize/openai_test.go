@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const roleAssistant = "assistant"
+
 func TestNewOpenAI_Defaults(t *testing.T) {
 	s := NewOpenAI("https://api.openai.com/v1/chat/completions", "sk-test", "")
 	assert.Equal(t, "https://api.openai.com/v1/chat/completions", s.BaseURL)
@@ -46,9 +48,9 @@ func TestOpenAISummarizer_APICall(t *testing.T) {
 		assert.NoError(t, err)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(openaiChatResponse{
+		_ = json.NewEncoder(w).Encode(openaiChatResponse{
 			Choices: []openaiChoice{
-				{Message: openaiChatMessage{Role: "assistant", Content: "这是总结后的内容。"}},
+				{Message: openaiChatMessage{Role: roleAssistant, Content: "这是总结后的内容。"}},
 			},
 		})
 	}))
@@ -68,7 +70,7 @@ func TestOpenAISummarizer_APICall(t *testing.T) {
 
 func TestOpenAISummarizer_MultiPass(t *testing.T) {
 	callCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		var content string
 		if callCount == 1 {
@@ -77,9 +79,9 @@ func TestOpenAISummarizer_MultiPass(t *testing.T) {
 			content = "精简后的总结。"
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(openaiChatResponse{
+		_ = json.NewEncoder(w).Encode(openaiChatResponse{
 			Choices: []openaiChoice{
-				{Message: openaiChatMessage{Role: "assistant", Content: content}},
+				{Message: openaiChatMessage{Role: roleAssistant, Content: content}},
 			},
 		})
 	}))
@@ -95,9 +97,9 @@ func TestOpenAISummarizer_MultiPass(t *testing.T) {
 }
 
 func TestOpenAISummarizer_ErrorStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, "model not found")
+		_, _ = fmt.Fprint(w, "model not found")
 	}))
 	defer server.Close()
 
@@ -122,11 +124,11 @@ func TestOpenAISummarizer_ConnectionRefused(t *testing.T) {
 }
 
 func TestOpenAISummarizer_EmptyResponse(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(openaiChatResponse{
+		_ = json.NewEncoder(w).Encode(openaiChatResponse{
 			Choices: []openaiChoice{
-				{Message: openaiChatMessage{Role: "assistant", Content: "  "}},
+				{Message: openaiChatMessage{Role: roleAssistant, Content: "  "}},
 			},
 		})
 	}))
@@ -141,9 +143,9 @@ func TestOpenAISummarizer_EmptyResponse(t *testing.T) {
 }
 
 func TestOpenAISummarizer_NoChoices(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(openaiChatResponse{
+		_ = json.NewEncoder(w).Encode(openaiChatResponse{
 			Choices: []openaiChoice{},
 		})
 	}))
@@ -158,12 +160,12 @@ func TestOpenAISummarizer_NoChoices(t *testing.T) {
 }
 
 func TestOpenAISummarizer_ContextCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(5 * time.Second)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(openaiChatResponse{
+		_ = json.NewEncoder(w).Encode(openaiChatResponse{
 			Choices: []openaiChoice{
-				{Message: openaiChatMessage{Role: "assistant", Content: "too late"}},
+				{Message: openaiChatMessage{Role: roleAssistant, Content: "too late"}},
 			},
 		})
 	}))
@@ -185,9 +187,9 @@ func TestOpenAISummarizer_NoKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(openaiChatResponse{
+		_ = json.NewEncoder(w).Encode(openaiChatResponse{
 			Choices: []openaiChoice{
-				{Message: openaiChatMessage{Role: "assistant", Content: "ok"}},
+				{Message: openaiChatMessage{Role: roleAssistant, Content: "ok"}},
 			},
 		})
 	}))

@@ -29,7 +29,7 @@ type mockSummarizer struct {
 	lastLanguage string
 }
 
-func (m *mockSummarizer) Summarize(ctx context.Context, text string, language string) (string, error) {
+func (m *mockSummarizer) Summarize(_ context.Context, text, language string) (string, error) {
 	m.called = true
 	m.lastText = text
 	m.lastLanguage = language
@@ -55,7 +55,7 @@ type mockSpeechProvider struct {
 	synthesizeBlock chan struct{}
 }
 
-func (m *mockSpeechProvider) Synthesize(ctx context.Context, text string, outputPath string, language string) error {
+func (m *mockSpeechProvider) Synthesize(ctx context.Context, text, outputPath, language string) error {
 	m.synthesizeCalled = true
 	m.lastSynthText = text
 	m.lastSynthLang = language
@@ -63,10 +63,10 @@ func (m *mockSpeechProvider) Synthesize(ctx context.Context, text string, output
 		return m.synthesizeErr
 	}
 	// Create a dummy audio file at outputPath
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(outputPath, []byte("fake audio data"), 0644); err != nil {
+	if err := os.WriteFile(outputPath, []byte("fake audio data"), 0o644); err != nil {
 		return err
 	}
 	// Block until the test releases us (if configured)
@@ -82,11 +82,12 @@ func (m *mockSpeechProvider) Synthesize(ctx context.Context, text string, output
 
 // setupTTSTest sets up a test environment with mock provider and summarizer.
 // Returns the test env and a teardown function.
-func setupTTSTest(t *testing.T, mockProvider *mockSpeechProvider, mockSum *mockSummarizer) (*testEnv, func()) {
+func setupTTSTest(t *testing.T, mockProvider *mockSpeechProvider, mockSum *mockSummarizer) (env *testEnv, teardown func()) {
 	t.Helper()
 
 	// Use the shared test environment (inits DB, project dir, etc.)
-	env, envTeardown := setupTestEnv(t)
+	var envTeardown func()
+	env, envTeardown = setupTestEnv(t)
 
 	// Save and replace the global speech provider and summarizer
 	origProvider := speechProvider
@@ -94,7 +95,7 @@ func setupTTSTest(t *testing.T, mockProvider *mockSpeechProvider, mockSum *mockS
 	speechProvider = mockProvider
 	summarizer = mockSum
 
-	teardown := func() {
+	teardown = func() {
 		speechProvider = origProvider
 		summarizer = origSummarizer
 		envTeardown()
@@ -111,7 +112,7 @@ func TestTTSGenerate_MethodNotAllowed(t *testing.T) {
 	_, teardown := setupTTSTest(t, mockProvider, mockSum)
 	defer teardown()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tts/generate", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/tts/generate", http.NoBody)
 	req = withProjectCookie(req, t.TempDir())
 	w := httptest.NewRecorder()
 
@@ -285,10 +286,10 @@ func TestTTSGenerate_CacheHit(t *testing.T) {
 	absAudioPath := filepath.Join(env.ProjectDir, relAudioPath)
 
 	// Pre-create the cached file
-	if err := os.MkdirAll(filepath.Dir(absAudioPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(absAudioPath), 0o755); err != nil {
 		t.Fatalf("failed to create cache dir: %v", err)
 	}
-	if err := os.WriteFile(absAudioPath, []byte("cached audio"), 0644); err != nil {
+	if err := os.WriteFile(absAudioPath, []byte("cached audio"), 0o644); err != nil {
 		t.Fatalf("failed to write cache file: %v", err)
 	}
 
@@ -497,7 +498,7 @@ func TestTTSStream_Success(t *testing.T) {
 	// Connect to stream endpoint while the job is still alive.
 	// The mock synthesize blocks on `block`, so the goroutine won't finish
 	// and unregister the job before we connect.
-	streamReq := httptest.NewRequest(http.MethodGet, "/api/tts/stream/"+jobID, nil)
+	streamReq := httptest.NewRequest(http.MethodGet, "/api/tts/stream/"+jobID, http.NoBody)
 	streamReq = withProjectCookie(streamReq, env.ProjectDir)
 	streamW := httptest.NewRecorder()
 
@@ -524,7 +525,7 @@ func TestTTSStream_JobNotFound(t *testing.T) {
 	_, teardown := setupTTSTest(t, &mockSpeechProvider{}, &mockSummarizer{})
 	defer teardown()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tts/stream/nonexistent", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/tts/stream/nonexistent", http.NoBody)
 	req = withProjectCookie(req, t.TempDir())
 	w := httptest.NewRecorder()
 
@@ -536,7 +537,7 @@ func TestTTSStream_MissingJobID(t *testing.T) {
 	_, teardown := setupTTSTest(t, &mockSpeechProvider{}, &mockSummarizer{})
 	defer teardown()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/tts/stream/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/tts/stream/", http.NoBody)
 	req = withProjectCookie(req, t.TempDir())
 	w := httptest.NewRecorder()
 

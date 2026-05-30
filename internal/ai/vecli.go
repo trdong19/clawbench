@@ -26,7 +26,7 @@ type VeCLIBackend struct {
 func NewVeCLIBackend() *VeCLIBackend {
 	b := &VeCLIBackend{}
 	b.inner = &CLIBackend{
-		name:           "vecli",
+		name:           "vecli", //nolint:goconst // JSON 字段名/协议字符串
 		defaultCommand: "vecli",
 		buildArgs:      buildVeCLIArgs,
 		newParser:      func() LineParser { return &VeCLIStreamParser{} },
@@ -44,7 +44,7 @@ func (b *VeCLIBackend) Name() string { return "vecli" }
 // and stores the path in summaryMap for post-stream retrieval.
 func (b *VeCLIBackend) vecliPreStart(cmd *exec.Cmd, req ChatRequest) {
 	summaryDir := filepath.Join(model.BinDir, ".clawbench", "vecli-summary")
-	if err := os.MkdirAll(summaryDir, 0700); err != nil {
+	if err := os.MkdirAll(summaryDir, 0o700); err != nil {
 		slog.Warn("vecli: failed to create summary dir", "dir", summaryDir, "error", err)
 	}
 	// req.SessionID is guaranteed non-empty by ExecuteStream
@@ -62,7 +62,7 @@ func (b *VeCLIBackend) vecliPreStart(cmd *exec.Cmd, req ChatRequest) {
 //  3. On process exit, this wrapper reads the session-summary JSON file
 //  4. Emits metadata event (token counts, duration, model) from summary
 //  5. Emits done event
-func (b *VeCLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) {
+func (b *VeCLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) { //nolint:gocognit // 复杂的 stream 解析逻辑
 	// VeCLI does not support resume — always start a new session
 	req.Resume = false
 
@@ -88,7 +88,7 @@ func (b *VeCLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 		for ev := range innerCh {
 			// Skip "done" from inner — VeCLIStreamParser never emits it,
 			// but skip defensively in case CLIBackend changes behavior
-			if ev.Type == "done" {
+			if ev.Type == "done" { //nolint:goconst // JSON 字段名/协议字符串
 				continue
 			}
 			// Use non-blocking send to prevent goroutine leak if consumer has stopped
@@ -107,7 +107,8 @@ func (b *VeCLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 			}
 			// Clean up summary file if it exists
 			if sp, ok := b.summaryMap.LoadAndDelete(summaryKey); ok {
-				os.Remove(sp.(string))
+				path, _ := sp.(string)
+				_ = os.Remove(path)
 			}
 			return
 		}
@@ -115,17 +116,17 @@ func (b *VeCLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 		// Process exited normally — try to read session-summary for metadata
 		summaryPath, ok := b.summaryMap.LoadAndDelete(summaryKey)
 		if ok {
-			path := summaryPath.(string)
-			defer os.Remove(path)
+			path := summaryPath.(string) //nolint:errcheck // type assertion after LoadAndDelete ok check
+			defer func() { _ = os.Remove(path) }()
 
 			if data, err := os.ReadFile(path); err == nil {
-				summary, err := parseVeCLISessionSummary(data)
+				summary, err := parseVeCLISessionSummary(data) //nolint:govet // intentional shadow: outer err already checked
 				if err != nil {
 					slog.Debug("vecli: failed to parse session-summary", "error", err)
 				} else {
 					meta := summary.extractMetadata(req.Model)
 					select {
-					case outCh <- StreamEvent{Type: "metadata", Meta: meta}:
+					case outCh <- StreamEvent{Type: "metadata", Meta: meta}: //nolint:goconst // JSON 字段名/协议字符串
 					default:
 					}
 				}

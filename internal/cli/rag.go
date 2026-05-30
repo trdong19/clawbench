@@ -7,11 +7,17 @@ import (
 	"strconv"
 )
 
+const (
+	subcmdMessage = "message"
+	flagHelp      = "--help"
+	flagProject   = "project"
+)
+
 // ---------- Help definitions ----------
 
 var ragSubcommands = []CmdHelp{
 	{Name: "search", Desc: "Search conversation history by semantic query"},
-	{Name: "message", Desc: "Get full message detail by ID"},
+	{Name: subcmdMessage, Desc: "Get full message detail by ID"},
 	{Name: "session", Desc: "Get all messages in a session"},
 }
 
@@ -19,15 +25,15 @@ var searchHelp = HelpInfo{
 	Usage:       "clawbench rag search [flags]",
 	Description: "Search conversation history by semantic query.",
 	Flags: []FlagHelp{
-		{Name: "q", Short: "q", Type: "string", Desc: "Search query text", Required: true},
-		{Name: "limit", Type: "int", Default: "config default (5)", Desc: "Number of results"},
-		{Name: "project", Type: "string", Desc: "Project path (omit for global search across all projects)"},
-		{Name: "backend", Type: "string", Desc: "Filter by backend name"},
-		{Name: "role", Type: "string", Desc: "Filter by role: user|assistant"},
-		{Name: "session-id", Type: "string", Desc: "Limit results to this session"},
-		{Name: "exclude-session-id", Type: "string", Desc: "Exclude this session from results"},
-		{Name: "from", Type: "string", Desc: "Time range start"},
-		{Name: "to", Type: "string", Desc: "Time range end"},
+		{Name: "q", Short: "q", Type: flagTypeString, Desc: "Search query text", Required: true},
+		{Name: "limit", Type: flagTypeInt, Default: "config default (5)", Desc: "Number of results"},
+		{Name: flagProject, Type: flagTypeString, Desc: "Project path (omit for global search across all projects)"},
+		{Name: "backend", Type: flagTypeString, Desc: "Filter by backend name"},
+		{Name: "role", Type: flagTypeString, Desc: "Filter by role: user|assistant"},
+		{Name: "session-id", Type: flagTypeString, Desc: "Limit results to this session"},
+		{Name: "exclude-session-id", Type: flagTypeString, Desc: "Exclude this session from results"},
+		{Name: "from", Type: flagTypeString, Desc: "Time range start"},
+		{Name: "to", Type: flagTypeString, Desc: "Time range end"},
 	},
 	Examples: []string{
 		`clawbench rag search -q "authentication bug" --limit 3 --project /path/to/project`,
@@ -46,8 +52,8 @@ var messageHelp = HelpInfo{
 	Usage:       "clawbench rag message [MESSAGE_ID] [--id ID] [--project PATH]",
 	Description: "Get full message detail by ID, including all content blocks (text, thinking, tool_use, warning, error).",
 	Flags: []FlagHelp{
-		{Name: "id", Type: "string", Desc: "Message database ID (or pass as positional arg)"},
-		{Name: "project", Type: "string", Desc: "Project path (omit for cross-project access)"},
+		{Name: "id", Type: flagTypeString, Desc: "Message database ID (or pass as positional arg)"},
+		{Name: flagProject, Type: flagTypeString, Desc: "Project path (omit for cross-project access)"},
 	},
 	Positional: "MESSAGE_ID  (optional) Message database ID",
 	Examples: []string{
@@ -60,8 +66,8 @@ var sessionHelp = HelpInfo{
 	Usage:       "clawbench rag session [SESSION_ID] [--id ID] [--project PATH]",
 	Description: "Get all messages in a session — the complete conversation including user messages, AI responses with thinking and tool_use blocks.",
 	Flags: []FlagHelp{
-		{Name: "id", Type: "string", Desc: "Session ID (or pass as positional arg)"},
-		{Name: "project", Type: "string", Desc: "Project path (omit for cross-project access)"},
+		{Name: "id", Type: flagTypeString, Desc: "Session ID (or pass as positional arg)"},
+		{Name: flagProject, Type: flagTypeString, Desc: "Project path (omit for cross-project access)"},
 	},
 	Positional: "SESSION_ID  (optional) Session ID",
 	Examples: []string{
@@ -84,7 +90,7 @@ func RunRAGCommand(args []string) int {
 	}
 
 	// Handle top-level --help
-	if args[0] == "--help" || args[0] == "-h" {
+	if args[0] == flagHelp || args[0] == "-h" {
 		printGroupHelp("clawbench rag <subcommand> [options]", "Search and retrieve conversation history via RAG.", ragSubcommands)
 		return 0
 	}
@@ -96,7 +102,7 @@ func RunRAGCommand(args []string) int {
 	switch args[0] {
 	case "search":
 		return runRAGSearch(args[1:])
-	case "message":
+	case subcmdMessage:
 		return runRAGMessage(args[1:])
 	case "session":
 		return runRAGSession(args[1:])
@@ -113,7 +119,7 @@ func runRAGSearch(args []string) int {
 	fs := flagSet("search")
 	query := fs.String("q", "", "Search query (required)")
 	limit := fs.Int("limit", 0, "Number of results (default from config)")
-	project := fs.String("project", "", "Project path (omit for global search)")
+	project := fs.String(flagProject, "", "Project path (omit for global search)")
 	backend := fs.String("backend", "", "Filter by backend name")
 	role := fs.String("role", "", "Filter by role: user or assistant")
 	sessionID := fs.String("session-id", "", "Limit results to this session")
@@ -161,7 +167,7 @@ func runRAGSearch(args []string) int {
 func runRAGMessage(args []string) int {
 	fs := flagSet("message")
 	idStr := fs.String("id", "", "Message database ID (required)")
-	project := fs.String("project", "", "Project path (omit for cross-project access)")
+	project := fs.String(flagProject, "", "Project path (omit for cross-project access)")
 	parseOrHelp(fs, args, &messageHelp)
 
 	if *idStr == "" {
@@ -200,7 +206,7 @@ func runRAGMessage(args []string) int {
 func runRAGSession(args []string) int {
 	fs := flagSet("session")
 	sessionID := fs.String("id", "", "Session ID (required)")
-	project := fs.String("project", "", "Project path (omit for cross-project access)")
+	project := fs.String(flagProject, "", "Project path (omit for cross-project access)")
 	parseOrHelp(fs, args, &sessionHelp)
 
 	if *sessionID == "" {

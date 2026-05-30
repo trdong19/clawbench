@@ -245,19 +245,19 @@ func TestSendSessionEvent_Success(t *testing.T) {
 
 	ch := RegisterSessionStream("session-event-test")
 
-	event := ai.StreamEvent{Type: "content", Content: "hello"}
+	event := ai.StreamEvent{Type: StreamTypeContent, Content: TestHello}
 	sent := SendSessionEvent("session-event-test", event)
 	assert.True(t, sent)
 
 	received := <-ch
-	assert.Equal(t, "content", received.Type)
-	assert.Equal(t, "hello", received.Content)
+	assert.Equal(t, StreamTypeContent, received.Type)
+	assert.Equal(t, TestHello, received.Content)
 }
 
 func TestSendSessionEvent_SessionNotFound(t *testing.T) {
 	cleanupStreams()
 
-	sent := SendSessionEvent("nonexistent", ai.StreamEvent{Type: "content"})
+	sent := SendSessionEvent("nonexistent", ai.StreamEvent{Type: StreamTypeContent})
 	assert.False(t, sent)
 }
 
@@ -268,13 +268,13 @@ func TestSendSessionEvent_FullChannel(t *testing.T) {
 	RegisterSessionStream("session-full")
 
 	// Fill the channel buffer (capacity is sessionStreamBufferSize)
-	for i := 0; i < sessionStreamBufferSize; i++ {
-		sent := SendSessionEvent("session-full", ai.StreamEvent{Type: "content", Content: "x"})
+	for range sessionStreamBufferSize {
+		sent := SendSessionEvent("session-full", ai.StreamEvent{Type: StreamTypeContent, Content: "x"})
 		assert.True(t, sent)
 	}
 
 	// Next send should fail (non-blocking)
-	sent := SendSessionEvent("session-full", ai.StreamEvent{Type: "done"})
+	sent := SendSessionEvent("session-full", ai.StreamEvent{Type: StreamTypeDone})
 	assert.False(t, sent, "SendSessionEvent should return false when channel is full")
 }
 
@@ -358,7 +358,7 @@ func TestTrySetSessionRunning_Concurrent(t *testing.T) {
 	successCount := 0
 	var mu sync.Mutex
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -399,11 +399,11 @@ func TestSendSessionEvent_ConcurrentAccess(t *testing.T) {
 	var mu sync.Mutex
 
 	// Send 50 events concurrently (buffer is sessionStreamBufferSize, so most should succeed)
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sent := SendSessionEvent("session-concurrent", ai.StreamEvent{Type: "content"})
+			sent := SendSessionEvent("session-concurrent", ai.StreamEvent{Type: StreamTypeContent})
 			if sent {
 				mu.Lock()
 				successCount++
@@ -453,8 +453,8 @@ func setupChatTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS chat_history (
+	t.Cleanup(func() { _ = db.Close() })
+	_, err = db.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS chat_history (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		project_path TEXT NOT NULL,
 		role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
@@ -475,7 +475,7 @@ func setupChatTestDB(t *testing.T) *sql.DB {
 
 func insertTestMessage(t *testing.T, db *sql.DB, sessionID, role, content string) {
 	t.Helper()
-	_, err := db.Exec("INSERT INTO chat_history (project_path, role, content, session_id, backend, streaming) VALUES (?, ?, ?, ?, 'claude', 0)",
+	_, err := db.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, role, content, session_id, backend, streaming) VALUES (?, ?, ?, ?, 'claude', 0)",
 		"/test", role, content, sessionID)
 	if err != nil {
 		t.Fatalf("insert message: %v", err)
@@ -490,11 +490,11 @@ func TestGetSessionResponsePreview_WithTextBlock(t *testing.T) {
 	DBRead = db // Same instance for :memory: SQLite — data is shared
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
-	content := model.ContentBlock{Type: "text", Text: "你好，这是AI的回复内容"}
-	blocks := map[string]any{"blocks": []model.ContentBlock{content}}
+	content := model.ContentBlock{Type: BlockTypeText, Text: "你好，这是AI的回复内容"}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{content}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-1", "user", "问题")
-	insertTestMessage(t, db, "session-preview-1", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-1", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-1")
 	assert.Equal(t, "你好，这是AI的回复内容", result)
@@ -510,11 +510,11 @@ func TestGetSessionResponsePreview_Truncation(t *testing.T) {
 
 	// responsePreviewMaxRunes+1 runes — should be truncated
 	longText := strings.Repeat("测", responsePreviewMaxRunes+1)
-	content := model.ContentBlock{Type: "text", Text: longText}
-	blocks := map[string]any{"blocks": []model.ContentBlock{content}}
+	content := model.ContentBlock{Type: BlockTypeText, Text: longText}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{content}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-2", "user", "问题")
-	insertTestMessage(t, db, "session-preview-2", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-2", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-2")
 	runes := []rune(longText)
@@ -556,12 +556,12 @@ func TestGetSessionResponsePreview_SkipsToolUseBlocks(t *testing.T) {
 	DBRead = db // Same instance for :memory: SQLite — data is shared
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
-	toolBlock := model.ContentBlock{Type: "tool_use", Name: "Read", ID: "tool-1"}
-	textBlock := model.ContentBlock{Type: "text", Text: "工具执行后的文本"}
-	blocks := map[string]any{"blocks": []model.ContentBlock{toolBlock, textBlock}}
+	toolBlock := model.ContentBlock{Type: BlockTypeToolUse, Name: ToolNameRead, ID: TestToolID1}
+	textBlock := model.ContentBlock{Type: BlockTypeText, Text: "工具执行后的文本"}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{toolBlock, textBlock}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-4", "user", "问题")
-	insertTestMessage(t, db, "session-preview-4", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-4", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-4")
 	assert.Equal(t, "工具执行后的文本", result)
@@ -577,13 +577,13 @@ func TestGetSessionResponsePreview_PrefersTextAfterLastToolUse(t *testing.T) {
 
 	// Scenario: [text("Reading file..."), tool_use, text("Here is the analysis")]
 	// The preview should return "Here is the analysis", not "Reading file..."
-	textBeforeTool := model.ContentBlock{Type: "text", Text: "正在读取文件…"}
-	toolBlock := model.ContentBlock{Type: "tool_use", Name: "Read", ID: "tool-1"}
-	textAfterTool := model.ContentBlock{Type: "text", Text: "这是最终的分析结果"}
-	blocks := map[string]any{"blocks": []model.ContentBlock{textBeforeTool, toolBlock, textAfterTool}}
+	textBeforeTool := model.ContentBlock{Type: BlockTypeText, Text: "正在读取文件…"}
+	toolBlock := model.ContentBlock{Type: BlockTypeToolUse, Name: ToolNameRead, ID: TestToolID1}
+	textAfterTool := model.ContentBlock{Type: BlockTypeText, Text: "这是最终的分析结果"}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{textBeforeTool, toolBlock, textAfterTool}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-after-tool", "user", "分析代码")
-	insertTestMessage(t, db, "session-preview-after-tool", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-after-tool", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-after-tool")
 	assert.Equal(t, "这是最终的分析结果", result)
@@ -599,14 +599,14 @@ func TestGetSessionResponsePreview_MultipleToolUses(t *testing.T) {
 
 	// Scenario: [tool_use, text("intermediate"), tool_use, text("final answer")]
 	// Should return "final answer" — text after the LAST tool_use
-	tool1 := model.ContentBlock{Type: "tool_use", Name: "Read", ID: "tool-1"}
-	textMiddle := model.ContentBlock{Type: "text", Text: "中间结果"}
-	tool2 := model.ContentBlock{Type: "tool_use", Name: "Grep", ID: "tool-2"}
-	textFinal := model.ContentBlock{Type: "text", Text: "最终结论"}
-	blocks := map[string]any{"blocks": []model.ContentBlock{tool1, textMiddle, tool2, textFinal}}
+	tool1 := model.ContentBlock{Type: BlockTypeToolUse, Name: ToolNameRead, ID: TestToolID1}
+	textMiddle := model.ContentBlock{Type: BlockTypeText, Text: "中间结果"}
+	tool2 := model.ContentBlock{Type: BlockTypeToolUse, Name: "Grep", ID: "tool-2"}
+	textFinal := model.ContentBlock{Type: BlockTypeText, Text: "最终结论"}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{tool1, textMiddle, tool2, textFinal}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-multi-tool", "user", "搜索代码")
-	insertTestMessage(t, db, "session-preview-multi-tool", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-multi-tool", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-multi-tool")
 	assert.Equal(t, "最终结论", result)
@@ -621,12 +621,12 @@ func TestGetSessionResponsePreview_OnlyToolUses(t *testing.T) {
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
 	// Only tool_use blocks, no text after — should return empty
-	tool1 := model.ContentBlock{Type: "tool_use", Name: "Read", ID: "tool-1"}
-	tool2 := model.ContentBlock{Type: "tool_use", Name: "Grep", ID: "tool-2"}
-	blocks := map[string]any{"blocks": []model.ContentBlock{tool1, tool2}}
+	tool1 := model.ContentBlock{Type: BlockTypeToolUse, Name: ToolNameRead, ID: TestToolID1}
+	tool2 := model.ContentBlock{Type: BlockTypeToolUse, Name: "Grep", ID: "tool-2"}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{tool1, tool2}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-only-tools", "user", "搜索代码")
-	insertTestMessage(t, db, "session-preview-only-tools", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-only-tools", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-only-tools")
 	assert.Equal(t, "", result)
@@ -641,12 +641,12 @@ func TestGetSessionResponsePreview_TextBeforeToolOnly(t *testing.T) {
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
 	// [text("thinking..."), tool_use] — no text AFTER tool_use, should return empty
-	textBlock := model.ContentBlock{Type: "text", Text: "让我思考一下"}
-	toolBlock := model.ContentBlock{Type: "tool_use", Name: "Read", ID: "tool-1"}
-	blocks := map[string]any{"blocks": []model.ContentBlock{textBlock, toolBlock}}
+	textBlock := model.ContentBlock{Type: BlockTypeText, Text: "让我思考一下"}
+	toolBlock := model.ContentBlock{Type: BlockTypeToolUse, Name: ToolNameRead, ID: TestToolID1}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{textBlock, toolBlock}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-text-before-tool", "user", "分析代码")
-	insertTestMessage(t, db, "session-preview-text-before-tool", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-text-before-tool", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-text-before-tool")
 	assert.Equal(t, "", result)
@@ -667,15 +667,15 @@ func TestGetSessionResponsePreview_RealData_TextThenToolThenSummary(t *testing.T
 	// Before fix: would return "方案一已经在上一轮实现了..." (intermediate commentary)
 	// After fix: should return "方案一已在 commit b4d7b73 中实现完毕..." (final answer)
 	blocks := []model.ContentBlock{
-		{Type: "thinking", Text: "Let me verify the current state of the implementation."},
-		{Type: "text", Text: "方案一已经在上一轮实现了。验证一下当前状态："},
-		{Type: "tool_use", Name: "Bash", ID: "tool-verify-1"},
-		{Type: "tool_use", Name: "Bash", ID: "tool-verify-2"},
-		{Type: "text", Text: "方案一已在 commit `b4d7b73` 中实现完毕，全部 14 个测试通过。"},
+		{Type: BlockTypeThinking, Text: "Let me verify the current state of the implementation."},
+		{Type: BlockTypeText, Text: "方案一已经在上一轮实现了。验证一下当前状态："},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-verify-1"},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-verify-2"},
+		{Type: BlockTypeText, Text: "方案一已在 commit `b4d7b73` 中实现完毕，全部 14 个测试通过。"},
 	}
-	contentJSON, _ := json.Marshal(map[string]any{"blocks": blocks})
+	contentJSON, _ := json.Marshal(map[string]any{BlockKeyBlocks: blocks})
 	insertTestMessage(t, db, "session-real-text-tool-summary", "user", "实现方案一")
-	insertTestMessage(t, db, "session-real-text-tool-summary", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-real-text-tool-summary", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-real-text-tool-summary")
 	assert.Equal(t, "方案一已在 commit `b4d7b73` 中实现完毕，全部 14 个测试通过。", result)
@@ -694,13 +694,13 @@ func TestGetSessionResponsePreview_RealData_ToolThenWorktreeReport(t *testing.T)
 	// Simple case: tool then final answer text — should return the text
 	finalText := "Worktree 已创建：\n\n- **路径**: `/root/code/clawbench/.worktrees/fix-push-summary-55`\n- **分支**: `fix/push-summary-55`"
 	blocks := []model.ContentBlock{
-		{Type: "thinking", Text: "I'll create a worktree for this fix."},
-		{Type: "tool_use", Name: "Bash", ID: "tool-worktree"},
-		{Type: "text", Text: finalText},
+		{Type: BlockTypeThinking, Text: "I'll create a worktree for this fix."},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-worktree"},
+		{Type: BlockTypeText, Text: finalText},
 	}
-	contentJSON, _ := json.Marshal(map[string]any{"blocks": blocks})
+	contentJSON, _ := json.Marshal(map[string]any{BlockKeyBlocks: blocks})
 	insertTestMessage(t, db, "session-real-tool-worktree", "user", "创建worktree")
-	insertTestMessage(t, db, "session-real-tool-worktree", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-real-tool-worktree", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-real-tool-worktree")
 	// Should start with the final answer, not with thinking or tool output
@@ -725,18 +725,18 @@ func TestGetSessionResponsePreview_RealData_MultiToolInterleavedWithText(t *test
 	//    tool_use(Bash), text("清理完成！总结一下做了什么：...")]
 	// 18 blocks total — should return the LAST text after the LAST tool_use
 	blocks := []model.ContentBlock{
-		{Type: "thinking", Text: "Let me investigate the root directory."},
-		{Type: "tool_use", Name: "Bash", ID: "tool-ls"},
-		{Type: "text", Text: "有问题！`/root/code/` 根目录下出现了不该有的文件。"},
-		{Type: "tool_use", Name: "Bash", ID: "tool-check-1"},
-		{Type: "tool_use", Name: "Bash", ID: "tool-check-2"},
-		{Type: "text", Text: "确认问题：这是某个子 Agent 误执行了 pnpm 命令。"},
-		{Type: "tool_use", Name: "Bash", ID: "tool-rm"},
-		{Type: "text", Text: "清理完成！总结一下做了什么：\n\n### 清理操作\n\n1. **删除了根目录误创建的文件**"},
+		{Type: BlockTypeThinking, Text: "Let me investigate the root directory."},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-ls"},
+		{Type: BlockTypeText, Text: "有问题！`/root/code/` 根目录下出现了不该有的文件。"},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-check-1"},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-check-2"},
+		{Type: BlockTypeText, Text: "确认问题：这是某个子 Agent 误执行了 pnpm 命令。"},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-rm"},
+		{Type: BlockTypeText, Text: "清理完成！总结一下做了什么：\n\n### 清理操作\n\n1. **删除了根目录误创建的文件**"},
 	}
-	contentJSON, _ := json.Marshal(map[string]any{"blocks": blocks})
+	contentJSON, _ := json.Marshal(map[string]any{BlockKeyBlocks: blocks})
 	insertTestMessage(t, db, "session-real-multi-interleaved", "user", "检查根目录")
-	insertTestMessage(t, db, "session-real-multi-interleaved", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-real-multi-interleaved", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-real-multi-interleaved")
 	// Should return text after last tool_use (tool-rm), not the earlier texts
@@ -755,13 +755,13 @@ func TestGetSessionResponsePreview_RealData_ThinkingThenToolThenIssueLink(t *tes
 	//   [thinking, tool_use(Bash), text("已创建 Issue: https://github.com/xulongzhe/clawbench/issues/55")]
 	// Short final text — perfect for push notification
 	blocks := []model.ContentBlock{
-		{Type: "thinking", Text: "I should create a GitHub issue for this bug."},
-		{Type: "tool_use", Name: "Bash", ID: "tool-gh-issue"},
-		{Type: "text", Text: "已创建 Issue: https://github.com/xulongzhe/clawbench/issues/55"},
+		{Type: BlockTypeThinking, Text: "I should create a GitHub issue for this bug."},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-gh-issue"},
+		{Type: BlockTypeText, Text: "已创建 Issue: https://github.com/xulongzhe/clawbench/issues/55"},
 	}
-	contentJSON, _ := json.Marshal(map[string]any{"blocks": blocks})
+	contentJSON, _ := json.Marshal(map[string]any{BlockKeyBlocks: blocks})
 	insertTestMessage(t, db, "session-real-issue-link", "user", "创建Issue")
-	insertTestMessage(t, db, "session-real-issue-link", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-real-issue-link", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-real-issue-link")
 	assert.Equal(t, "已创建 Issue: https://github.com/xulongzhe/clawbench/issues/55", result)
@@ -780,15 +780,15 @@ func TestGetSessionResponsePreview_RealData_ThreeToolsThenWorktreeReport(t *test
 	// Multiple consecutive tool_use blocks, then final text
 	finalText := "Worktree 已创建：\n\n- **路径**: `/root/code/clawbench/.worktrees/fix-jpush-init-timing`"
 	blocks := []model.ContentBlock{
-		{Type: "thinking", Text: "I need to create a worktree for the JPush fix."},
-		{Type: "tool_use", Name: "Bash", ID: "tool-fetch"},
-		{Type: "tool_use", Name: "Bash", ID: "tool-branch"},
-		{Type: "tool_use", Name: "Bash", ID: "tool-worktree"},
-		{Type: "text", Text: finalText},
+		{Type: BlockTypeThinking, Text: "I need to create a worktree for the JPush fix."},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-fetch"},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-branch"},
+		{Type: BlockTypeToolUse, Name: ToolNameBash, ID: "tool-worktree"},
+		{Type: BlockTypeText, Text: finalText},
 	}
-	contentJSON, _ := json.Marshal(map[string]any{"blocks": blocks})
+	contentJSON, _ := json.Marshal(map[string]any{BlockKeyBlocks: blocks})
 	insertTestMessage(t, db, "session-real-three-tools", "user", "创建worktree")
-	insertTestMessage(t, db, "session-real-three-tools", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-real-three-tools", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-real-three-tools")
 	assert.Contains(t, result, "Worktree 已创建")
@@ -809,11 +809,11 @@ func TestGetSessionResponsePreview_RealData_PureTextSummary(t *testing.T) {
 	// Pure text response — should return as-is (lastToolIdx=-1, scan from start)
 	finalText := "好的。后台耗电优化到此为止，总结已完成的改动：\n\n1. **`webView.onPause()`** — 后台停止渲染管线，释放 CPU/GPU\n2. **`webView.pauseTimers()`** — 强制停止所有 JS 定时器"
 	blocks := []model.ContentBlock{
-		{Type: "text", Text: finalText},
+		{Type: BlockTypeText, Text: finalText},
 	}
-	contentJSON, _ := json.Marshal(map[string]any{"blocks": blocks})
+	contentJSON, _ := json.Marshal(map[string]any{BlockKeyBlocks: blocks})
 	insertTestMessage(t, db, "session-real-pure-text", "user", "还有其他优化吗")
-	insertTestMessage(t, db, "session-real-pure-text", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-real-pure-text", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-real-pure-text")
 	assert.Contains(t, result, "后台耗电优化到此为止")
@@ -829,17 +829,17 @@ func TestGetSessionResponsePreview_UsesLastAssistantMessage(t *testing.T) {
 	DBRead = db // Same instance for :memory: SQLite — data is shared
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
-	firstContent := model.ContentBlock{Type: "text", Text: "第一次回复"}
-	firstBlocks := map[string]any{"blocks": []model.ContentBlock{firstContent}}
+	firstContent := model.ContentBlock{Type: BlockTypeText, Text: "第一次回复"}
+	firstBlocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{firstContent}}
 	firstJSON, _ := json.Marshal(firstBlocks)
 	insertTestMessage(t, db, "session-preview-5", "user", "问题1")
-	insertTestMessage(t, db, "session-preview-5", "assistant", string(firstJSON))
+	insertTestMessage(t, db, "session-preview-5", RoleAssistant, string(firstJSON))
 
-	secondContent := model.ContentBlock{Type: "text", Text: "第二次回复"}
-	secondBlocks := map[string]any{"blocks": []model.ContentBlock{secondContent}}
+	secondContent := model.ContentBlock{Type: BlockTypeText, Text: "第二次回复"}
+	secondBlocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{secondContent}}
 	secondJSON, _ := json.Marshal(secondBlocks)
 	insertTestMessage(t, db, "session-preview-5", "user", "问题2")
-	insertTestMessage(t, db, "session-preview-5", "assistant", string(secondJSON))
+	insertTestMessage(t, db, "session-preview-5", RoleAssistant, string(secondJSON))
 
 	result := getSessionResponsePreview("session-preview-5")
 	assert.Equal(t, "第二次回复", result)
@@ -854,7 +854,7 @@ func TestGetSessionResponsePreview_InvalidJSON(t *testing.T) {
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
 	insertTestMessage(t, db, "session-preview-6", "user", "问题")
-	insertTestMessage(t, db, "session-preview-6", "assistant", "not valid json {{{")
+	insertTestMessage(t, db, "session-preview-6", RoleAssistant, "not valid json {{{")
 
 	result := getSessionResponsePreview("session-preview-6")
 	assert.Equal(t, "", result)
@@ -868,11 +868,11 @@ func TestGetSessionResponsePreview_NoTextBlocks(t *testing.T) {
 	DBRead = db // Same instance for :memory: SQLite — data is shared
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
-	toolBlock := model.ContentBlock{Type: "tool_use", Name: "Read", ID: "tool-1"}
-	blocks := map[string]any{"blocks": []model.ContentBlock{toolBlock}}
+	toolBlock := model.ContentBlock{Type: BlockTypeToolUse, Name: ToolNameRead, ID: TestToolID1}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{toolBlock}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-7", "user", "问题")
-	insertTestMessage(t, db, "session-preview-7", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-7", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-7")
 	assert.Equal(t, "", result)
@@ -888,11 +888,11 @@ func TestGetSessionResponsePreview_ExactMaxRunes(t *testing.T) {
 
 	// Exactly responsePreviewMaxRunes runes — should NOT be truncated
 	exactText := strings.Repeat("一二三四", responsePreviewMaxRunes/4)
-	content := model.ContentBlock{Type: "text", Text: exactText}
-	blocks := map[string]any{"blocks": []model.ContentBlock{content}}
+	content := model.ContentBlock{Type: BlockTypeText, Text: exactText}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{content}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-8", "user", "问题")
-	insertTestMessage(t, db, "session-preview-8", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-8", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-8")
 	assert.Equal(t, exactText, result)
@@ -909,11 +909,11 @@ func TestGetSessionResponsePreview_OneOverMaxRunes(t *testing.T) {
 
 	// responsePreviewMaxRunes+1 runes — should be truncated to maxRunes + …
 	longText := strings.Repeat("一二三四", responsePreviewMaxRunes/4) + "五"
-	content := model.ContentBlock{Type: "text", Text: longText}
-	blocks := map[string]any{"blocks": []model.ContentBlock{content}}
+	content := model.ContentBlock{Type: BlockTypeText, Text: longText}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{content}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-preview-9", "user", "问题")
-	insertTestMessage(t, db, "session-preview-9", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-preview-9", RoleAssistant, string(contentJSON))
 
 	result := getSessionResponsePreview("session-preview-9")
 	assert.Equal(t, strings.Repeat("一二三四", responsePreviewMaxRunes/4)+"…", result)
@@ -930,16 +930,16 @@ func TestEmitSessionEvent_CompletedWithPreview(t *testing.T) {
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
 	// Insert assistant message for preview
-	content := model.ContentBlock{Type: "text", Text: "AI完成了任务"}
-	blocks := map[string]any{"blocks": []model.ContentBlock{content}}
+	content := model.ContentBlock{Type: BlockTypeText, Text: "AI完成了任务"}
+	blocks := map[string]any{BlockKeyBlocks: []model.ContentBlock{content}}
 	contentJSON, _ := json.Marshal(blocks)
 	insertTestMessage(t, db, "session-emit-1", "user", "问题")
-	insertTestMessage(t, db, "session-emit-1", "assistant", string(contentJSON))
+	insertTestMessage(t, db, "session-emit-1", RoleAssistant, string(contentJSON))
 
 	// Insert a session row so GetSessionProjectPath can look it up
-	_, err := db.Exec("CREATE TABLE IF NOT EXISTS chat_sessions (id TEXT PRIMARY KEY, project_path TEXT, backend TEXT, title TEXT)")
+	_, err := db.ExecContext(context.Background(), "CREATE TABLE IF NOT EXISTS chat_sessions (id TEXT PRIMARY KEY, project_path TEXT, backend TEXT, title TEXT)")
 	require.NoError(t, err)
-	_, err = db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, ?, ?, ?)",
+	_, err = db.ExecContext(context.Background(), "INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, ?, ?, ?)",
 		"session-emit-1", "/home/user/test-project", "codebuddy", "Test Session")
 	require.NoError(t, err)
 
@@ -1230,9 +1230,9 @@ func setupExecTaskDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(execTaskSchema)
+	_, err = db.ExecContext(context.Background(), execTaskSchema)
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -1258,8 +1258,8 @@ func TestExecuteTask_BackendCreationFailed(t *testing.T) {
 	defer func() { model.Agents = origAgents }()
 
 	// Insert a task into DB so the foreign key in task_executions works
-	result, err := db.Exec(`INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, repeat_mode, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"/test-project", "Test Task", "0 * * * *", "test-unsupported-backend", "hello", "unlimited", "active")
+	result, err := db.ExecContext(context.Background(), `INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, repeat_mode, status) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"/test-project", "Test Task", "0 * * * *", "test-unsupported-backend", TestHello, "unlimited", StatusActive)
 	require.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
@@ -1270,9 +1270,9 @@ func TestExecuteTask_BackendCreationFailed(t *testing.T) {
 		Name:        "Test Task",
 		CronExpr:    "0 * * * *",
 		AgentID:     "test-unsupported-backend",
-		Prompt:      "hello",
+		Prompt:      TestHello,
 		RepeatMode:  "unlimited",
-		Status:      "active",
+		Status:      StatusActive,
 	}
 
 	s := NewScheduler()

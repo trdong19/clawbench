@@ -9,8 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +18,42 @@ import (
 	"clawbench/internal/platform"
 
 	"gopkg.in/yaml.v3"
+)
+
+// Backend name constants used in BackendRegistry and model discovery.
+const (
+	BackendClaude    = "claude"
+	BackendCodebuddy = "codebuddy"
+	BackendOpenCode  = "opencode"
+	BackendGemini    = "gemini"
+	BackendCodex     = "codex"
+	BackendVeCLI     = "vecli"
+	BackendDeepSeek  = "deepseek"
+
+	// Thinking effort level constants.
+	ThinkingLow     = "low"
+	ThinkingMedium  = "medium"
+	ThinkingHigh    = "high"
+	ThinkingXHigh   = "xhigh"
+	ThinkingMax     = "max"
+	ThinkingMinimal = "minimal"
+	ThinkingOff     = "off"
+
+	// Model discovery command constants.
+	CmdModels = "models"
+
+	// Model ID filter constants.
+	ModelAuto    = "auto"
+	ModelDefault = "default"
+
+	// Architecture constants.
+	ArchAMD64 = "amd64"
+	ArchARM64 = "arm64"
+
+	// Codex model ID constants.
+	CodexGPT55     = "gpt-5.5"
+	CodexGPT54     = "gpt-5.4"
+	CodexGPT54Mini = "gpt-5.4-mini"
 )
 
 // BackendSpec defines a known AI backend for auto-discovery.
@@ -40,29 +76,47 @@ type BackendSpec struct {
 // is found on PATH, a YAML config is generated for that backend.
 // For backends with ListModelsCmd+ParseModels, model lists are auto-discovered too.
 var BackendRegistry = []BackendSpec{
-	{ID: "claude", Backend: "claude", DefaultCmd: "claude", Name: "Claude", Icon: "🤖", Specialty: "代码编写与推理",
-		DiscoverModelsFunc: DiscoverClaudeModels,
-		ThinkingEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}},
-	{ID: "codebuddy", Backend: "codebuddy", DefaultCmd: "codebuddy", Name: "Codebuddy", Icon: "🐛", Specialty: "全栈开发助手",
-		DiscoverModelsFunc: DiscoverCodebuddyModels,
-		ThinkingEffortLevels: []string{"low", "medium", "high", "xhigh"}},
-	{ID: "opencode", Backend: "opencode", DefaultCmd: "opencode", Name: "OpenCode", Icon: "📟", Specialty: "终端编码工具",
-		ListModelsCmd: []string{"models"}, ParseModels: ParseOpenCodeModels,
-		ThinkingEffortLevels: []string{"minimal", "high", "max"}},
-	{ID: "gemini", Backend: "gemini", DefaultCmd: "gemini", Name: "Gemini", Icon: "💎", Specialty: "多模态推理",
-		DiscoverModelsFunc: DiscoverGeminiModels},
-	{ID: "codex", Backend: "codex", DefaultCmd: "codex", Name: "Codex", Icon: "🐙", Specialty: "OpenAI 编码代理",
-		DiscoverModelsFunc: DiscoverCodexModels,
-		ThinkingEffortLevels: []string{"low", "medium", "high"}},
-	{ID: "qoder", Backend: "qoder", DefaultCmd: "qodercli", Name: "Qoder", Icon: "⚡", Specialty: "AI 编码助手",
-		DiscoverModelsFunc: DiscoverQoderModels},
-	{ID: "vecli", Backend: "vecli", DefaultCmd: "vecli", Name: "VeCLI", Icon: "🌿", Specialty: "字节跳动 AI 助手",
-		DiscoverModelsFunc: DiscoverVeCLIModels},
-	{ID: "deepseek", Backend: "deepseek", DefaultCmd: "deepseek", Name: "DeepSeek", Icon: "🔍", Specialty: "DeepSeek 推理与编码",
-		ListModelsCmd: []string{"models"}, ParseModels: ParseDeepSeekModels},
-	{ID: "pi", Backend: "pi", DefaultCmd: "pi", Name: "Pi", Icon: "🥧", Specialty: "极简编程智能体",
-		DiscoverModelsFunc: DiscoverPiModels,
-		ThinkingEffortLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh"}},
+	{
+		ID: BackendClaude, Backend: BackendClaude, DefaultCmd: BackendClaude, Name: "Claude", Icon: "🤖", Specialty: "代码编写与推理",
+		DiscoverModelsFunc:   DiscoverClaudeModels,
+		ThinkingEffortLevels: []string{ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingXHigh, ThinkingMax},
+	},
+	{
+		ID: BackendCodebuddy, Backend: BackendCodebuddy, DefaultCmd: BackendCodebuddy, Name: "Codebuddy", Icon: "🐛", Specialty: "全栈开发助手",
+		DiscoverModelsFunc:   DiscoverCodebuddyModels,
+		ThinkingEffortLevels: []string{ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingXHigh},
+	},
+	{
+		ID: BackendOpenCode, Backend: BackendOpenCode, DefaultCmd: BackendOpenCode, Name: "OpenCode", Icon: "📟", Specialty: "终端编码工具",
+		ListModelsCmd: []string{CmdModels}, ParseModels: ParseOpenCodeModels,
+		ThinkingEffortLevels: []string{ThinkingMinimal, ThinkingHigh, ThinkingMax},
+	},
+	{
+		ID: BackendGemini, Backend: BackendGemini, DefaultCmd: BackendGemini, Name: "Gemini", Icon: "💎", Specialty: "多模态推理",
+		DiscoverModelsFunc: DiscoverGeminiModels,
+	},
+	{
+		ID: BackendCodex, Backend: BackendCodex, DefaultCmd: BackendCodex, Name: "Codex", Icon: "🐙", Specialty: "OpenAI 编码代理",
+		DiscoverModelsFunc:   DiscoverCodexModels,
+		ThinkingEffortLevels: []string{ThinkingLow, ThinkingMedium, ThinkingHigh},
+	},
+	{
+		ID: "qoder", Backend: "qoder", DefaultCmd: "qodercli", Name: "Qoder", Icon: "⚡", Specialty: "AI 编码助手",
+		DiscoverModelsFunc: DiscoverQoderModels,
+	},
+	{
+		ID: BackendVeCLI, Backend: BackendVeCLI, DefaultCmd: BackendVeCLI, Name: "VeCLI", Icon: "🌿", Specialty: "字节跳动 AI 助手",
+		DiscoverModelsFunc: DiscoverVeCLIModels,
+	},
+	{
+		ID: BackendDeepSeek, Backend: BackendDeepSeek, DefaultCmd: BackendDeepSeek, Name: "DeepSeek", Icon: "🔍", Specialty: "DeepSeek 推理与编码",
+		ListModelsCmd: []string{CmdModels}, ParseModels: ParseDeepSeekModels,
+	},
+	{
+		ID: "pi", Backend: "pi", DefaultCmd: "pi", Name: "Pi", Icon: "🥧", Specialty: "极简编程智能体",
+		DiscoverModelsFunc:   DiscoverPiModels,
+		ThinkingEffortLevels: []string{ThinkingOff, ThinkingMinimal, ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingXHigh},
+	},
 }
 
 // CheckCLIExists checks whether a CLI command is available on the system.
@@ -194,7 +248,7 @@ func FindSpecByBackend(backend string) *BackendSpec {
 // Existing files are not overwritten.
 func DiscoverAgents(dir string) error {
 	// Ensure directory exists
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create agents directory: %w", err)
 	}
 
@@ -237,7 +291,7 @@ func DiscoverAgents(dir string) error {
 			continue
 		}
 
-		if err := os.WriteFile(yamlPath, data, 0644); err != nil {
+		if err := os.WriteFile(yamlPath, data, 0o600); err != nil {
 			skipped++
 			continue
 		}
@@ -253,8 +307,10 @@ func DiscoverAgents(dir string) error {
 // 1. Detects all installed CLIs from BackendRegistry.
 // 2. Generates minimal YAML for newly found backends (no overwrite).
 // 3. Returns a set of backend types whose CLI is currently present.
+//
+//nolint:gocognit,gocyclo // discovery logic is inherently multi-branch
 func SyncDiscoverAgents(dir string) map[string]bool {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		slog.Warn("failed to create agents directory", "dir", dir, "error", err)
 		return nil
 	}
@@ -298,7 +354,7 @@ func SyncDiscoverAgents(dir string) map[string]bool {
 			slog.Warn("failed to generate agent YAML", "backend", r.spec.ID, "error", err)
 			continue
 		}
-		if err := os.WriteFile(yamlPath, data, 0644); err != nil {
+		if err := os.WriteFile(yamlPath, data, 0o600); err != nil {
 			slog.Warn("failed to write agent YAML", "path", yamlPath, "error", err)
 			continue
 		}
@@ -392,10 +448,10 @@ func AsyncRefreshModelCache(cacheDir string) {
 // --- Model list parsers ---
 
 // MergeDiscoveredData fills models and thinking_effort_levels for loaded agents.
-// - Models: uses user-defined models if present; otherwise reads from model cache.
-// - ThinkingEffortLevels: always from BackendRegistry by backend type (YAML values ignored).
-// - Present map: if provided, agents whose backend is not in present are soft-removed
-//   (removed from AgentList/Agents map, but YAML file is preserved).
+//   - Models: uses user-defined models if present; otherwise reads from model cache.
+//   - ThinkingEffortLevels: always from BackendRegistry by backend type (YAML values ignored).
+//   - Present map: if provided, agents whose backend is not in present are soft-removed
+//     (removed from AgentList/Agents map, but YAML file is preserved).
 func MergeDiscoveredData(cacheDir string, present ...map[string]bool) {
 	var presentMap map[string]bool
 	if len(present) > 0 {
@@ -457,7 +513,7 @@ type codebuddyProduct struct {
 // file from the CLI installation directory. This JSON file contains the authoritative model
 // list with proper names and default status, making it far more reliable than --help output
 // (which launches a TUI that hangs without a TTY) or JS bundle scanning (which is fragile).
-func DiscoverCodebuddyModels() []AgentModel {
+func DiscoverCodebuddyModels() []AgentModel { //nolint:gocyclo // sequential model discovery with many fallback branches
 	// Find the codebuddy binary path
 	path, err := exec.LookPath("codebuddy")
 	if err != nil {
@@ -496,7 +552,7 @@ func DiscoverCodebuddyModels() []AgentModel {
 	var models []AgentModel
 	for _, m := range product.Models {
 		// Skip pseudo-models like "default" and "auto" — these are selectors, not real model IDs
-		if m.ID == "default" || m.ID == "auto" {
+		if m.ID == ModelDefault || m.ID == ModelAuto {
 			continue
 		}
 		// Skip non-LLM models (e.g. text-to-image)
@@ -510,7 +566,7 @@ func DiscoverCodebuddyModels() []AgentModel {
 		models = append(models, AgentModel{
 			ID:      m.ID,
 			Name:    name,
-			Default: m.IsDefault || (len(models) == 0 && m.ID != "default" && m.ID != "auto"),
+			Default: m.IsDefault || (len(models) == 0 && m.ID != "default" && m.ID != ModelAuto),
 		})
 	}
 
@@ -533,6 +589,7 @@ var codebuddyModelRe = regexp.MustCompile(`Currently supported: \(([^)]+)\)`)
 
 // ParseCodebuddyModels parses codebuddy --help output to extract model IDs.
 // Output format: "... --model <model>  Model for the current session. ... Currently supported: (glm-4.7, glm-4.6, ...)"
+//
 // Deprecated: codebuddy --help launches a TUI that hangs without a TTY; use DiscoverCodebuddyModels instead.
 func ParseCodebuddyModels(output string) []AgentModel {
 	matches := codebuddyModelRe.FindStringSubmatch(output)
@@ -613,7 +670,7 @@ func claudeIsDateStamped(modelID string) bool {
 // DiscoverClaudeModels discovers Claude model IDs by scanning the claude binary
 // with `strings`. Claude CLI does not have a --list-models command, so we extract
 // model IDs from the binary which contains hardcoded model name patterns.
-func DiscoverClaudeModels() []AgentModel {
+func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo // sequential model discovery with many fallback branches
 	// Find the claude binary path
 	path, err := exec.LookPath("claude")
 	if err != nil {
@@ -768,7 +825,7 @@ func ParseOpenCodeModels(output string) []AgentModel {
 		}
 
 		models = append(models, AgentModel{
-			ID:      line, // full "provider/model" as ID (opencode uses this format)
+			ID:      line,              // full "provider/model" as ID (opencode uses this format)
 			Name:    m[1] + "/" + m[2], // include provider in display name for disambiguation
 			Default: len(models) == 0,
 		})
@@ -862,20 +919,8 @@ var geminiFamilyRe = regexp.MustCompile(`family:\s*"([^"]+)"`)
 // in the Gemini CLI npm package directory. The model definitions are embedded in
 // chunk-*.js files with isVisible: true/false markers.
 func DiscoverGeminiModels() []AgentModel {
-	path, err := exec.LookPath("gemini")
+	bundleDir, err := resolveGeminiBundleDir()
 	if err != nil {
-		return nil
-	}
-
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		realPath = path
-	}
-
-	// Navigate to the bundle directory: .../node_modules/@google/gemini-cli/bundle/
-	bundleDir := filepath.Dir(realPath)
-	if filepath.Base(bundleDir) != "bundle" {
-		slog.Debug("gemini model discovery: unexpected path layout", "path", realPath)
 		return nil
 	}
 
@@ -885,72 +930,7 @@ func DiscoverGeminiModels() []AgentModel {
 		return nil
 	}
 
-	type modelEntry struct {
-		id     string
-		tier   string
-		family string
-	}
-
-	seen := make(map[string]bool)
-	var found []modelEntry
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "chunk-") || !strings.HasSuffix(entry.Name(), ".js") {
-			continue
-		}
-
-		data, err := os.ReadFile(filepath.Join(bundleDir, entry.Name()))
-		if err != nil {
-			continue
-		}
-
-		content := string(data)
-		matches := geminiModelDefRe.FindAllStringSubmatchIndex(content, -1)
-		for _, match := range matches {
-			if len(match) < 4 {
-				continue
-			}
-			modelID := content[match[2]:match[3]]
-
-			// Skip aliases (auto-gemini-*, single-word aliases)
-			if strings.HasPrefix(modelID, "auto-gemini-") {
-				continue
-			}
-			// Skip customtools and base variants
-			if strings.HasSuffix(modelID, "-customtools") || strings.HasSuffix(modelID, "-base") {
-				continue
-			}
-			if seen[modelID] {
-				continue
-			}
-
-			// Check for isVisible: true within ~500 chars after the opening brace
-			braceStart := match[1]
-			lookEnd := braceStart + 500
-			if lookEnd > len(content) {
-				lookEnd = len(content)
-			}
-			block := content[braceStart:lookEnd]
-
-			if !geminiIsVisibleRe.MatchString(block) {
-				continue
-			}
-
-			seen[modelID] = true
-
-			tier := ""
-			family := ""
-			if m := geminiTierRe.FindStringSubmatch(block); len(m) >= 2 {
-				tier = m[1]
-			}
-			if m := geminiFamilyRe.FindStringSubmatch(block); len(m) >= 2 {
-				family = m[1]
-			}
-
-			found = append(found, modelEntry{id: modelID, tier: tier, family: family})
-		}
-	}
-
+	found := scanGeminiBundleFiles(entries, bundleDir)
 	if len(found) == 0 {
 		return nil
 	}
@@ -970,16 +950,117 @@ func DiscoverGeminiModels() []AgentModel {
 		return found[i].id > found[j].id
 	})
 
-	var models []AgentModel
+	models := geminiEntriesToModels(found)
+	slog.Info("gemini model discovery succeeded", "models", len(models))
+	return models
+}
+
+// geminiModelEntry holds a discovered Gemini model with its metadata.
+type geminiModelEntry struct {
+	id     string
+	tier   string
+	family string
+}
+
+// resolveGeminiBundleDir locates the Gemini CLI bundle directory.
+func resolveGeminiBundleDir() (string, error) {
+	path, err := exec.LookPath(BackendGemini)
+	if err != nil {
+		return "", err
+	}
+
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		realPath = path
+	}
+
+	bundleDir := filepath.Dir(realPath)
+	if filepath.Base(bundleDir) != "bundle" {
+		slog.Debug("gemini model discovery: unexpected path layout", "path", realPath)
+		return "", fmt.Errorf("unexpected gemini path layout")
+	}
+	return bundleDir, nil
+}
+
+// scanGeminiBundleFiles scans chunk-*.js files for visible model definitions.
+func scanGeminiBundleFiles(entries []os.DirEntry, bundleDir string) []geminiModelEntry {
+	seen := make(map[string]bool)
+	var found []geminiModelEntry
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "chunk-") || !strings.HasSuffix(entry.Name(), ".js") {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(bundleDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+
+		content := string(data)
+		found = append(found, extractVisibleGeminiModels(content, seen)...)
+	}
+	return found
+}
+
+// extractVisibleGeminiModels parses model definitions from a single JS bundle file.
+func extractVisibleGeminiModels(content string, seen map[string]bool) []geminiModelEntry {
+	var found []geminiModelEntry
+	matches := geminiModelDefRe.FindAllStringSubmatchIndex(content, -1)
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		modelID := content[match[2]:match[3]]
+
+		if strings.HasPrefix(modelID, "auto-gemini-") {
+			continue
+		}
+		if strings.HasSuffix(modelID, "-customtools") || strings.HasSuffix(modelID, "-base") {
+			continue
+		}
+		if seen[modelID] {
+			continue
+		}
+
+		// Check for isVisible: true within ~500 chars after the opening brace
+		braceStart := match[1]
+		lookEnd := braceStart + 500
+		if lookEnd > len(content) {
+			lookEnd = len(content)
+		}
+		block := content[braceStart:lookEnd]
+
+		if !geminiIsVisibleRe.MatchString(block) {
+			continue
+		}
+
+		seen[modelID] = true
+
+		tier := ""
+		family := ""
+		if m := geminiTierRe.FindStringSubmatch(block); len(m) >= 2 {
+			tier = m[1]
+		}
+		if m := geminiFamilyRe.FindStringSubmatch(block); len(m) >= 2 {
+			family = m[1]
+		}
+
+		found = append(found, geminiModelEntry{id: modelID, tier: tier, family: family})
+	}
+	return found
+}
+
+// geminiEntriesToModels converts gemini model entries to AgentModel slice.
+func geminiEntriesToModels(found []geminiModelEntry) []AgentModel {
+	models := make([]AgentModel, len(found))
 	for i, e := range found {
-		models = append(models, AgentModel{
+		models[i] = AgentModel{
 			ID:      e.id,
 			Name:    e.id,
 			Default: i == 0,
-		})
+		}
 	}
-
-	slog.Info("gemini model discovery succeeded", "models", len(models))
 	return models
 }
 
@@ -990,11 +1071,11 @@ var codexModelRe = regexp.MustCompile(`^(gpt-\d+\.\d+(-mini)?|o[34](-mini)?)$`)
 
 // codexModelOrder defines the preferred display order for Codex models.
 var codexModelOrder = map[string]int{
-	"gpt-5.5":      0,
-	"gpt-5.4":      1,
-	"gpt-5.4-mini": 2,
-	"o3":            3,
-	"o4-mini":       4,
+	CodexGPT55:     0,
+	CodexGPT54:     1,
+	CodexGPT54Mini: 2,
+	"o3":           3,
+	"o4-mini":      4,
 }
 
 // codexTargetTriple returns the Rust target triple for the current platform.
@@ -1003,23 +1084,23 @@ func codexTargetTriple() string {
 	switch runtime.GOOS {
 	case "linux", "android":
 		switch arch {
-		case "amd64":
+		case ArchAMD64:
 			return "x86_64-unknown-linux-musl"
-		case "arm64":
+		case ArchARM64:
 			return "aarch64-unknown-linux-musl"
 		}
 	case "darwin":
 		switch arch {
-		case "amd64":
+		case ArchAMD64:
 			return "x86_64-apple-darwin"
-		case "arm64":
+		case ArchARM64:
 			return "aarch64-apple-darwin"
 		}
 	case "windows":
 		switch arch {
-		case "amd64":
+		case ArchAMD64:
 			return "x86_64-pc-windows-msvc"
-		case "arm64":
+		case ArchARM64:
 			return "aarch64-pc-windows-msvc"
 		}
 	}
@@ -1075,7 +1156,7 @@ func discoverCodexModelsFromBinary() []AgentModel {
 	}
 	binaryPath := filepath.Join(vendorDir, targetTriple, "codex", binaryName)
 
-	if _, err := os.Stat(binaryPath); err != nil {
+	if _, statErr := os.Stat(binaryPath); statErr != nil {
 		return nil
 	}
 
@@ -1163,9 +1244,9 @@ func discoverCodexModelsFromStateDB() []AgentModel {
 // These are updated manually based on OpenAI's model catalog.
 // When the strings approach or state DB approach works, those take priority.
 var codexDefaultModels = []AgentModel{
-	{ID: "gpt-5.5", Name: "GPT-5.5", Default: true},
-	{ID: "gpt-5.4", Name: "GPT-5.4", Default: false},
-	{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini", Default: false},
+	{ID: CodexGPT55, Name: "GPT-5.5", Default: true},
+	{ID: CodexGPT54, Name: "GPT-5.4", Default: false},
+	{ID: CodexGPT54Mini, Name: "GPT-5.4 Mini", Default: false},
 }
 
 // discoverCodexModelsDefaults returns hardcoded default models for Codex.
@@ -1199,7 +1280,7 @@ var qoderModelKeyRe = regexp.MustCompile(`^modelSelector\.item\.(.+)$`)
 
 // DiscoverQoderModels discovers Qoder model IDs by reading the cached model catalog
 // from ~/.qoder/.auth/dynamic-texts.json.
-func DiscoverQoderModels() []AgentModel {
+func DiscoverQoderModels() []AgentModel { //nolint:gocyclo // sequential model discovery with many fallback branches
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		slog.Debug("qoder model discovery: cannot determine home directory", "error", err)
@@ -1305,7 +1386,7 @@ var vecliModelNameRe = regexp.MustCompile(`name:\s*"([^"]+)"`)
 // DiscoverVeCLIModels discovers VeCLI model IDs by parsing the MODEL_REGISTRY array
 // embedded in the VeCLI JS bundle. All models are included regardless of enabled status
 // (users can still select disabled models via -m flag; enabled only controls the CLI's default UI).
-func DiscoverVeCLIModels() []AgentModel {
+func DiscoverVeCLIModels() []AgentModel { //nolint:gocyclo // sequential model discovery with many fallback branches
 	path, err := exec.LookPath("vecli")
 	if err != nil {
 		return nil

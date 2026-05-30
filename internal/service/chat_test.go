@@ -41,7 +41,6 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 	model TEXT DEFAULT '',
 	session_type TEXT NOT NULL DEFAULT 'chat',
 	external_session_id TEXT DEFAULT '',
-	source_session_id TEXT DEFAULT NULL,
 	thinking_effort TEXT DEFAULT '',
 	deleted INTEGER NOT NULL DEFAULT 0,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -55,14 +54,15 @@ CREATE TABLE IF NOT EXISTS recent_projects (
 	accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	id TEXT PRIMARY KEY,
 	project_path TEXT NOT NULL,
 	name TEXT NOT NULL,
+	description TEXT,
 	cron_expr TEXT NOT NULL,
 	agent_id TEXT NOT NULL,
 	prompt TEXT NOT NULL,
-	session_id TEXT DEFAULT '',
-	status TEXT DEFAULT 'active',
+	session_id TEXT,
+	status TEXT NOT NULL DEFAULT 'active',
 	repeat_mode TEXT NOT NULL DEFAULT 'unlimited',
 	max_runs INTEGER DEFAULT 0,
 	last_run_at DATETIME,
@@ -74,19 +74,16 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
 );
 CREATE TABLE IF NOT EXISTS task_executions (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	task_id INTEGER NOT NULL,
+	task_id TEXT NOT NULL,
 	session_id TEXT NOT NULL,
 	trigger_type TEXT NOT NULL DEFAULT 'auto',
 	status TEXT NOT NULL DEFAULT 'completed',
-	read_at DATETIME,
-	summary TEXT,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_executions_task ON task_executions(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_history_session ON chat_history(project_path, backend, session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project_backend ON chat_sessions(project_path, backend);
 CREATE INDEX IF NOT EXISTS idx_executions_session ON task_executions(session_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_project ON scheduled_tasks(project_path, created_at DESC);
 CREATE TABLE IF NOT EXISTS ai_raw_responses (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	session_id TEXT NOT NULL,
@@ -95,25 +92,16 @@ CREATE TABLE IF NOT EXISTS ai_raw_responses (
 	raw_output TEXT NOT NULL,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS summaries (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	target_type TEXT NOT NULL,
-	target_id   INTEGER NOT NULL,
-	summary     TEXT NOT NULL,
-	created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-	UNIQUE(target_type, target_id)
-);
-CREATE INDEX IF NOT EXISTS idx_sessions_source_session ON chat_sessions(source_session_id) WHERE source_session_id IS NOT NULL;
 `
 
 // setupDB creates an in-memory SQLite database with the required schema,
 // sets service.DB, and returns a cleanup function.
-func setupDB(t *testing.T) *sql.DB {
+func setupDB(t *testing.T) {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	assert.NoError(t, err)
 
-	_, err = db.Exec(schema)
+	_, err = db.ExecContext(context.Background(), schema)
 	assert.NoError(t, err)
 
 	origDB := service.DB
@@ -123,9 +111,8 @@ func setupDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() {
 		service.DB = origDB
 		service.DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	})
-	return db
 }
 
 // helperCreateSession creates a session and asserts success, returning the session ID.
@@ -141,9 +128,9 @@ func helperCreateSession(t *testing.T, projectPath, backend, title string) strin
 }
 
 // helperCreateScheduledSession creates a scheduled session and asserts success.
-func helperCreateScheduledSession(t *testing.T, projectPath, backend, title string) string {
+func helperCreateScheduledSession(t *testing.T, _ /* backend */, title string) string {
 	t.Helper()
-	id, err := service.CreateSession(projectPath, backend, title, "", "", "default", "scheduled")
+	id, err := service.CreateSession("/project", "claude", title, "", "", "default", "scheduled")
 	assert.NoError(t, err)
 	assert.NotEmpty(t, id)
 	return id
@@ -213,7 +200,7 @@ func TestAddChatMessage_AutoTitleTruncated(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 53, utf8.RuneCountInString(title)) // 50 runes + "..."
 	runes := []rune(title)
-	assert.Equal(t, "啊", string(runes[49]))  // 50th rune is still content
+	assert.Equal(t, "啊", string(runes[49]))    // 50th rune is still content
 	assert.Equal(t, "...", string(runes[50:])) // followed by ellipsis
 }
 
@@ -353,18 +340,18 @@ func TestDeleteSession(t *testing.T) {
 
 	// But data is still physically present (soft delete, not hard delete)
 	var deleted int
-	err = service.DB.QueryRow("SELECT deleted FROM chat_sessions WHERE id = ?", sid).Scan(&deleted)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT deleted FROM chat_sessions WHERE id = ?", sid).Scan(&deleted)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, deleted)
 
 	var msgDeleted int
-	err = service.DB.QueryRow("SELECT deleted FROM chat_history WHERE session_id = ?", sid).Scan(&msgDeleted)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT deleted FROM chat_history WHERE session_id = ?", sid).Scan(&msgDeleted)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, msgDeleted)
 
 	// updated_at should have been set to the deletion timestamp
 	var updatedAt string
-	err = service.DB.QueryRow("SELECT updated_at FROM chat_sessions WHERE id = ?", sid).Scan(&updatedAt)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT updated_at FROM chat_sessions WHERE id = ?", sid).Scan(&updatedAt)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, updatedAt)
 }
@@ -817,9 +804,9 @@ func TestGetSessions_OrderedByUpdatedDesc(t *testing.T) {
 
 	// Set explicit timestamps to guarantee ordering (SQLite time precision is seconds,
 	// AddChatMessage may land in the same second as creation making order nondeterministic)
-	_, err := service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', '-60 seconds') WHERE id = ?", sid1)
+	_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', '-60 seconds') WHERE id = ?", sid1)
 	assert.NoError(t, err)
-	_, err = service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?", sid2)
+	_, err = service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?", sid2)
 	assert.NoError(t, err)
 
 	sessions, err := service.GetSessions("/project", "claude")
@@ -942,11 +929,11 @@ func TestGetMessageIDBeforeTime(t *testing.T) {
 	sid := helperCreateSession(t, "/project", "claude", "BeforeTime")
 
 	// Insert messages with known timestamps
-	service.DB.Exec("INSERT INTO chat_history (project_path, backend, session_id, role, content, created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	_, _ = service.DB.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, backend, session_id, role, content, created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		"/project", "claude", sid, "user", "msg1", "2025-01-01 10:00:00", 0)
-	service.DB.Exec("INSERT INTO chat_history (project_path, backend, session_id, role, content, created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	_, _ = service.DB.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, backend, session_id, role, content, created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		"/project", "claude", sid, "assistant", "msg2", "2025-01-01 10:00:01", 0)
-	service.DB.Exec("INSERT INTO chat_history (project_path, backend, session_id, role, content, created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	_, _ = service.DB.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, backend, session_id, role, content, created_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		"/project", "claude", sid, "user", "msg3", "2025-01-01 10:00:02", 0)
 
 	// Query for messages before 10:00:02 — should return max ID of messages before that time
@@ -992,8 +979,8 @@ func TestUpdateThenFinalizeStreaming(t *testing.T) {
 	_, _ = service.AddChatMessage("/project", "claude", sid, "assistant", "start", nil, true, "")
 
 	// Update content multiple times
-	service.UpdateStreamingMessage("/project", "claude", sid, "start + more")
-	service.UpdateStreamingMessage("/project", "claude", sid, "start + more + final")
+	_ = service.UpdateStreamingMessage("/project", "claude", sid, "start + more")
+	_ = service.UpdateStreamingMessage("/project", "claude", sid, "start + more + final")
 
 	// Verify still streaming
 	msgs, _ := service.GetChatHistory("/project", "claude", sid)
@@ -1001,7 +988,7 @@ func TestUpdateThenFinalizeStreaming(t *testing.T) {
 	assert.Equal(t, "start + more + final", msgs[0].Content)
 
 	// Finalize
-	service.FinalizeStreamingMessage("/project", "claude", sid, "complete response")
+	_ = service.FinalizeStreamingMessage("/project", "claude", sid, "complete response")
 
 	msgs, _ = service.GetChatHistory("/project", "claude", sid)
 	assert.False(t, msgs[0].Streaming)
@@ -1030,8 +1017,8 @@ func TestGetChatMessageCount(t *testing.T) {
 	// Initially 0
 	assert.Equal(t, 0, service.GetChatMessageCount(sid))
 	// Add messages
-	service.AddChatMessage("/project", "claude", sid, "user", "Hello", nil, false, "NewSession")
-	service.AddChatMessage("/project", "claude", sid, "assistant", "Hi", nil, false, "NewSession")
+	_, _ = service.AddChatMessage("/project", "claude", sid, "user", "Hello", nil, false, "NewSession")
+	_, _ = service.AddChatMessage("/project", "claude", sid, "assistant", "Hi", nil, false, "NewSession")
 	assert.Equal(t, 2, service.GetChatMessageCount(sid))
 }
 
@@ -1049,7 +1036,7 @@ func TestUpdateLastRead(t *testing.T) {
 	service.UpdateLastRead(sid)
 	// Verify by checking sessions - last_read_at should be set
 	var lastRead sql.NullTime
-	err := service.DB.QueryRow("SELECT last_read_at FROM chat_sessions WHERE id = ?", sid).Scan(&lastRead)
+	err := service.DB.QueryRowContext(context.Background(), "SELECT last_read_at FROM chat_sessions WHERE id = ?", sid).Scan(&lastRead)
 	assert.NoError(t, err)
 	assert.True(t, lastRead.Valid)
 }
@@ -1127,7 +1114,7 @@ func TestSendSessionEvent(t *testing.T) {
 	ch := service.RegisterSessionStream(sid)
 
 	// Send event
-	ok := service.SendSessionEvent(sid, ai.StreamEvent{Type: "content", Content: "hello"})
+	ok := service.SendSessionEvent(sid, ai.StreamEvent{Type: service.StreamTypeContent, Content: "hello"})
 	assert.True(t, ok)
 
 	// Receive event
@@ -1140,7 +1127,7 @@ func TestSendSessionEvent(t *testing.T) {
 
 func TestSendSessionEvent_NoStream(t *testing.T) {
 	setupDB(t)
-	ok := service.SendSessionEvent("non-existent", ai.StreamEvent{Type: "content"})
+	ok := service.SendSessionEvent("non-existent", ai.StreamEvent{Type: service.StreamTypeContent})
 	assert.False(t, ok)
 }
 
@@ -1151,7 +1138,7 @@ func TestSendSessionEvent_FullChannel(t *testing.T) {
 	ch := service.RegisterSessionStream(sid)
 
 	// Fill the channel buffer
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		ok := service.SendSessionEvent(sid, ai.StreamEvent{Type: "content", Content: fmt.Sprintf("msg-%d", i)})
 		assert.True(t, ok)
 	}
@@ -1161,7 +1148,7 @@ func TestSendSessionEvent_FullChannel(t *testing.T) {
 	assert.False(t, ok)
 
 	// Drain the channel to clean up
-	for i := 0; i < 256; i++ {
+	for range 256 {
 		<-ch
 	}
 	service.UnregisterSessionStream(sid)
@@ -1239,7 +1226,7 @@ func TestGetExpiredDeletedSessions_WithExpired(t *testing.T) {
 	sid := helperCreateSession(t, "/project", "claude", "Old Deleted")
 	_ = service.DeleteSession("/project", "claude", sid)
 
-	_, err := service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', '-100 days') WHERE id = ?", sid)
+	_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', '-100 days') WHERE id = ?", sid)
 	assert.NoError(t, err)
 
 	cutoff := time.Now().AddDate(0, 0, -90)
@@ -1253,7 +1240,7 @@ func TestGetExpiredDeletedSessions_ActiveSessionsNotIncluded(t *testing.T) {
 
 	// Create an active session with old updated_at
 	sid := helperCreateSession(t, "/project", "claude", "Old Active")
-	_, _ = service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', '-100 days') WHERE id = ?", sid)
+	_, _ = service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', '-100 days') WHERE id = ?", sid)
 
 	cutoff := time.Now().AddDate(0, 0, -90)
 	ids, err := service.GetExpiredDeletedSessions(cutoff)
@@ -1265,11 +1252,11 @@ func TestGetExpiredDeletedSessions_MultipleExpired(t *testing.T) {
 	setupDB(t)
 
 	// Create multiple expired sessions
-	var expectedIDs []string
-	for i := 0; i < 3; i++ {
+	expectedIDs := make([]string, 0, 3)
+	for i := range 3 {
 		sid := helperCreateSession(t, "/project", "claude", fmt.Sprintf("Old %d", i))
 		_ = service.DeleteSession("/project", "claude", sid)
-		_, _ = service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', '-100 days') WHERE id = ?", sid)
+		_, _ = service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', '-100 days') WHERE id = ?", sid)
 		expectedIDs = append(expectedIDs, sid)
 	}
 
@@ -1307,7 +1294,7 @@ func TestPurgeDeletedData_HardDeletesSessions(t *testing.T) {
 	_ = service.DeleteSession("/project", "claude", sid)
 
 	// Add a raw response for this session
-	_, _ = service.DB.Exec("INSERT INTO ai_raw_responses (session_id, message_id, backend, raw_output) VALUES (?, 1, 'claude', 'raw')", sid)
+	_, _ = service.DB.ExecContext(context.Background(), "INSERT INTO ai_raw_responses (session_id, message_id, backend, raw_output) VALUES (?, 1, 'claude', 'raw')", sid)
 
 	sessionsPurged, messagesPurged, err := service.PurgeDeletedData([]string{sid})
 	assert.NoError(t, err)
@@ -1316,17 +1303,17 @@ func TestPurgeDeletedData_HardDeletesSessions(t *testing.T) {
 
 	// Verify session is completely gone from DB
 	var count int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM chat_sessions WHERE id = ?", sid).Scan(&count)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM chat_sessions WHERE id = ?", sid).Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, count)
 
 	// Verify messages are completely gone
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM chat_history WHERE session_id = ?", sid).Scan(&count)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM chat_history WHERE session_id = ?", sid).Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, count)
 
 	// Verify raw responses are gone
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM ai_raw_responses WHERE session_id = ?", sid).Scan(&count)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM ai_raw_responses WHERE session_id = ?", sid).Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, count)
 }
@@ -1341,7 +1328,7 @@ func TestPurgeDeletedData_DoesNotPurgeActiveSession(t *testing.T) {
 	sessionsPurged, messagesPurged, err := service.PurgeDeletedData([]string{sid})
 	assert.NoError(t, err)
 	assert.Equal(t, int64(0), sessionsPurged) // WHERE deleted = 1 prevents purge
-	assert.Equal(t, int64(1), messagesPurged)  // messages are deleted regardless of deleted flag
+	assert.Equal(t, int64(1), messagesPurged) // messages are deleted regardless of deleted flag
 
 	// Session should still exist (wasn't soft-deleted)
 	title, err := service.GetSessionTitle(sid)
@@ -1407,7 +1394,7 @@ func TestCreateSession_ScheduledType(t *testing.T) {
 
 	// Verify session_type is stored correctly in DB
 	var sessionType string
-	err = service.DB.QueryRow("SELECT session_type FROM chat_sessions WHERE id = ?", sid).Scan(&sessionType)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT session_type FROM chat_sessions WHERE id = ?", sid).Scan(&sessionType)
 	assert.NoError(t, err)
 	assert.Equal(t, "scheduled", sessionType)
 }
@@ -1421,7 +1408,7 @@ func TestCreateSession_DefaultsToChatType(t *testing.T) {
 
 	// Verify session_type defaults to 'chat'
 	var sessionType string
-	err = service.DB.QueryRow("SELECT session_type FROM chat_sessions WHERE id = ?", sid).Scan(&sessionType)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT session_type FROM chat_sessions WHERE id = ?", sid).Scan(&sessionType)
 	assert.NoError(t, err)
 	assert.Equal(t, "chat", sessionType)
 }
@@ -1432,7 +1419,7 @@ func TestGetSessions_FiltersBySessionType(t *testing.T) {
 	// Create a chat session and a scheduled session
 	chatSID := helperCreateSession(t, "/project", "claude", "Chat Session")
 	_ = chatSID
-	schedSID := helperCreateScheduledSession(t, "/project", "claude", "Scheduled Session")
+	schedSID := helperCreateScheduledSession(t, "claude", "Scheduled Session")
 	_ = schedSID
 
 	sessions, err := service.GetSessions("/project", "claude")
@@ -1446,7 +1433,7 @@ func TestGetSessionCount_ExcludesScheduledSessions(t *testing.T) {
 	setupDB(t)
 
 	helperCreateSession(t, "/project", "claude", "Chat Session")
-	helperCreateScheduledSession(t, "/project", "claude", "Scheduled Session")
+	helperCreateScheduledSession(t, "claude", "Scheduled Session")
 
 	count, err := service.GetSessionCount("/project")
 	assert.NoError(t, err)
@@ -1469,7 +1456,7 @@ func TestGetSessions_AllBackendsFiltersBySessionType(t *testing.T) {
 	setupDB(t)
 
 	helperCreateSession(t, "/project", "claude", "Chat")
-	helperCreateScheduledSession(t, "/project", "claude", "Scheduled")
+	helperCreateScheduledSession(t, "claude", "Scheduled")
 	helperCreateSession(t, "/project", "codebuddy", "Chat CB")
 
 	// Only chat sessions should appear
@@ -1599,7 +1586,7 @@ func TestGetSessionsPaged_LimitEqualsTotal(t *testing.T) {
 func TestGetSessionsPaged_LimitLessThanTotal_HasMore(t *testing.T) {
 	setupDB(t)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		helperCreateSession(t, "/project", "claude", fmt.Sprintf("S%d", i))
 	}
 
@@ -1613,10 +1600,10 @@ func TestGetSessionsPaged_CursorSecondPage(t *testing.T) {
 	setupDB(t)
 
 	// Create 5 sessions with staggered updated_at times
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		sid := helperCreateSession(t, "/project", "claude", fmt.Sprintf("S%d", i))
 		// Stagger updated_at so ordering is deterministic
-		_, err := service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', ? || ' seconds') WHERE id = ?", fmt.Sprintf("-%d", (4-i)*60), sid)
+		_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', ? || ' seconds') WHERE id = ?", fmt.Sprintf("-%d", (4-i)*60), sid)
 		assert.NoError(t, err)
 	}
 
@@ -1650,9 +1637,9 @@ func TestGetSessionsPaged_CursorSecondPage(t *testing.T) {
 func TestGetSessionsPaged_CursorLastPage(t *testing.T) {
 	setupDB(t)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		sid := helperCreateSession(t, "/project", "claude", fmt.Sprintf("S%d", i))
-		_, err := service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', ? || ' seconds') WHERE id = ?", fmt.Sprintf("-%d", (4-i)*60), sid)
+		_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', ? || ' seconds') WHERE id = ?", fmt.Sprintf("-%d", (4-i)*60), sid)
 		assert.NoError(t, err)
 	}
 
@@ -1713,7 +1700,7 @@ func TestGetSessionsPaged_ExcludesScheduledSessions(t *testing.T) {
 	setupDB(t)
 
 	helperCreateSession(t, "/project", "claude", "Chat")
-	helperCreateScheduledSession(t, "/project", "claude", "Scheduled")
+	helperCreateScheduledSession(t, "claude", "Scheduled")
 
 	sessions, _, err := service.GetSessionsPaged("/project", "", 10, "", "")
 	assert.NoError(t, err)
@@ -1728,9 +1715,9 @@ func TestGetSessionsPaged_OrderedByUpdatedDesc(t *testing.T) {
 	sid2 := helperCreateSession(t, "/project", "claude", "New")
 
 	// Set explicit timestamps to guarantee ordering (SQLite time precision is seconds)
-	_, err := service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', '-60 seconds') WHERE id = ?", sid1)
+	_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', '-60 seconds') WHERE id = ?", sid1)
 	assert.NoError(t, err)
-	_, err = service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?", sid2)
+	_, err = service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?", sid2)
 	assert.NoError(t, err)
 
 	sessions, _, err := service.GetSessionsPaged("/project", "", 10, "", "")
@@ -1744,11 +1731,11 @@ func TestGetSessionsPaged_AllPagesCoverAllSessions(t *testing.T) {
 	setupDB(t)
 
 	// Create 7 sessions with staggered times
-	var allIDs []string
-	for i := 0; i < 7; i++ {
+	allIDs := make([]string, 0, 7)
+	for i := range 7 {
 		sid := helperCreateSession(t, "/project", "claude", fmt.Sprintf("S%d", i))
 		allIDs = append(allIDs, sid)
-		_, err := service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', ? || ' seconds') WHERE id = ?", fmt.Sprintf("-%d", (6-i)*60), sid)
+		_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', ? || ' seconds') WHERE id = ?", fmt.Sprintf("-%d", (6-i)*60), sid)
 		assert.NoError(t, err)
 	}
 
@@ -1806,11 +1793,11 @@ func TestGetSessionsPaged_SameTimestampTiebreaker(t *testing.T) {
 
 	// Set sid1 and sid2 to the same timestamp, sid3 slightly newer
 	baseTime := "2026-01-15 12:00:00"
-	_, err := service.DB.Exec("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", baseTime, sid1)
+	_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = ? WHERE id = ?", baseTime, sid1)
 	assert.NoError(t, err)
-	_, err = service.DB.Exec("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", baseTime, sid2)
+	_, err = service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = ? WHERE id = ?", baseTime, sid2)
 	assert.NoError(t, err)
-	_, err = service.DB.Exec("UPDATE chat_sessions SET updated_at = '2026-01-15 12:01:00' WHERE id = ?", sid3)
+	_, err = service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = '2026-01-15 12:01:00' WHERE id = ?", sid3)
 	assert.NoError(t, err)
 
 	// First page: limit=2 — should get sid3 (newest) and one of sid1/sid2
@@ -1880,7 +1867,7 @@ func TestGetSessionTitlesBatch_ExcludesEmptyTitles(t *testing.T) {
 
 	// Create session with a title, then set it to empty
 	sid := helperCreateSession(t, "/project", "claude", "Has Title")
-	_, err := service.DB.Exec("UPDATE chat_sessions SET title = '' WHERE id = ?", sid)
+	_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET title = '' WHERE id = ?", sid)
 	assert.NoError(t, err)
 
 	titles, err := service.GetSessionTitlesBatch([]string{sid})
@@ -1913,7 +1900,7 @@ func TestGetSessionTitlesBatch_NonExistentID(t *testing.T) {
 // ---------- GetSessionInfo ----------
 
 func TestGetSessionInfo(t *testing.T) {
-	_ = setupDB(t)
+	setupDB(t)
 
 	s1, _ := service.CreateSession("/project", "claude", "My Session", "claude", "claude-sonnet-4-6", "default", "chat")
 
@@ -1927,18 +1914,17 @@ func TestGetSessionInfo(t *testing.T) {
 }
 
 func TestGetSessionInfo_NotFound(t *testing.T) {
-	_ = setupDB(t)
+	setupDB(t)
 
 	_, err := service.GetSessionInfo("nonexistent")
 	assert.Error(t, err)
 }
 
 func TestGetSessionInfo_Deleted(t *testing.T) {
-	_ = setupDB(t)
+	setupDB(t)
 
 	s1, _ := service.CreateSession("/project", "claude", "Deleted", "claude", "", "default", "chat")
-	service.DeleteSession("/project", "claude", s1)
-
+	_ = service.DeleteSession("/project", "claude", s1)
 	_, err := service.GetSessionInfo(s1)
 	assert.Error(t, err)
 }
@@ -2071,7 +2057,7 @@ func TestGetSessions_UnreadCount_DeletedMessagesExcluded(t *testing.T) {
 	msgID2, _ := service.AddChatMessage("/project", "claude", sid, "assistant", "deleted", nil, false, "")
 
 	// Soft-delete one message
-	_, err := service.DB.Exec("UPDATE chat_history SET deleted = 1 WHERE id = ?", msgID2)
+	_, err := service.DB.ExecContext(context.Background(), "UPDATE chat_history SET deleted = 1 WHERE id = ?", msgID2)
 	assert.NoError(t, err)
 
 	sessions, err := service.GetSessions("/project", "")
@@ -2081,16 +2067,15 @@ func TestGetSessions_UnreadCount_DeletedMessagesExcluded(t *testing.T) {
 }
 
 func TestGetSessions_UnreadCountScopedToProject(t *testing.T) {
-	db := setupDB(t)
-	_ = db
+	setupDB(t)
 
 	// Create sessions in two different projects
 	s1, _ := service.CreateSession("/project-a", "claude", "S1", "claude", "", "default", "chat")
 	s2, _ := service.CreateSession("/project-b", "claude", "S2", "claude", "", "default", "chat")
 
 	// Add assistant messages to both sessions
-	service.AddChatMessage("/project-a", "claude", s1, "assistant", `{"blocks":[{"type":"text","text":"hello"}]}`, nil, false, "")
-	service.AddChatMessage("/project-b", "claude", s2, "assistant", `{"blocks":[{"type":"text","text":"world"}]}`, nil, false, "")
+	_, _ = service.AddChatMessage("/project-a", "claude", s1, "assistant", `{"blocks":[{"type":"text","text":"hello"}]}`, nil, false, "")
+	_, _ = service.AddChatMessage("/project-b", "claude", s2, "assistant", `{"blocks":[{"type":"text","text":"world"}]}`, nil, false, "")
 
 	// Query project-a only — should have 1 unread
 	sessions, err := service.GetSessions("/project-a", "")
@@ -2124,7 +2109,7 @@ func TestGetSessionsPaged_UnreadCount(t *testing.T) {
 // ---------- DBRead initialization ----------
 
 func TestDBRead_Initialized_ChatDB(t *testing.T) {
-	_ = setupDB(t)
+	setupDB(t)
 	assert.NotNil(t, service.DBRead, "DBRead should be initialized in test setup")
 }
 
@@ -2198,7 +2183,7 @@ func TestGetRunningSessionIDs_SomeRunning(t *testing.T) {
 // ---------- GetLatestSessionID ----------
 
 func TestGetLatestSessionID(t *testing.T) {
-	_ = setupDB(t)
+	setupDB(t)
 
 	// No sessions yet
 	_, _, err := service.GetLatestSessionID("/project")
@@ -2215,7 +2200,7 @@ func TestGetLatestSessionID(t *testing.T) {
 
 	// Create another and force its updated_at ahead (SQLite timestamps have second precision)
 	s2, _ := service.CreateSession("/project", "codebuddy", "Second", "codebuddy", "", "default", "chat")
-	service.DB.Exec("UPDATE chat_sessions SET updated_at = datetime('now', '+1 second') WHERE id = ?", s2)
+	_, _ = service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = datetime('now', '+1 second') WHERE id = ?", s2)
 
 	// Should return the newer one
 	id, backend, err = service.GetLatestSessionID("/project")
@@ -2229,13 +2214,13 @@ func TestGetLatestSessionID(t *testing.T) {
 }
 
 func TestGetLatestSessionID_ExcludesDeleted(t *testing.T) {
-	_ = setupDB(t)
+	setupDB(t)
 
 	s1, _ := service.CreateSession("/project", "claude", "First", "claude", "", "default", "chat")
 	s2, _ := service.CreateSession("/project", "codebuddy", "Second", "codebuddy", "", "default", "chat")
 
 	// Delete the most recent session
-	service.DeleteSession("/project", "codebuddy", s2)
+	_ = service.DeleteSession("/project", "codebuddy", s2)
 
 	// Should return the remaining session
 	id, backend, err := service.GetLatestSessionID("/project")

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -102,7 +103,7 @@ func TestServeChatQuickSend_CreateLabelTooLong(t *testing.T) {
 	defer teardown()
 
 	longLabel := ""
-	for i := 0; i < 101; i++ {
+	for range 101 {
 		longLabel += "x"
 	}
 	body := map[string]any{"label": longLabel, "command": "test"}
@@ -117,7 +118,7 @@ func TestServeChatQuickSend_CreateCommandTooLong(t *testing.T) {
 	defer teardown()
 
 	longCommand := ""
-	for i := 0; i < 4097; i++ {
+	for range 4097 {
 		longCommand += "x"
 	}
 	body := map[string]any{"label": "test", "command": longCommand}
@@ -301,7 +302,7 @@ func TestChatQuickSendRouteRequiresAuth(t *testing.T) {
 	mux := http.NewServeMux()
 	RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/chat/quick-send", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/chat/quick-send", nil)
 	req.RemoteAddr = "203.0.113.10:12345"
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

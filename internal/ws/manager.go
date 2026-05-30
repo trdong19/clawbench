@@ -8,13 +8,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 
 	"clawbench/internal/i18n"
 	"clawbench/internal/model"
 	"clawbench/internal/push"
-	"unicode/utf8"
 )
 
 // ClientSubscription tracks a single client's WS connection and push state.
@@ -63,8 +63,10 @@ type Manager struct {
 	jpush         *push.JPushClient
 }
 
-var defaultManager *Manager
-var defaultManagerOnce sync.Once
+var (
+	defaultManager     *Manager
+	defaultManagerOnce sync.Once
+)
 
 // SetManagerForTest sets the global manager for testing. Do not use in production.
 func SetManagerForTest(m *Manager) {
@@ -75,19 +77,21 @@ func SetManagerForTest(m *Manager) {
 func NewManagerForTest(jpushClient *push.JPushClient) *Manager {
 	return &Manager{
 		subscriptions: make(map[string]*ClientSubscription),
-		jpush:        jpushClient,
+		jpush:         jpushClient,
 	}
 }
 
+// InitManager initializes the global WebSocket manager singleton.
 func InitManager(jpushClient *push.JPushClient) {
 	defaultManagerOnce.Do(func() {
 		defaultManager = &Manager{
 			subscriptions: make(map[string]*ClientSubscription),
-			jpush:        jpushClient,
+			jpush:         jpushClient,
 		}
 	})
 }
 
+// GetManager returns the global WebSocket manager instance.
 func GetManager() *Manager {
 	return defaultManager
 }
@@ -100,7 +104,7 @@ func (m *Manager) Subscribe(conn *websocket.Conn, writeMu *sync.Mutex, clientID,
 	// Check subscription limit (existing clientID reconnect is allowed)
 	if _, exists := m.subscriptions[clientID]; !exists && len(m.subscriptions) >= maxSubscriptions {
 		m.mu.Unlock()
-		conn.Close(websocket.StatusPolicyViolation, "too many subscriptions")
+		_ = conn.Close(websocket.StatusPolicyViolation, "too many subscriptions")
 		slog.Warn("ws: subscription rejected, limit reached", "limit", maxSubscriptions, "client_id", clientID)
 		return nil
 	}
@@ -126,7 +130,7 @@ func (m *Manager) Subscribe(conn *websocket.Conn, writeMu *sync.Mutex, clientID,
 
 	// Close old connection outside of locks to avoid blocking on slow networks
 	if oldConn != nil {
-		oldConn.Close(websocket.StatusNormalClosure, "replaced")
+		_ = oldConn.Close(websocket.StatusNormalClosure, "replaced")
 	}
 
 	slog.Info("ws: client subscribed", "client_id", clientID)
@@ -159,7 +163,7 @@ func (m *Manager) DisconnectClient(clientID string) {
 // Called via WS "register" message — pushRegID is tied to the WS session.
 // If another subscription already uses the same pushRegID, the old one is cleared
 // (dedup: same device, later connection wins).
-func (m *Manager) RegisterPushID(regID string, clientID string) {
+func (m *Manager) RegisterPushID(regID, clientID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -236,26 +240,7 @@ func (m *Manager) broadcastToSubscription(key string, msg ServerMessage, deliver
 	pushRegID := sub.pushRegID
 
 	if conn != nil && writeMu != nil {
-		// Client is connected — send via WS (serialized with writeMu)
-		data, err := json.Marshal(msg)
-		if err != nil {
-			slog.Error("ws: marshal event", "error", err, "client_id", key)
-			sub.mu.Unlock()
-			return
-		}
-		writeMu.Lock()
-		ctx, cancel := context.WithTimeout(context.Background(), wsWriteTimeout)
-		writeErr := conn.Write(ctx, websocket.MessageText, data)
-		cancel()
-		writeMu.Unlock()
-		// Buffer event for reconnect replay
-		sub.bufferEvent(msg)
-		// If WS send succeeded and this subscription has a pushRegID,
-		// mark it as delivered so we don't also send JPush to the same device
-		if writeErr == nil && pushRegID != "" {
-			deliveredRegIDs[pushRegID] = true
-		}
-		sub.mu.Unlock()
+		m.sendViaWebSocket(sub, conn, writeMu, pushRegID, key, msg, deliveredRegIDs)
 		return
 	}
 
@@ -264,21 +249,101 @@ func (m *Manager) broadcastToSubscription(key string, msg ServerMessage, deliver
 		sub.bufferEvent(msg)
 	}
 
-	// Send JPush only for terminal events (completed/cancelled/failed).
-	// Non-terminal events (running, etc.) are delivered via WS or buffered for replay,
-	// but should never trigger a push notification — the user doesn't need to be
-	// interrupted just because a session started running.
-	shouldPush := false
-	switch d := msg.Data.(type) {
-	case *SessionUpdateData:
-		shouldPush = d.Status == "completed" || d.Status == "cancelled"
-	case *TaskUpdateData:
-		shouldPush = d.Status == "completed" || d.Status == "failed" || d.Status == "cancelled"
+	m.sendPushIfTerminal(sub, pushRegID, key, msg, deliveredRegIDs)
+}
+
+// sendViaWebSocket delivers an event via WebSocket when the client is connected.
+func (m *Manager) sendViaWebSocket(sub *ClientSubscription, conn *websocket.Conn, writeMu *sync.Mutex, pushRegID, key string, msg ServerMessage, deliveredRegIDs map[string]bool) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		slog.Error("ws: marshal event", "error", err, "client_id", key)
+		sub.mu.Unlock()
+		return
 	}
+	writeMu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), wsWriteTimeout)
+	writeErr := conn.Write(ctx, websocket.MessageText, data)
+	cancel()
+	writeMu.Unlock()
+	// Buffer event for reconnect replay
+	sub.bufferEvent(msg)
+	// If WS send succeeded and this subscription has a pushRegID,
+	// mark it as delivered so we don't also send JPush to the same device
+	if writeErr == nil && pushRegID != "" {
+		deliveredRegIDs[pushRegID] = true
+	}
+	sub.mu.Unlock()
+}
+
+// shouldPushForEvent returns true if the event data represents a terminal state
+// that warrants a push notification (completed/canceled/failed).
+func shouldPushForEvent(data any) bool {
+	switch d := data.(type) {
+	case *SessionUpdateData:
+		return d.Status == "completed" || d.Status == "cancelled"
+	case *TaskUpdateData:
+		return d.Status == "completed" || d.Status == "failed" || d.Status == "cancelled"
+	}
+	return false
+}
+
+// pushExtras extracts JPush extras from the event data.
+func pushExtras(data any, eventType string) map[string]string {
+	extras := map[string]string{"event_type": eventType}
+	switch d := data.(type) {
+	case *SessionUpdateData:
+		extras["session_id"] = d.SessionID
+		if d.ProjectPath != "" {
+			extras["project_path"] = d.ProjectPath
+		}
+	case *TaskUpdateData:
+		extras["task_id"] = d.TaskID
+		extras["event_type"] = "task_update"
+		if d.ExecutionID != "" {
+			extras["execution_id"] = d.ExecutionID
+		}
+		if d.SessionID != "" {
+			extras["session_id"] = d.SessionID
+		}
+		if d.ProjectPath != "" {
+			extras["project_path"] = d.ProjectPath
+		}
+	}
+	return extras
+}
+
+// pushTitleAndAlert builds the notification title and alert text from event data.
+func pushTitleAndAlert(data any, eventType, locale string) (title, alert string) {
+	loc := i18n.LocalizerForLocale(locale)
+	title = i18n.T(loc, "PushTaskCompleted")
+	alert = i18n.T(loc, "PushSessionEnded")
+	if eventType == "task_update" {
+		alert = i18n.T(loc, "PushScheduledTaskDone")
+	}
+	var sessionTitle, responsePreview string
+	switch d := data.(type) {
+	case *SessionUpdateData:
+		sessionTitle = d.SessionTitle
+		responsePreview = d.ResponsePreview
+	case *TaskUpdateData:
+		sessionTitle = d.SessionTitle
+		responsePreview = d.ResponsePreview
+	}
+	if sessionTitle != "" {
+		title = "Done:" + sessionTitle
+	}
+	if responsePreview != "" {
+		alert = truncateForPush(responsePreview)
+	}
+	return title, alert
+}
+
+// sendPushIfTerminal sends a JPush notification for terminal events when the client is disconnected.
+func (m *Manager) sendPushIfTerminal(sub *ClientSubscription, pushRegID, key string, msg ServerMessage, deliveredRegIDs map[string]bool) {
+	shouldPush := shouldPushForEvent(msg.Data)
 
 	if pushRegID != "" && m.jpush != nil && m.jpush.Enabled() && shouldPush {
 		// Dedup: skip if this regID was already notified for this event
-		// (e.g., another subscription for the same device already delivered via WS)
 		if deliveredRegIDs[pushRegID] {
 			slog.Debug("ws: skipping jpush, event already delivered to device", "reg_id", pushRegID, "client_id", key)
 			sub.mu.Unlock()
@@ -286,51 +351,8 @@ func (m *Manager) broadcastToSubscription(key string, msg ServerMessage, deliver
 		}
 		deliveredRegIDs[pushRegID] = true
 		sub.mu.Unlock() // unlock before potentially slow network call
-		extras := map[string]string{"event_type": msg.Event}
-		switch d := msg.Data.(type) {
-		case *SessionUpdateData:
-			extras["session_id"] = d.SessionID
-			if d.ProjectPath != "" {
-				extras["project_path"] = d.ProjectPath
-			}
-		case *TaskUpdateData:
-			extras["task_id"] = d.TaskID
-			extras["event_type"] = "task_update"
-			if d.ExecutionID != "" {
-				extras["execution_id"] = d.ExecutionID
-			}
-			if d.SessionID != "" {
-				extras["session_id"] = d.SessionID
-			}
-			if d.ProjectPath != "" {
-				extras["project_path"] = d.ProjectPath
-			}
-		}
-		loc := i18n.LocalizerForLocale(sub.locale)
-		title := i18n.T(loc, "PushTaskCompleted")
-		alert := i18n.T(loc, "PushSessionEnded")
-		if msg.Event == "task_update" {
-			alert = i18n.T(loc, "PushScheduledTaskDone")
-		}
-		// Extract session title and response preview from event data for both
-		// session_update and task_update events, then format the notification:
-		//   title = "Done:" + session title
-		//   alert = response preview (the actual AI answer content)
-		var sessionTitle, responsePreview string
-		switch d := msg.Data.(type) {
-		case *SessionUpdateData:
-			sessionTitle = d.SessionTitle
-			responsePreview = d.ResponsePreview
-		case *TaskUpdateData:
-			sessionTitle = d.SessionTitle
-			responsePreview = d.ResponsePreview
-		}
-		if sessionTitle != "" {
-			title = "Done:" + sessionTitle
-		}
-		if responsePreview != "" {
-			alert = truncateForPush(responsePreview)
-		}
+		extras := pushExtras(msg.Data, msg.Event)
+		title, alert := pushTitleAndAlert(msg.Data, msg.Event, sub.locale)
 		slog.Debug("ws: sending jpush notification", "event", msg.Event, "client_id", key, "reg_id", pushRegID, "title", title, "extras", extras)
 		if err := m.jpush.SendNotification(pushRegID, title, alert, extras); err != nil {
 			slog.Warn("ws: jpush notification failed", "error", err, "client_id", key)

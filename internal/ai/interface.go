@@ -45,8 +45,8 @@ type Metadata struct {
 	Model        string  `json:"model,omitempty"`
 	InputTokens  int     `json:"inputTokens,omitempty"`
 	OutputTokens int     `json:"outputTokens,omitempty"`
-	DurationMs   int     `json:"durationMs,omitempty"`   // CLI self-reported duration
-	WallMs       int     `json:"wallMs,omitempty"`       // Backend wall-clock duration (time from ExecuteStream start to finalization)
+	DurationMs   int     `json:"durationMs,omitempty"` // CLI self-reported duration
+	WallMs       int     `json:"wallMs,omitempty"`     // Backend wall-clock duration (time from ExecuteStream start to finalization)
 	CostUSD      float64 `json:"costUsd,omitempty"`
 	SessionID    string  `json:"sessionId,omitempty"`
 	StopReason   string  `json:"stopReason,omitempty"`
@@ -116,6 +116,8 @@ type QueueEventData struct {
 }
 
 // AIBackend defines the interface for AI backend implementations
+//
+//nolint:revive // stuttering name is intentional for clarity
 type AIBackend interface {
 	// Name returns the backend identifier (e.g., "claude", "codebuddy")
 	Name() string

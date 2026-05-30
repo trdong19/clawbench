@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -14,11 +15,9 @@ import (
 
 func TestRecoverPanic_NoPanic_PassThrough(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}
+	handler := func(_ http.ResponseWriter, _ *http.Request) {}
 
 	middleware.RecoverPanic(handler).ServeHTTP(rec, req)
 
@@ -27,9 +26,9 @@ func TestRecoverPanic_NoPanic_PassThrough(t *testing.T) {
 
 func TestRecoverPanic_PanicWithString_Returns500(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 
-	panicHandler := func(w http.ResponseWriter, r *http.Request) {
+	panicHandler := func(_ http.ResponseWriter, _ *http.Request) {
 		panic("something went wrong")
 	}
 
@@ -44,9 +43,9 @@ func TestRecoverPanic_PanicWithString_Returns500(t *testing.T) {
 
 func TestRecoverPanic_PanicWithError_Returns500(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 
-	panicHandler := func(w http.ResponseWriter, r *http.Request) {
+	panicHandler := func(_ http.ResponseWriter, _ *http.Request) {
 		panic(errors.New("explicit error object"))
 	}
 
@@ -60,9 +59,9 @@ func TestRecoverPanic_PanicWithError_Returns500(t *testing.T) {
 
 func TestRecoverPanic_ContentTypeIsJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 
-	panicHandler := func(w http.ResponseWriter, r *http.Request) {
+	panicHandler := func(_ http.ResponseWriter, _ *http.Request) {
 		panic("boom")
 	}
 
@@ -73,9 +72,9 @@ func TestRecoverPanic_ContentTypeIsJSON(t *testing.T) {
 
 func TestRecoverPanic_ResponseBodyContainsError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 
-	panicHandler := func(w http.ResponseWriter, r *http.Request) {
+	panicHandler := func(_ http.ResponseWriter, _ *http.Request) {
 		panic("unexpected failure")
 	}
 

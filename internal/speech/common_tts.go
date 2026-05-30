@@ -1,10 +1,10 @@
+// Package speech provides text-to-speech synthesis via multiple backends (Edge TTS, Piper, Kokoro, MOSS-Nano).
 package speech
 
 import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -22,7 +22,7 @@ const (
 	TextViaTempFile TextSource = iota
 )
 
-// SynthesizeOptions defines the behaviour of CLISpeechProvider.Synthesize.
+// SynthesizeOptions defines the behavior of CLISpeechProvider.Synthesize.
 type SynthesizeOptions struct {
 	// BinaryName is the CLI binary name as found via $PATH (e.g. "mmx", "moss-tts-nano").
 	BinaryName string
@@ -75,9 +75,9 @@ func newCLISpeechProvider(opts SynthesizeOptions) CLISpeechProvider {
 // Synthesize is the shared implementation for all CLI-based providers.
 // It handles directory creation, binary resolution, temp-file / stdin
 // text delivery, command execution, and output validation.
-func (p CLISpeechProvider) Synthesize(ctx context.Context, text string, outputPath string, language string) error {
+func (p CLISpeechProvider) Synthesize(ctx context.Context, text, outputPath, language string) error {
 	dir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("failed to create output directory %s: %w", dir, err)
 	}
 
@@ -87,44 +87,13 @@ func (p CLISpeechProvider) Synthesize(ctx context.Context, text string, outputPa
 		}
 	}
 
-	// Resolve CLI binary path.
-	cliPath := p.opts.BinaryName
-	if p.opts.RelativePath != "" {
-		if exePath, err := os.Executable(); err == nil {
-			candidatePath := filepath.Join(filepath.Dir(exePath), p.opts.RelativePath)
-			if _, err := os.Stat(candidatePath); err == nil {
-				cliPath = candidatePath
-			}
-		}
-	} else if exePath, err := os.Executable(); err == nil {
-		candidatePath := filepath.Join(filepath.Dir(exePath), ".venv/bin", p.opts.BinaryName)
-		if _, err := os.Stat(candidatePath); err == nil {
-			cliPath = candidatePath
-		}
+	cliPath := p.resolveCLIPath()
+	textForArgs, cleanup, err := p.prepareTextInput(text)
+	if err != nil {
+		return err
 	}
-
-	// Fall back to $PATH lookup if not found relative to binary.
-	if cliPath == p.opts.BinaryName || cliPath == p.opts.RelativePath {
-		if absPath, err := exec.LookPath(p.opts.BinaryName); err == nil {
-			cliPath = absPath
-		}
-	}
-
-	// For TextViaTempFile, write text to a temp file first.
-	textForArgs := text
-	if p.opts.TextSource == TextViaTempFile {
-		tmpFile, err := os.CreateTemp("", p.opts.LogName+"-text-*.txt")
-		if err != nil {
-			return fmt.Errorf("failed to create temp file: %w", err)
-		}
-		tmpPath := tmpFile.Name()
-		defer os.Remove(tmpPath) // clean up after synthesis
-		if _, err := io.WriteString(tmpFile, text); err != nil {
-			tmpFile.Close()
-			return fmt.Errorf("failed to write temp file: %w", err)
-		}
-		tmpFile.Close()
-		textForArgs = tmpPath
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	args := p.opts.ExtraArgs(cliPath, textForArgs, outputPath, language)
@@ -150,7 +119,11 @@ func (p CLISpeechProvider) Synthesize(ctx context.Context, text string, outputPa
 	}
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s failed: %w (stderr: %s)", p.opts.LogName, err, cmd.Stderr.(*bytes.Buffer).String())
+		stderr := "<nil>"
+		if buf, ok := cmd.Stderr.(*bytes.Buffer); ok {
+			stderr = buf.String()
+		}
+		return fmt.Errorf("%s failed: %w (stderr: %s)", p.opts.LogName, err, stderr)
 	}
 
 	if _, err := os.Stat(outputPath); err != nil {
@@ -158,4 +131,49 @@ func (p CLISpeechProvider) Synthesize(ctx context.Context, text string, outputPa
 	}
 
 	return nil
+}
+
+func (p CLISpeechProvider) resolveCLIPath() string {
+	cliPath := p.opts.BinaryName
+	if p.opts.RelativePath != "" {
+		if exePath, err := os.Executable(); err == nil {
+			candidatePath := filepath.Join(filepath.Dir(exePath), p.opts.RelativePath)
+			if _, err := os.Stat(candidatePath); err == nil {
+				cliPath = candidatePath
+			}
+		}
+	} else if exePath, err := os.Executable(); err == nil {
+		candidatePath := filepath.Join(filepath.Dir(exePath), ".venv", "bin", p.opts.BinaryName)
+		if _, err := os.Stat(candidatePath); err == nil {
+			cliPath = candidatePath
+		}
+	}
+
+	// Fall back to $PATH lookup if not found relative to binary.
+	if cliPath == p.opts.BinaryName || cliPath == p.opts.RelativePath {
+		if absPath, err := exec.LookPath(p.opts.BinaryName); err == nil {
+			cliPath = absPath
+		}
+	}
+	return cliPath
+}
+
+func (p CLISpeechProvider) prepareTextInput(text string) (textInput string, cleanup func(), err error) {
+	if p.opts.TextSource != TextViaTempFile {
+		return text, nil, nil
+	}
+
+	tmpFile, tmpErr := os.CreateTemp("", p.opts.LogName+"-text-*.txt")
+	if tmpErr != nil {
+		return "", nil, fmt.Errorf("failed to create temp file: %w", tmpErr)
+	}
+	tmpPath := tmpFile.Name()
+	cleanup = func() { _ = os.Remove(tmpPath) }
+	if _, writeErr := tmpFile.WriteString(text); writeErr != nil {
+		_ = tmpFile.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("failed to write temp file: %w", writeErr)
+	}
+	_ = tmpFile.Close()
+	return tmpPath, cleanup, nil
 }

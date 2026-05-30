@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"log/slog"
@@ -11,16 +12,18 @@ import (
 var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // generateUUID generates a standard UUID v4 format string with an optional prefix.
-// It checks for conflicts in the specified database table and column.
+// It checks for conflicts in the chat_sessions table.
 // Returns empty string on exhaustion or error.
-func generateUUID(prefix, tableName, column string) string {
+func generateUUID(prefix string) string {
+	tableName := TableChatSessions
+	column := "id"
 	// Validate identifiers to prevent SQL injection (ISS-009)
 	if !validIdentifier.MatchString(tableName) || !validIdentifier.MatchString(column) {
 		slog.Error("generateUUID: invalid identifier", slog.String("table", tableName), slog.String("column", column))
 		return ""
 	}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		b := make([]byte, 16)
 		if _, err := rand.Read(b); err != nil {
 			slog.Error("generateUUID: rand.Read failed", slog.String("err", err.Error()))
@@ -33,7 +36,8 @@ func generateUUID(prefix, tableName, column string) string {
 			prefix, b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 
 		var exists bool
-		err := DB.QueryRow(
+		err := DB.QueryRowContext(
+			context.Background(),
 			fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s WHERE %s = ?)", tableName, column),
 			uuid,
 		).Scan(&exists)

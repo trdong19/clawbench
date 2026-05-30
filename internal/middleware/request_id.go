@@ -15,6 +15,7 @@ func generateRequestID() string {
 	return hex.EncodeToString(b)
 }
 
+// GetRequestID extracts the request ID from the given context.
 func GetRequestID(ctx context.Context) string {
 	if id, ok := ctx.Value(requestIDKey{}).(string); ok {
 		return id

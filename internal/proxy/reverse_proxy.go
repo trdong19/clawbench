@@ -1,6 +1,8 @@
+// Package proxy implements HTTP reverse proxy and port forwarding for SSH tunnel access to virtual-host backends.
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -8,8 +10,14 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
-	"sync"
+	"time"
+)
+
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
 )
 
 // ReverseProxy is an HTTP reverse proxy that listens on a local address and
@@ -25,16 +33,15 @@ type ReverseProxy struct {
 	targetAddr string // host:port of the backend
 	targetURL  *url.URL
 	protocol   string // "http" or "https"
-	mu         sync.Mutex
 }
 
 // NewReverseProxy creates a new HTTP reverse proxy.
 // listenHost is typically "127.0.0.1", listenPort 0 means auto-assign.
 // targetAddr is "host:port" of the backend to forward to.
 // protocol is "http" or "https" (for the connection to the backend).
-func NewReverseProxy(listenHost string, listenPort int, targetAddr string, protocol string) (*ReverseProxy, error) {
+func NewReverseProxy(listenHost string, listenPort int, targetAddr, protocol string) (*ReverseProxy, error) {
 	if protocol == "" {
-		protocol = "http"
+		protocol = schemeHTTP
 	}
 
 	// Build the target URL for httputil.ReverseProxy
@@ -57,13 +64,13 @@ func NewReverseProxy(listenHost string, listenPort int, targetAddr string, proto
 	rp := &ReverseProxy{
 		targetAddr: host,
 		targetURL:  targetURL,
-		protocol:  protocol,
+		protocol:   protocol,
 	}
 
 	// Create transport with InsecureSkipVerify for self-signed certs on LAN targets
 	rp.transport = &http.Transport{
-		DialContext:       (&net.Dialer{}).DialContext,
-		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+		DialContext:     (&net.Dialer{}).DialContext,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // local/SSH tunnel connection, certificate verification not applicable
 	}
 
 	// Create the httputil.ReverseProxy
@@ -85,12 +92,13 @@ func NewReverseProxy(listenHost string, listenPort int, targetAddr string, proto
 
 	rp.proxy = proxy
 	rp.server = &http.Server{
-		Handler: proxy,
+		Handler:           proxy,
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 
 	// Start listening
 	addr := fmt.Sprintf("%s:%d", listenHost, listenPort)
-	listener, err := net.Listen("tcp", addr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
@@ -121,16 +129,21 @@ func (rp *ReverseProxy) Port() int {
 	if rp.listener == nil {
 		return 0
 	}
-	_, portStr, _ := net.SplitHostPort(rp.listener.Addr().String())
-	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, portStr, err := net.SplitHostPort(rp.listener.Addr().String())
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
 	return port
 }
 
 // Close shuts down the reverse proxy.
 func (rp *ReverseProxy) Close() {
 	if rp.server != nil {
-		rp.server.Close()
+		_ = rp.server.Close()
 	}
 }
 
@@ -153,7 +166,7 @@ func stripDefaultPort(hostPort, scheme string) string {
 	if err != nil {
 		return hostPort // no port, return as-is
 	}
-	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+	if (scheme == schemeHTTP && port == "80") || (scheme == schemeHTTPS && port == "443") {
 		return h
 	}
 	return hostPort

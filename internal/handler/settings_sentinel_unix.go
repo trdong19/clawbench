@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -27,7 +28,7 @@ func launchSentinel() (*exec.Cmd, error) {
 			"echo 'restart-failed' > %s/.clawbench/restart-status",
 		pid, shellQuote(exe), joinArgs(args), shellQuote(model.BinDir),
 	)
-	cmd := exec.Command("/bin/sh", "-c", sentinelScript)
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", sentinelScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}

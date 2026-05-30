@@ -49,31 +49,32 @@ func TestConvertAskQuestionBlocks_IDUsesUUID(t *testing.T) {
 	result := convertAskQuestionBlocks(blocks)
 
 	for _, b := range result {
-		if b.Type == "tool_use" && b.Name == "AskUserQuestion" {
-			// ID should start with "ask-" followed by a UUID (8-4-4-4-12 format)
-			if !strings.HasPrefix(b.ID, "ask-") {
-				t.Errorf("expected ID to start with 'ask-', got %q", b.ID)
-			}
-			uuidPart := strings.TrimPrefix(b.ID, "ask-")
-			// UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars with dashes)
-			if len(uuidPart) != 36 {
-				t.Errorf("expected UUID part to be 36 chars, got %d (ID=%q)", len(uuidPart), b.ID)
-			}
-			// Check for dashes at expected positions
-			for i, c := range uuidPart {
-				switch i {
-				case 8, 13, 18, 23:
-					if c != '-' {
-						t.Errorf("expected dash at position %d in UUID, got %c (ID=%q)", i, c, b.ID)
-					}
-				default:
-					if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-						t.Errorf("expected hex digit at position %d in UUID, got %c (ID=%q)", i, c, b.ID)
-					}
+		if b.Type != jsonKeyToolUse || b.Name != toolNameAskUserQuestion {
+			continue
+		}
+		// ID should start with "ask-" followed by a UUID (8-4-4-4-12 format)
+		if !strings.HasPrefix(b.ID, "ask-") {
+			t.Errorf("expected ID to start with 'ask-', got %q", b.ID)
+		}
+		uuidPart := strings.TrimPrefix(b.ID, "ask-")
+		// UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars with dashes)
+		if len(uuidPart) != 36 {
+			t.Errorf("expected UUID part to be 36 chars, got %d (ID=%q)", len(uuidPart), b.ID)
+		}
+		// Check for dashes at expected positions
+		for i, c := range uuidPart {
+			switch i {
+			case 8, 13, 18, 23:
+				if c != '-' {
+					t.Errorf("expected dash at position %d in UUID, got %c (ID=%q)", i, c, b.ID)
+				}
+			default:
+				if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) { //nolint:staticcheck // QF1001: De Morgan's law makes it less readable here
+					t.Errorf("expected hex digit at position %d in UUID, got %c (ID=%q)", i, c, b.ID)
 				}
 			}
-			return
 		}
+		return
 	}
 	t.Error("expected to find an AskUserQuestion tool_use block")
 }
@@ -81,7 +82,7 @@ func TestConvertAskQuestionBlocks_IDUsesUUID(t *testing.T) {
 func TestConvertAskQuestionBlocks_IDsAreUnique(t *testing.T) {
 	// Generate multiple blocks and verify that IDs are unique (UUID-based)
 	ids := make(map[string]bool)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		blocks := []model.ContentBlock{
 			{Type: "text", Text: "<ask-question>\n{\"questions\":[{\"header\":\"Pick\",\"multiSelect\":false,\"options\":[{\"label\":\"A\",\"description\":\"Option A\"}],\"question\":\"Which one?\"}]}\n</ask-question>"},
 		}

@@ -1,3 +1,4 @@
+// Package summarize provides text summarization backends (AI, OpenAI, Anthropic) for TTS and task summaries.
 package summarize
 
 import (
@@ -9,15 +10,22 @@ import (
 	"clawbench/internal/ai"
 )
 
+const (
+	eventTypeContent = "content"
+	eventTypeDone    = "done"
+	eventTypeError   = "error"
+	blockTypeText    = "text"
+)
+
 // AIBackendSummarizer implements Summarizer using an existing AI backend
-// (claude, codebuddy, gemini, opencode, codex, qoder, vecli) via AIBackend.ExecuteStream().
-// The full name is retained to avoid confusion with ai.AIBackend when both packages
+// (claude, codebuddy, gemini, opencode, codex, qoder, vecli) via Backend.ExecuteStream().
+// The full name is retained to avoid confusion with ai.Backend when both packages
 // are imported in the same file.
 type AIBackendSummarizer struct {
 	backend ai.AIBackend
 	// Model is the model ID override for the AI backend (empty = use backend default).
 	Model string
-	gs    ttsPipeline
+	gs    Pipeline
 }
 
 // NewAIBackendSummarizer creates an AIBackendSummarizer for the given backend type.
@@ -35,7 +43,7 @@ func NewAIBackendSummarizer(backendType string) (*AIBackendSummarizer, error) {
 
 // Summarize condenses text for voice output using an AI backend.
 // It sends a single-turn request and collects content events from the stream.
-func (s *AIBackendSummarizer) Summarize(ctx context.Context, text string, language string) (string, error) {
+func (s *AIBackendSummarizer) Summarize(ctx context.Context, text, language string) (string, error) {
 	return s.gs.Summarize(ctx, text, language)
 }
 
@@ -61,11 +69,11 @@ func (s *AIBackendSummarizer) DoSummarizePass(ctx context.Context, text, systemP
 	var buf strings.Builder
 	for event := range ch {
 		switch event.Type {
-		case "content":
+		case eventTypeContent:
 			buf.WriteString(event.Content)
-		case "done":
+		case eventTypeDone:
 			// Stream completed successfully
-		case "error":
+		case eventTypeError:
 			return "", fmt.Errorf("AI backend %q (pass %d) error: %s", s.backend.Name(), pass, event.Error)
 		}
 	}
@@ -75,7 +83,8 @@ func (s *AIBackendSummarizer) DoSummarizePass(ctx context.Context, text, systemP
 		return "", fmt.Errorf("AI backend %q (pass %d) returned empty output", s.backend.Name(), pass)
 	}
 
-	slog.Info("tts summarize pass completed",
+	slog.Info(
+		"tts summarize pass completed",
 		slog.Int("pass", pass),
 		slog.String("backend", s.backend.Name()),
 		slog.Int("result_len", len([]rune(result))),

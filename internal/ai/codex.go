@@ -5,5 +5,5 @@ type CodexBackend struct{}
 
 // Name returns the backend identifier
 func (c *CodexBackend) Name() string {
-	return "codex"
+	return "codex" //nolint:goconst // JSON 字段名/协议字符串
 }

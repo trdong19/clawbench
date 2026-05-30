@@ -1,3 +1,4 @@
+// Package main implements the ClawBench server entry point.
 package main
 
 import (
@@ -22,13 +23,13 @@ import (
 	"clawbench/internal/handler"
 	"clawbench/internal/model"
 	"clawbench/internal/platform"
+	"clawbench/internal/push"
 	"clawbench/internal/rag"
 	"clawbench/internal/service"
-	"clawbench/internal/ssh"
 	"clawbench/internal/speech"
+	"clawbench/internal/ssh"
 	"clawbench/internal/summarize"
 	"clawbench/internal/terminal"
-	"clawbench/internal/push"
 	"clawbench/internal/ws"
 )
 
@@ -115,52 +116,10 @@ func makeRestartFunc(shutdown func()) func() {
 	}
 }
 
-func main() {
-	// Root --help handler
-	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
-		fmt.Println("ClawBench - Mobile-first AI workstation")
-		fmt.Println()
-		fmt.Println("Usage: clawbench <command> [options]")
-		fmt.Println()
-		fmt.Println("Commands:")
-		fmt.Println("  task    Manage scheduled tasks (cron-based AI execution)")
-		fmt.Println("  rag     Search and retrieve conversation history")
-		fmt.Println()
-		fmt.Println("Run \"clawbench <command> --help\" for more information.")
-		fmt.Println()
-		fmt.Println("Server options:")
-		fmt.Println("  --port PORT    Server port (overrides config file, default: 20000)")
-		os.Exit(0)
-	}
-
-	// Task subcommand dispatch (e.g., "clawbench task create --name ...")
-	if len(os.Args) > 1 && os.Args[1] == "task" {
-		os.Exit(cli.RunTaskCommand(os.Args[2:]))
-	}
-
-	// RAG subcommand dispatch (e.g., "clawbench rag search -q ...")
-	if len(os.Args) > 1 && os.Args[1] == "rag" {
-		os.Exit(cli.RunRAGCommand(os.Args[2:]))
-	}
-
-	// Parse CLI flags
-	cliPort := 0
-	for i, arg := range os.Args[1:] {
-		if arg == "--port" && i+1 < len(os.Args[1:]) {
-			if p, err := strconv.Atoi(os.Args[i+2]); err == nil && p > 0 && p <= 65535 {
-				cliPort = p
-			}
-		}
-	}
-
-	// Determine binary directory for data storage (green portable layout)
-	absBinPath, _ := filepath.Abs(os.Args[0])
-	model.BinDir = filepath.Dir(absBinPath)
-
-	// Load configuration — config/config.yaml is optional
-	var cfg model.Config
-	var presence map[string]bool
-
+// loadServerConfig loads and parses the YAML config file, applies defaults,
+// and sets global model variables. Returns the config, presence map, and
+// auto-generated password (if any).
+func loadServerConfig() (cfg model.Config, presence map[string]bool, autoPassword string) {
 	// Search for config in priority order:
 	// 1. <BinDir>/config/config.yaml (green portable: next to binary)
 	// 2. config/config.yaml (CWD-relative, standard layout)
@@ -170,15 +129,15 @@ func main() {
 	if err == nil {
 		// Parse into raw map first for presence detection (bool defaults)
 		var raw map[string]any
-		if err := yaml.Unmarshal(data, &raw); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to parse %s: %v\n", configPath, err)
+		if unmarshalErr := yaml.Unmarshal(data, &raw); unmarshalErr != nil {
+			fmt.Fprintf(os.Stderr, "Failed to parse %s: %v\n", configPath, unmarshalErr)
 			os.Exit(1)
 		}
 		presence = model.ParsePresenceMap(raw)
 
 		// Parse into typed config struct
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to parse %s: %v\n", configPath, err)
+		if unmarshalErr := yaml.Unmarshal(data, &cfg); unmarshalErr != nil {
+			fmt.Fprintf(os.Stderr, "Failed to parse %s: %v\n", configPath, unmarshalErr)
 			os.Exit(1)
 		}
 	} else if !os.IsNotExist(err) {
@@ -189,7 +148,7 @@ func main() {
 	// If file doesn't exist: cfg stays zero-value, presence is nil → all defaults apply
 
 	// Apply all defaults (returns auto-generated password if created)
-	autoPassword := model.ApplyDefaults(&cfg, presence)
+	autoPassword = model.ApplyDefaults(&cfg, presence)
 	model.ConfigInstance = cfg
 
 	// Set global variables from config
@@ -209,17 +168,22 @@ func main() {
 	summarize.InlineCodeMaxLen = cfg.TTS.InlineCodeMaxLen
 	summarize.MaxSummarizeRunes = cfg.TTS.MaxSummarizeRunes
 
-	// Initialize TTS summarizer from config
-	// Language is now per-request (sent from frontend), not configured at startup.
+	return cfg, presence, autoPassword
+}
+
+// initTTSSummarizer creates and sets the TTS summarizer based on config.
+func initTTSSummarizer(cfg model.Config) {
 	summarizeBackend := cfg.Summarize.Backend
 
 	var ttsSummarizer summarize.Summarizer
-	if summarizeBackend == "simple" {
+	switch summarizeBackend {
+	case "simple", "":
 		ttsSummarizer = summarize.NewSimple()
-		slog.Info("tts summarizer configured",
+		slog.Info(
+			"tts summarizer configured",
 			slog.String("backend", "simple"),
 		)
-	} else if summarizeBackend == "api" {
+	case "api":
 		if cfg.Summarize.API.BaseURL == "" {
 			slog.Error("summarize.backend is \"api\" but summarize.api.base_url is not configured")
 			os.Exit(1)
@@ -227,7 +191,8 @@ func main() {
 		if cfg.Summarize.API.Format == "anthropic" {
 			s := summarize.NewAnthropic(cfg.Summarize.API.BaseURL, cfg.Summarize.API.Key, cfg.Summarize.Model)
 			ttsSummarizer = s
-			slog.Info("tts summarizer configured",
+			slog.Info(
+				"tts summarizer configured",
 				slog.String("backend", "api"),
 				slog.String("format", "anthropic"),
 				slog.String("model", s.Model),
@@ -235,16 +200,18 @@ func main() {
 		} else {
 			s := summarize.NewOpenAI(cfg.Summarize.API.BaseURL, cfg.Summarize.API.Key, cfg.Summarize.Model)
 			ttsSummarizer = s
-			slog.Info("tts summarizer configured",
+			slog.Info(
+				"tts summarizer configured",
 				slog.String("backend", "api"),
 				slog.String("format", "openai"),
 				slog.String("model", s.Model),
 			)
 		}
-	} else {
+	default:
 		s, err := summarize.NewAIBackendSummarizer(summarizeBackend)
 		if err != nil {
-			slog.Error("failed to create AI backend summarizer, falling back to simple",
+			slog.Error(
+				"failed to create AI backend summarizer, falling back to simple",
 				slog.String("backend", summarizeBackend),
 				slog.String("error", err.Error()),
 			)
@@ -252,177 +219,146 @@ func main() {
 		} else {
 			s.Model = cfg.Summarize.Model // empty = use backend default
 			ttsSummarizer = s
-			slog.Info("tts summarizer configured",
+			slog.Info(
+				"tts summarizer configured",
 				slog.String("backend", summarizeBackend),
 				slog.String("model", s.Model),
 			)
 		}
 	}
 	handler.SetSummarizer(ttsSummarizer)
+}
 
-	// Initialize TTS synthesis provider from config
+// initTTSProvider creates and sets the TTS synthesis provider based on config.
+func initTTSProvider(cfg model.Config) {
 	var ttsProvider speech.SpeechProvider
 	engine := cfg.TTS.Engine
 
 	switch engine {
 	case "edge":
-		p := speech.NewEdgeTTSProvider()
-		if cfg.TTS.Voice != "" {
-			p.Voice = cfg.TTS.Voice
-		}
-		if cfg.TTS.Speed > 0 {
-			// Convert speed multiplier (e.g. 1.5) to edge-tts rate percentage (e.g. "+50%")
-			ratePercent := int((cfg.TTS.Speed - 1.0) * 100)
-			if ratePercent > 0 {
-				p.Rate = fmt.Sprintf("+%d%%", ratePercent)
-			} else if ratePercent < 0 {
-				p.Rate = fmt.Sprintf("%d%%", ratePercent)
-			}
-		}
-		ttsProvider = p
-		slog.Info("tts provider configured",
-			slog.String("engine", "edge"),
-			slog.String("voice", p.Voice),
-			slog.String("rate", p.Rate),
-		)
+		ttsProvider = newEdgeProvider(cfg)
 	case "piper":
-		p := speech.NewPiperProvider()
-		// Resolve model path: explicit config > voice-based path
-		p.ModelPath = speech.ResolveModelPath(cfg.TTS.Voice, cfg.TTS.Piper.ModelPath)
-		if cfg.TTS.Piper.NoiseScale > 0 {
-			p.NoiseScale = cfg.TTS.Piper.NoiseScale
-		}
-		// LengthScale: explicit piper.length_scale takes priority;
-		// otherwise convert speed multiplier (length_scale = 1/speed)
-		if cfg.TTS.Piper.LengthScale > 0 {
-			p.LengthScale = cfg.TTS.Piper.LengthScale
-		} else if cfg.TTS.Speed > 0 {
-			p.LengthScale = 1.0 / cfg.TTS.Speed
-		}
-		if cfg.TTS.Piper.SentenceSilence > 0 {
-			p.SentenceSilence = cfg.TTS.Piper.SentenceSilence
-		}
-		ttsProvider = p
-		slog.Info("tts provider configured",
-			slog.String("engine", "piper"),
-			slog.String("model_path", p.ModelPath),
-			slog.Float64("noise_scale", p.NoiseScale),
-			slog.Float64("length_scale", p.LengthScale),
-			slog.Float64("sentence_silence", p.SentenceSilence),
-		)
+		ttsProvider = newPiperProvider(cfg)
 	case "kokoro":
-		k := speech.NewKokoroProvider()
-		if cfg.TTS.Voice != "" {
-			k.Voice = cfg.TTS.Voice
-		}
-		if cfg.TTS.Speed > 0 {
-			k.Speed = cfg.TTS.Speed
-		}
-		if cfg.TTS.Kokoro.Lang != "" {
-			k.Lang = cfg.TTS.Kokoro.Lang
-		}
-		k.ModelPath, k.VoicesPath = speech.ResolveKokoroPaths(cfg.TTS.Kokoro.ModelPath, cfg.TTS.Kokoro.VoicesPath)
-		ttsProvider = k
-		slog.Info("tts provider configured",
-			slog.String("engine", "kokoro"),
-			slog.String("model_path", k.ModelPath),
-			slog.String("voices_path", k.VoicesPath),
-			slog.String("voice", k.Voice),
-			slog.String("lang", k.Lang),
-			slog.Float64("speed", k.Speed),
-		)
+		ttsProvider = newKokoroProvider(cfg)
 	case "moss-nano":
-		m := speech.NewMossNanoProvider()
-		if cfg.TTS.MossNano.Backend != "" {
-			m.Backend = cfg.TTS.MossNano.Backend
-		}
-		m.ModelDir = speech.ResolveMossNanoModelDir(cfg.TTS.MossNano.ModelDir)
-		if cfg.TTS.MossNano.PromptSpeech != "" {
-			m.PromptSpeech = cfg.TTS.MossNano.PromptSpeech
-		}
-		if cfg.TTS.MossNano.Voice != "" {
-			m.Voice = cfg.TTS.MossNano.Voice
-		}
-		ttsProvider = m
-		slog.Info("tts provider configured",
-			slog.String("engine", "moss-nano"),
-			slog.String("backend", m.Backend),
-			slog.String("model_dir", m.ModelDir),
-			slog.String("prompt_speech", m.PromptSpeech),
-			slog.String("voice", m.Voice),
-		)
+		ttsProvider = newMossNanoProvider(cfg)
 	default:
 		// Default to Edge TTS when engine is empty or unrecognized
-		p := speech.NewEdgeTTSProvider()
-		if cfg.TTS.Voice != "" {
-			p.Voice = cfg.TTS.Voice
-		}
-		if cfg.TTS.Speed > 0 {
-			ratePercent := int((cfg.TTS.Speed - 1.0) * 100)
-			if ratePercent > 0 {
-				p.Rate = fmt.Sprintf("+%d%%", ratePercent)
-			} else if ratePercent < 0 {
-				p.Rate = fmt.Sprintf("%d%%", ratePercent)
-			}
-		}
-		ttsProvider = p
-		slog.Info("tts provider configured",
-			slog.String("engine", "edge"),
-			slog.String("voice", p.Voice),
-			slog.String("rate", p.Rate),
-		)
+		ttsProvider = newEdgeProvider(cfg)
 	}
 	handler.SetSpeechProvider(ttsProvider)
+}
 
-	fileHandler, err := service.NewFileHandler(cfg.LogDir, "clawbench", cfg.LogMaxDays)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to initialize file logger, logging to stderr only: %v\n", err)
-	} else {
-		defer fileHandler.Close()
+// newEdgeProvider creates an Edge TTS provider from config.
+func newEdgeProvider(cfg model.Config) *speech.EdgeTTSProvider {
+	p := speech.NewEdgeTTSProvider()
+	if cfg.TTS.Voice != "" {
+		p.Voice = cfg.TTS.Voice
 	}
-
-	// Log level from config (default: "info")
-	logLevel := slog.LevelInfo
-	switch cfg.LogLevel {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	}
-
-	// Create a multi-writer for both stderr and file
-	textHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
-	multiHandler := &multiHandler{
-		handlers: buildLogHandlers(textHandler, fileHandler),
-	}
-	slog.SetDefault(slog.New(multiHandler))
-	slog.Info("server starting")
-
-	// Load .env file into process environment (before loading agents,
-	// so agent env ${VAR} references can be resolved at request time)
-	dotenvPath := filepath.Join(model.BinDir, ".env")
-	if _, err := os.Stat(dotenvPath); os.IsNotExist(err) {
-		dotenvPath = ".env"
-	}
-	if _, err := os.Stat(dotenvPath); err == nil {
-		if err := model.LoadDotEnv(dotenvPath); err != nil {
-			slog.Warn("failed to load .env file", slog.String("path", dotenvPath), slog.String("err", err.Error()))
-		} else {
-			slog.Info("loaded .env file", slog.String("path", dotenvPath))
+	if cfg.TTS.Speed > 0 {
+		// Convert speed multiplier (e.g. 1.5) to edge-tts rate percentage (e.g. "+50%")
+		ratePercent := int((cfg.TTS.Speed - 1.0) * 100)
+		if ratePercent > 0 {
+			p.Rate = fmt.Sprintf("+%d%%", ratePercent)
+		} else if ratePercent < 0 {
+			p.Rate = fmt.Sprintf("%d%%", ratePercent)
 		}
 	}
+	slog.Info(
+		"tts provider configured",
+		slog.String("engine", "edge"),
+		slog.String("voice", p.Voice),
+		slog.String("rate", p.Rate),
+	)
+	return p
+}
 
-	// Ensure $SHELL reflects the user's login shell (from /etc/passwd).
-	// On Debian/Ubuntu, $SHELL may be /bin/sh (dash) when started from
-	// non-login contexts (systemd, cron, nohup), but AI CLI tools read
-	// $SHELL to decide which shell their "Bash tool" uses.
-	platform.SetLoginShell()
+// newPiperProvider creates a Piper TTS provider from config.
+func newPiperProvider(cfg model.Config) *speech.PiperProvider {
+	p := speech.NewPiperProvider()
+	// Resolve model path: explicit config > voice-based path
+	p.ModelPath = speech.ResolveModelPath(cfg.TTS.Voice, cfg.TTS.Piper.ModelPath)
+	if cfg.TTS.Piper.NoiseScale > 0 {
+		p.NoiseScale = cfg.TTS.Piper.NoiseScale
+	}
+	// LengthScale: explicit piper.length_scale takes priority;
+	// otherwise convert speed multiplier (length_scale = 1/speed)
+	if cfg.TTS.Piper.LengthScale > 0 {
+		p.LengthScale = cfg.TTS.Piper.LengthScale
+	} else if cfg.TTS.Speed > 0 {
+		p.LengthScale = 1.0 / cfg.TTS.Speed
+	}
+	if cfg.TTS.Piper.SentenceSilence > 0 {
+		p.SentenceSilence = cfg.TTS.Piper.SentenceSilence
+	}
+	slog.Info(
+		"tts provider configured",
+		slog.String("engine", "piper"),
+		slog.String("model_path", p.ModelPath),
+		slog.Float64("noise_scale", p.NoiseScale),
+		slog.Float64("length_scale", p.LengthScale),
+		slog.Float64("sentence_silence", p.SentenceSilence),
+	)
+	return p
+}
 
+// newKokoroProvider creates a Kokoro TTS provider from config.
+func newKokoroProvider(cfg model.Config) *speech.KokoroProvider {
+	k := speech.NewKokoroProvider()
+	if cfg.TTS.Voice != "" {
+		k.Voice = cfg.TTS.Voice
+	}
+	if cfg.TTS.Speed > 0 {
+		k.Speed = cfg.TTS.Speed
+	}
+	if cfg.TTS.Kokoro.Lang != "" {
+		k.Lang = cfg.TTS.Kokoro.Lang
+	}
+	k.ModelPath, k.VoicesPath = speech.ResolveKokoroPaths(cfg.TTS.Kokoro.ModelPath, cfg.TTS.Kokoro.VoicesPath)
+	slog.Info(
+		"tts provider configured",
+		slog.String("engine", "kokoro"),
+		slog.String("model_path", k.ModelPath),
+		slog.String("voices_path", k.VoicesPath),
+		slog.String("voice", k.Voice),
+		slog.String("lang", k.Lang),
+		slog.Float64("speed", k.Speed),
+	)
+	return k
+}
+
+// newMossNanoProvider creates a MossNano TTS provider from config.
+func newMossNanoProvider(cfg model.Config) *speech.MossNanoProvider {
+	m := speech.NewMossNanoProvider()
+	if cfg.TTS.MossNano.Backend != "" {
+		m.Backend = cfg.TTS.MossNano.Backend
+	}
+	m.ModelDir = speech.ResolveMossNanoModelDir(cfg.TTS.MossNano.ModelDir)
+	if cfg.TTS.MossNano.PromptSpeech != "" {
+		m.PromptSpeech = cfg.TTS.MossNano.PromptSpeech
+	}
+	if cfg.TTS.MossNano.Voice != "" {
+		m.Voice = cfg.TTS.MossNano.Voice
+	}
+	slog.Info(
+		"tts provider configured",
+		slog.String("engine", "moss-nano"),
+		slog.String("backend", m.Backend),
+		slog.String("model_dir", m.ModelDir),
+		slog.String("prompt_speech", m.PromptSpeech),
+		slog.String("voice", m.Voice),
+	)
+	return m
+}
+
+// initPasswordState initializes password verification state, session tokens,
+// and cookie tokens.
+func initPasswordState(cfg model.Config, autoPassword string) {
 	// Print auto-generated password info (ISS-003d: don't log plaintext password)
 	if autoPassword != "" {
-		slog.Info("auto-generated password (no password configured)",
+		slog.Info(
+			"auto-generated password (no password configured)",
 			slog.String("file", filepath.Join(model.BinDir, ".clawbench", "auto-password")),
 		)
 		// Print to stdout for foreground mode and shell scripts to capture
@@ -468,34 +404,9 @@ func main() {
 			model.PersistCookieToken(model.CookieToken)
 		}
 	}
+}
 
-	// Initialize SQLite database (runFromServer=true: clean up orphaned streaming messages)
-	if err := service.InitDB(true); err != nil {
-		slog.Error("failed to initialize database", slog.String("err", err.Error()))
-		os.Exit(1)
-	}
-	defer service.CloseDB()
-
-	// Initialize RAG history memory system (always enabled)
-	if err := rag.Init(cfg.RAG); err != nil {
-		slog.Warn("failed to initialize RAG system, search will be limited", slog.String("err", err.Error()))
-	}
-	// Always defer shutdown — cleanup worker may be running even without RAG
-	defer rag.Shutdown()
-
-	// Determine port before loading skills/agents (skills and agents need {{PORT}})
-	port := cfg.Port
-	// Allow PORT environment variable to override config
-	if portStr := os.Getenv("PORT"); portStr != "" {
-		if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p <= 65535 {
-			port = p
-		}
-	}
-	// CLI --port flag takes highest priority
-	if cliPort > 0 {
-		port = cliPort
-	}
-
+func loadAndDiscoverAgents(cfg model.Config, absBinPath string) {
 	// Load agent configurations (set ClawbenchBin first for placeholder replacement)
 	model.ClawbenchBin = absBinPath
 	agentsDir := filepath.Join(model.BinDir, "config", "agents")
@@ -559,15 +470,18 @@ func main() {
 	} else {
 		slog.Warn("no agents available, session creation will fail")
 	}
+}
 
-	// Initialize and start scheduler (MUST be after LoadAgents so model.Agents is populated)
+// initScheduler initializes the task scheduler and task summarizer.
+func initScheduler(cfg model.Config) *service.Scheduler {
 	scheduler := service.NewScheduler()
 
 	// Initialize task summarizer if summarization backend is configured (MUST be before scheduler.Start())
 	if cfg.Summarize.Backend != "" && cfg.Summarize.Backend != "simple" {
 		taskSummarizer, err := initTaskSummarizer(cfg)
 		if err != nil {
-			slog.Warn("failed to create task summarizer, task summaries will be disabled",
+			slog.Warn(
+				"failed to create task summarizer, task summaries will be disabled",
 				slog.String("backend", cfg.Summarize.Backend),
 				slog.String("err", err.Error()),
 			)
@@ -577,7 +491,8 @@ func main() {
 			service.SetTaskSummarizerInstance(taskSummarizer)
 			// Configure chat message auto-summarization based on config
 			service.SetChatSummaryEnabled(cfg.Summarize.IsChatSummaryEnabled())
-			slog.Info("task summarizer configured",
+			slog.Info(
+				"task summarizer configured",
 				slog.String("backend", cfg.Summarize.Backend),
 			)
 		}
@@ -588,10 +503,118 @@ func main() {
 		slog.Warn("failed to load scheduled tasks", slog.String("err", err.Error()))
 	}
 	scheduler.Start()
-	defer scheduler.Stop()
 	service.GlobalScheduler = scheduler
+	return scheduler
+}
 
-	// Start periodic cleanup of stale WS subscriptions (every 60s)
+// setupFileLogging initializes the file log handler and returns a close function.
+// Returns nil if file logging could not be initialized.
+func setupFileLogging(cfg model.Config) func() {
+	fileHandler, err := service.NewFileHandler(cfg.LogDir, "clawbench", cfg.LogMaxDays)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to initialize file logger, logging to stderr only: %v\n", err)
+		return nil
+	}
+
+	// Log level from config (default: "info")
+	logLevel := slog.LevelInfo
+	switch cfg.LogLevel {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	}
+
+	textHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
+	multi := &multiHandler{
+		handlers: buildLogHandlers(textHandler, fileHandler),
+	}
+	slog.SetDefault(slog.New(multi))
+	slog.Info("server starting")
+
+	return func() { _ = fileHandler.Close() }
+}
+
+// parseCLIPort extracts the --port flag value from command-line arguments.
+func parseCLIPort() int {
+	cliPort := 0
+	for i, arg := range os.Args[1:] {
+		if arg == "--port" && i+1 < len(os.Args[1:]) {
+			if p, err := strconv.Atoi(os.Args[i+2]); err == nil && p > 0 && p <= 65535 {
+				cliPort = p
+			}
+		}
+	}
+	return cliPort
+}
+
+// resolvePort determines the server port from config, env, and CLI flags.
+func resolvePort(cfg model.Config, cliPort int) int {
+	port := cfg.Port
+	// Allow PORT environment variable to override config
+	if portStr := os.Getenv("PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p <= 65535 {
+			port = p
+		}
+	}
+	// CLI --port flag takes highest priority
+	if cliPort > 0 {
+		port = cliPort
+	}
+	return port
+}
+
+// initServices loads .env, sets login shell, initializes DB, RAG, agents, scheduler,
+// port forwarding, file watcher, terminal, and WS event manager.
+// Returns the resolved server port.
+func initServices(cfg model.Config, autoPassword string, cliPort int) int {
+	// Load .env file into process environment (before loading agents,
+	// so agent env ${VAR} references can be resolved at request time)
+	dotenvPath := filepath.Join(model.BinDir, ".env")
+	if _, err := os.Stat(dotenvPath); os.IsNotExist(err) {
+		dotenvPath = ".env"
+	}
+	if _, err := os.Stat(dotenvPath); err == nil {
+		if err := model.LoadDotEnv(dotenvPath); err != nil {
+			slog.Warn("failed to load .env file", slog.String("path", dotenvPath), slog.String("err", err.Error()))
+		} else {
+			slog.Info("loaded .env file", slog.String("path", dotenvPath))
+		}
+	}
+
+	// Ensure $SHELL reflects the user's login shell (from /etc/passwd).
+	platform.SetLoginShell()
+
+	// Initialize password and session state
+	initPasswordState(cfg, autoPassword)
+
+	// Initialize SQLite database
+	if err := service.InitDB(true); err != nil {
+		slog.Error("failed to initialize database", slog.String("err", err.Error()))
+		os.Exit(1)
+	}
+	defer service.CloseDB()
+
+	// Initialize RAG history memory system
+	if err := rag.Init(cfg.RAG); err != nil {
+		slog.Warn("failed to initialize RAG system, search will be limited", slog.String("err", err.Error()))
+	}
+	defer rag.Shutdown()
+
+	// Determine port before loading skills/agents
+	resolvedPort := resolvePort(cfg, cliPort)
+
+	// Load agents and discover models
+	absBinPath, _ := filepath.Abs(os.Args[0])
+	loadAndDiscoverAgents(cfg, absBinPath)
+
+	// Initialize and start scheduler
+	scheduler := initScheduler(cfg)
+	defer scheduler.Stop()
+
+	// Start periodic cleanup of stale WS subscriptions
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
@@ -603,8 +626,9 @@ func main() {
 	}()
 
 	host := cfg.Host
-	addr := fmt.Sprintf("%s:%d", host, port)
-	slog.Info("server ready",
+	addr := fmt.Sprintf("%s:%d", host, resolvedPort)
+	slog.Info(
+		"server ready",
 		slog.String("addr", addr),
 		slog.String("roots", strings.Join(model.RootPaths, ", ")),
 		slog.Bool("auth_enabled", model.SessionToken != ""),
@@ -613,26 +637,20 @@ func main() {
 		slog.Info("dev HTTP listener enabled", slog.Int("port", cfg.DevPort))
 	}
 
-	// Initialize RAG indexer (needs final port number)
+	// Initialize RAG indexer
 	if rag.GlobalStore != nil {
-		// Start RAG indexer
 		rag.StartIndexer(cfg.RAG)
 	}
-
-	// Start cleanup worker for soft-deleted data (runs even without RAG)
 	rag.StartCleanupWorker(cfg.RAG)
 
-	// Initialize proxy service (port forwarding) and SSH tunnel server.
-	// ProxyRegistry is only created when SSH tunnel is enabled — it has no
-	// standalone purpose without the SSH tunnel to transport traffic.
+	// Initialize proxy service and SSH tunnel server
 	if cfg.PortForward.Enabled {
-		proxyService := service.NewProxyRegistry(port)
-		// Always apply config — empty AllowedPorts means "allow all ports"
+		proxyService := service.NewProxyRegistry(resolvedPort)
 		proxyService.SetAllowedPorts(cfg.PortForward.AllowedPorts)
 		service.ProxyService = proxyService
 		defer proxyService.Stop()
 
-		sshServer := ssh.NewServer(cfg.PortForward, port, cfg.Password, proxyService)
+		sshServer := ssh.NewServer(cfg.PortForward, resolvedPort, cfg.Password, proxyService)
 		handler.SetSSHServer(sshServer)
 		go func() {
 			if err := sshServer.ListenAndServe(); err != nil {
@@ -644,21 +662,20 @@ func main() {
 		slog.Info("SSH tunnel and port forwarding disabled by config")
 	}
 
-	// Initialize file watcher for auto-refresh (non-critical — continue on failure)
+	// Initialize file watcher
 	if err := service.InitFileWatcher(); err != nil {
-		slog.Warn("file watcher not available, auto-refresh disabled",
-			slog.String("err", err.Error()),
-		)
+		slog.Warn("file watcher not available, auto-refresh disabled", slog.String("err", err.Error()))
 	} else {
 		defer service.StopFileWatcher()
 	}
 
-	// Initialize terminal manager (interactive web terminal)
+	// Initialize terminal manager
 	if cfg.Terminal.Enabled {
-		terminalMgr := terminal.NewManager(cfg.Terminal, port)
+		terminalMgr := terminal.NewManager(cfg.Terminal, resolvedPort)
 		handler.SetTerminalManager(terminalMgr)
 		defer terminalMgr.Close()
-		slog.Info("terminal manager initialized",
+		slog.Info(
+			"terminal manager initialized",
 			slog.String("idle_timeout", cfg.Terminal.IdleTimeout),
 			slog.Int("buffer_lines", cfg.Terminal.BufferLines),
 		)
@@ -669,6 +686,61 @@ func main() {
 	ws.InitManager(jpushClient)
 	handler.SetPushClient(jpushClient)
 
+	return resolvedPort
+}
+
+func main() {
+	// Root --help handler
+	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
+		fmt.Println("ClawBench - Mobile-first AI workstation")
+		fmt.Println()
+		fmt.Println("Usage: clawbench <command> [options]")
+		fmt.Println()
+		fmt.Println("Commands:")
+		fmt.Println("  task    Manage scheduled tasks (cron-based AI execution)")
+		fmt.Println("  rag     Search and retrieve conversation history")
+		fmt.Println()
+		fmt.Println("Run \"clawbench <command> --help\" for more information.")
+		fmt.Println()
+		fmt.Println("Server options:")
+		fmt.Println("  --port PORT    Server port (overrides config file, default: 20000)")
+		os.Exit(0)
+	}
+
+	// Task subcommand dispatch (e.g., "clawbench task create --name ...")
+	if len(os.Args) > 1 && os.Args[1] == "task" {
+		os.Exit(cli.RunTaskCommand(os.Args[2:]))
+	}
+
+	// RAG subcommand dispatch (e.g., "clawbench rag search -q ...")
+	if len(os.Args) > 1 && os.Args[1] == "rag" {
+		os.Exit(cli.RunRAGCommand(os.Args[2:]))
+	}
+
+	// Parse CLI flags
+	cliPort := parseCLIPort()
+
+	// Determine binary directory for data storage (green portable layout)
+	absBinPath, _ := filepath.Abs(os.Args[0])
+	model.BinDir = filepath.Dir(absBinPath)
+
+	// Load configuration — config/config.yaml is optional
+	cfg, _, autoPassword := loadServerConfig()
+
+	// Initialize TTS summarizer from config
+	initTTSSummarizer(cfg)
+
+	// Initialize TTS synthesis provider from config
+	initTTSProvider(cfg)
+
+	// Setup file logging
+	if closeFn := setupFileLogging(cfg); closeFn != nil {
+		defer closeFn()
+	}
+
+	// Load .env, set shell, initialize services
+	port := initServices(cfg, autoPassword, cliPort)
+
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -677,14 +749,17 @@ func main() {
 	// after this one exits, then trigger graceful shutdown.
 	handler.SetRestartFunc(makeRestartFunc(selfSignalInterrupt))
 
-	srv := &http.Server{Addr: addr, Handler: mux}
+	host := cfg.Host
+	addr := fmt.Sprintf("%s:%d", host, port)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 30 * time.Second}
 
 	// Optional localhost-only HTTP dev listener (for Vite dev proxy)
 	var devSrv *http.Server
 	if cfg.DevPort > 0 {
 		devSrv = &http.Server{
-			Addr:    fmt.Sprintf("127.0.0.1:%d", cfg.DevPort),
-			Handler: mux,
+			Addr:              fmt.Sprintf("127.0.0.1:%d", cfg.DevPort),
+			Handler:           mux,
+			ReadHeaderTimeout: 30 * time.Second,
 		}
 	}
 
@@ -707,46 +782,49 @@ func main() {
 		}
 	}()
 
-httpServer:
-	if !cfg.TLS.Enabled {
-		// TLS disabled: plain HTTP
-		slog.Info("starting with HTTP")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server failed", slog.String("err", err.Error()))
-			os.Exit(1)
-		}
-	} else {
-		// HTTPS with TLS
-		certFile := cfg.TLS.CertFile
-		keyFile := cfg.TLS.KeyFile
-		if certFile == "" {
-			certFile = os.Getenv("CERT_FILE")
-		}
-		if keyFile == "" {
-			keyFile = os.Getenv("KEY_FILE")
-		}
-		if certFile == "" || keyFile == "" {
-			slog.Warn("TLS enabled but cert_file and key_file are not configured, falling back to HTTP")
-			goto httpServer
-		}
-		slog.Info("starting with TLS", slog.String("cert", certFile))
-
-		// Start dev HTTP listener alongside TLS
-		if devSrv != nil {
-			go func() {
-				slog.Info("dev HTTP listener", slog.Int("port", cfg.DevPort))
-				if err := devSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					slog.Error("dev listener failed", slog.String("err", err.Error()))
-				}
-			}()
-		}
-
-		if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
-			slog.Error("server failed", slog.String("err", err.Error()))
-			os.Exit(1)
-		}
+	if err := startHTTPServer(cfg, srv, devSrv); err != nil {
+		slog.Error("server failed", slog.String("err", err.Error()))
+		stop()
+		os.Exit(1) //nolint:gocritic // exitAfterDefer: stop() called above
 	}
 	slog.Info("server stopped")
+}
+
+// startHTTPServer starts the HTTP/HTTPS server. Falls back from TLS to HTTP
+// if certificates are missing.
+func startHTTPServer(cfg model.Config, srv, devSrv *http.Server) error {
+	if !cfg.TLS.Enabled {
+		slog.Info("starting with HTTP")
+		return srv.ListenAndServe()
+	}
+
+	// HTTPS with TLS
+	certFile := cfg.TLS.CertFile
+	keyFile := cfg.TLS.KeyFile
+	if certFile == "" {
+		certFile = os.Getenv("CERT_FILE")
+	}
+	if keyFile == "" {
+		keyFile = os.Getenv("KEY_FILE")
+	}
+	if certFile == "" || keyFile == "" {
+		slog.Warn("TLS enabled but cert_file and key_file are not configured, falling back to HTTP")
+		slog.Info("starting with HTTP")
+		return srv.ListenAndServe()
+	}
+	slog.Info("starting with TLS", slog.String("cert", certFile))
+
+	// Start dev HTTP listener alongside TLS
+	if devSrv != nil {
+		go func() {
+			slog.Info("dev HTTP listener", slog.Int("port", cfg.DevPort))
+			if err := devSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("dev listener failed", slog.String("err", err.Error()))
+			}
+		}()
+	}
+
+	return srv.ListenAndServeTLS(certFile, keyFile)
 }
 
 // initTaskSummarizer creates a TaskSummarizer based on the summarize.backend config.
@@ -755,19 +833,18 @@ func initTaskSummarizer(cfg model.Config) (*summarize.TaskSummarizer, error) {
 	backend := cfg.Summarize.Backend
 	modelName := cfg.Summarize.Model
 
-	switch {
-	case backend == "simple":
+	switch backend {
+	case "simple", "":
 		// Simple summarizer: truncate-only, no AI call. Wrap in pipeline with PreserveMarkdown.
 		pipeline := summarize.NewPipelineWithOpts(
-			func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
-				return summarize.NewSimple().Summarize(ctx, text, "")
+			func(ctx context.Context, _ string, _ string, _ int) (string, error) {
+				return summarize.NewSimple().Summarize(ctx, "", "")
 			},
 			"", // use default prompt
 			summarize.SummarizeOption{PreserveMarkdown: true},
 		)
 		return summarize.NewTaskSummarizerFromPipeline(pipeline), nil
-
-	case backend == "api":
+	case "api":
 		if cfg.Summarize.API.BaseURL == "" {
 			return nil, fmt.Errorf("summarize.backend is \"api\" but summarize.api.base_url is not configured")
 		}
@@ -789,7 +866,6 @@ func initTaskSummarizer(cfg model.Config) (*summarize.TaskSummarizer, error) {
 			summarize.SummarizeOption{PreserveMarkdown: true},
 		)
 		return summarize.NewTaskSummarizerFromPipeline(pipeline), nil
-
 	default:
 		// AI CLI backends (claude/codebuddy/gemini/opencode/codex/qoder/vecli/deepseek)
 		return summarize.NewTaskSummarizer(backend, modelName)

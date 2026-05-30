@@ -15,13 +15,13 @@ import (
 
 // setupAgentTestEnv creates a temp agents directory with YAML files and calls LoadAgents.
 // Returns the temp dir and a teardown function.
-func setupAgentTestEnv(t *testing.T) (string, func()) {
+func setupAgentTestEnv(t *testing.T) (tmpDir string, teardown func()) {
 	t.Helper()
 
 	// Create temp config dir structure: config/agents/*.yaml
-	tmpDir := t.TempDir()
+	tmpDir = t.TempDir()
 	agentsDir := filepath.Join(tmpDir, "agents")
-	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	require.NoError(t, os.MkdirAll(agentsDir, 0o755))
 
 	// Write test agent YAMLs
 	codebuddyYAML := `id: codebuddy
@@ -42,7 +42,7 @@ thinking_effort_levels:
   - medium
   - high
 `
-	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "codebuddy.yaml"), []byte(codebuddyYAML), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "codebuddy.yaml"), []byte(codebuddyYAML), 0o644))
 
 	claudeYAML := `id: claude
 name: Claude
@@ -61,7 +61,7 @@ thinking_effort_levels:
   - high
   - xhigh
 `
-	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "claude.yaml"), []byte(claudeYAML), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "claude.yaml"), []byte(claudeYAML), 0o644))
 
 	// Save original globals
 	origAgents := model.Agents
@@ -70,7 +70,7 @@ thinking_effort_levels:
 	// Load agents from temp dir
 	require.NoError(t, model.LoadAgents(agentsDir))
 
-	teardown := func() {
+	teardown = func() {
 		model.Agents = origAgents
 		model.AgentList = origAgentList
 	}
@@ -138,8 +138,8 @@ func TestAgentPatch_PreferredThinkingEffort(t *testing.T) {
 	defer teardown()
 
 	body := map[string]any{
-		"id":                          "codebuddy",
-		"preferred_thinking_effort":   "high",
+		"id":                        "codebuddy",
+		"preferred_thinking_effort": "high",
 	}
 	req := newRequest(t, http.MethodPatch, "/api/agents", body)
 	withAuthCookie(req, model.SessionToken)
@@ -161,8 +161,8 @@ func TestAgentPatch_InvalidPreferredThinkingEffort(t *testing.T) {
 	defer teardown()
 
 	body := map[string]any{
-		"id":                          "codebuddy",
-		"preferred_thinking_effort":   "ultra",
+		"id":                        "codebuddy",
+		"preferred_thinking_effort": "ultra",
 	}
 	req := newRequest(t, http.MethodPatch, "/api/agents", body)
 	withAuthCookie(req, model.SessionToken)
@@ -191,9 +191,9 @@ func TestAgentPatch_BothFields(t *testing.T) {
 	defer teardown()
 
 	body := map[string]any{
-		"id":                          "claude",
-		"preferred_model":             "claude-sonnet-4-6",
-		"preferred_thinking_effort":   "xhigh",
+		"id":                        "claude",
+		"preferred_model":           "claude-sonnet-4-6",
+		"preferred_thinking_effort": "xhigh",
 	}
 	req := newRequest(t, http.MethodPatch, "/api/agents", body)
 	withAuthCookie(req, model.SessionToken)
@@ -312,7 +312,7 @@ func TestAgentRefreshModels_Success(t *testing.T) {
 
 	// Create model cache dir and set global
 	cacheDir := filepath.Join(tmpDir, "model-cache")
-	require.NoError(t, os.MkdirAll(cacheDir, 0755))
+	require.NoError(t, os.MkdirAll(cacheDir, 0o755))
 	origCacheDir := model.ModelCacheDir
 	model.ModelCacheDir = cacheDir
 	defer func() { model.ModelCacheDir = origCacheDir }()
@@ -374,7 +374,7 @@ func TestAgentRefreshModels_DiscoveryFails(t *testing.T) {
 
 	// Override DiscoverModels to return nil (simulating discovery failure)
 	origDiscover := model.DiscoverModels
-	model.DiscoverModels = func(spec model.BackendSpec) []model.AgentModel {
+	model.DiscoverModels = func(_ model.BackendSpec) []model.AgentModel {
 		return nil
 	}
 	defer func() { model.DiscoverModels = origDiscover }()
@@ -407,7 +407,7 @@ func TestServeAgentSubRoutes_RefreshModels(t *testing.T) {
 
 	// Create model cache dir and set global
 	cacheDir := filepath.Join(tmpDir, "model-cache")
-	require.NoError(t, os.MkdirAll(cacheDir, 0755))
+	require.NoError(t, os.MkdirAll(cacheDir, 0o755))
 	origCacheDir := model.ModelCacheDir
 	model.ModelCacheDir = cacheDir
 	defer func() { model.ModelCacheDir = origCacheDir }()
@@ -470,7 +470,7 @@ func TestServeAgentRefreshModels_CLINotFound(t *testing.T) {
 
 	// Override DiscoverModels to return nil, simulating CLI not available
 	origDiscover := model.DiscoverModels
-	model.DiscoverModels = func(spec model.BackendSpec) []model.AgentModel {
+	model.DiscoverModels = func(_ model.BackendSpec) []model.AgentModel {
 		return nil
 	}
 	defer func() { model.DiscoverModels = origDiscover }()

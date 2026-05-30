@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -130,7 +131,7 @@ func (s *Session) readPTY(ctx context.Context) {
 
 			// Send to WebSocket client if connected
 			msg := ServerMessage{
-				Type: "output",
+				Type: msgTypeOutput,
 				Data: string(data),
 			}
 			s.sendToClient(msg)
@@ -151,7 +152,8 @@ func (s *Session) waitProcess() {
 	err := s.cmd.Wait()
 	exitCode := 0
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
 	}
@@ -180,7 +182,7 @@ func (s *Session) waitProcess() {
 	}
 
 	if ptmx != nil {
-		ptmx.Close()
+		_ = ptmx.Close()
 	}
 	s.buffer.Reset()
 	close(s.done)
@@ -216,7 +218,7 @@ func (s *Session) Connect(conn *websocket.Conn) error {
 			slog.String("session", s.id),
 		)
 		s.wsMu.Lock()
-		s.wsConn.Close(StatusReplaced, "replaced by new client")
+		_ = s.wsConn.Close(StatusReplaced, "replaced by new client")
 		s.wsMu.Unlock()
 		s.wsConn = nil
 	}
@@ -258,7 +260,7 @@ func (s *Session) Disconnect(conn *websocket.Conn) {
 	// If a new client has already connected (replaced s.wsConn), this old
 	// goroutine must not touch the new connection.
 	if s.wsConn == conn {
-		s.wsConn.Close(websocket.StatusNormalClosure, "client disconnected")
+		_ = s.wsConn.Close(websocket.StatusNormalClosure, "client disconnected")
 		s.wsConn = nil
 	}
 
@@ -279,7 +281,7 @@ func (s *Session) HandleInput(data string) error {
 		return fmt.Errorf("PTY not available")
 	}
 
-	_, err := ptmx.Write([]byte(data))
+	_, err := ptmx.WriteString(data)
 	return err
 }
 
@@ -344,11 +346,11 @@ func (s *Session) Close() {
 
 	s.mu.Lock()
 	if s.ptmx != nil {
-		s.ptmx.Close()
+		_ = s.ptmx.Close()
 		s.ptmx = nil
 	}
 	if s.wsConn != nil {
-		s.wsConn.Close(websocket.StatusNormalClosure, "session closed")
+		_ = s.wsConn.Close(websocket.StatusNormalClosure, "session closed")
 		s.wsConn = nil
 	}
 	s.mu.Unlock()

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -13,13 +14,28 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	testExampleComPort80  = "example.com:80"
+	testExampleComPort443 = "example.com:443"
+)
+
+// httpGet is a test helper that performs an HTTP GET with context.
+func httpGet(t *testing.T, urlStr string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, urlStr, http.NoBody)
+	assert.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	return resp
+}
+
 func TestReverseProxy_ForwardsRequest(t *testing.T) {
 	// Setup a backend server that echoes the Host header
 	var receivedHost string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHost = r.Host
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
 
@@ -36,9 +52,8 @@ func TestReverseProxy_ForwardsRequest(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Send a request through the proxy using a real HTTP client
-	resp, err := http.Get("http://" + addr + "/test")
-	assert.NoError(t, err)
-	defer resp.Body.Close()
+	resp := httpGet(t, "http://"+addr+"/test")
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	// The backend should receive the original target's Host, not "localhost:randomPort"
@@ -64,9 +79,8 @@ func TestReverseProxy_SetsCorrectHost(t *testing.T) {
 	addr := rp.Addr()
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := http.Get("http://" + addr + "/api/data")
-	assert.NoError(t, err)
-	defer resp.Body.Close()
+	resp := httpGet(t, "http://"+addr+"/api/data")
+	defer func() { _ = resp.Body.Close() }()
 
 	// Host header should match the backend's address (target host:port)
 	assert.Equal(t, backendAddr, receivedHost, "Host header should be the target address")
@@ -89,9 +103,8 @@ func TestReverseProxy_HandlesPort80(t *testing.T) {
 	addr := rp.Addr()
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := http.Get("http://" + addr + "/")
-	assert.NoError(t, err)
-	defer resp.Body.Close()
+	resp := httpGet(t, "http://"+addr+"/")
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	// Host should be the backend address, not the proxy address
@@ -99,7 +112,7 @@ func TestReverseProxy_HandlesPort80(t *testing.T) {
 }
 
 func TestReverseProxy_SupportsHTTPS(t *testing.T) {
-	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()
@@ -116,16 +129,18 @@ func TestReverseProxy_SupportsHTTPS(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Connect to proxy via plain HTTP (proxy handles TLS to backend)
-	client := &http.Client{Transport: &http.Transport{}}
-	resp, err := client.Get("http://" + addr + "/")
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/", http.NoBody)
 	assert.NoError(t, err)
-	defer resp.Body.Close()
+	client := &http.Client{Transport: &http.Transport{}}
+	resp, err := client.Do(req)
+	assert.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestReverseProxy_Port(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()
@@ -139,16 +154,13 @@ func TestReverseProxy_Port(t *testing.T) {
 }
 
 func TestReverseProxy_TargetHostRewrite(t *testing.T) {
-	// The key scenario: forwarding to a LAN IP like 192.168.1.100
-	// The browser sends Host: localhost:localPort, but the backend
-	// should receive Host: 192.168.1.100:targetPort
 	var receivedHost string
 	var receivedPath string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHost = r.Host
 		receivedPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("response from backend"))
+		_, _ = w.Write([]byte("response from backend"))
 	}))
 	defer backend.Close()
 
@@ -168,9 +180,8 @@ func TestReverseProxy_TargetHostRewrite(t *testing.T) {
 	addr := rp.Addr()
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := http.Get("http://" + addr + "/some/path")
-	assert.NoError(t, err)
-	defer resp.Body.Close()
+	resp := httpGet(t, "http://"+addr+"/some/path")
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, targetHost, receivedHost, "Host header should be the target address, not localhost")
@@ -178,9 +189,9 @@ func TestReverseProxy_TargetHostRewrite(t *testing.T) {
 }
 
 func TestReverseProxy_ResponseBody(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("hello from backend"))
+		_, _ = w.Write([]byte("hello from backend"))
 	}))
 	defer backend.Close()
 
@@ -192,9 +203,8 @@ func TestReverseProxy_ResponseBody(t *testing.T) {
 	addr := rp.Addr()
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := http.Get("http://" + addr + "/")
-	assert.NoError(t, err)
-	defer resp.Body.Close()
+	resp := httpGet(t, "http://"+addr+"/")
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	assert.NoError(t, err)
@@ -207,15 +217,27 @@ func TestStripDefaultPort(t *testing.T) {
 		scheme   string
 		want     string
 	}{
-		{"192.168.100.1:80", "http", "192.168.100.1"},
-		{"192.168.100.1:443", "https", "192.168.100.1"},
-		{"192.168.100.1:8080", "http", "192.168.100.1:8080"},
-		{"192.168.100.1:8443", "https", "192.168.100.1:8443"},
-		{"example.com:80", "http", "example.com"},
-		{"example.com:443", "https", "example.com"},
-		{"example.com:80", "https", "example.com:80"}, // port 80 with https is NOT default
-		{"example.com:443", "http", "example.com:443"}, // port 443 with http is NOT default
-		{"10.0.0.1", "http", "10.0.0.1"},             // no port at all
+		{"192.168.100.1:80", schemeHTTP, "192.168.100.1"},
+		{"192.168.100.1:443", schemeHTTPS, "192.168.100.1"},
+		{"192.168.100.1:8080", schemeHTTP, "192.168.100.1:8080"},
+		{"192.168.100.1:8443", schemeHTTPS, "192.168.100.1:8443"},
+		{testExampleComPort80, schemeHTTP, "example.com"},
+		{testExampleComPort443, schemeHTTPS, "example.com"},
+		{
+			testExampleComPort80,
+			schemeHTTPS,
+			testExampleComPort80,
+		}, // port 80 with https is NOT default
+		{
+			testExampleComPort443,
+			schemeHTTP,
+			testExampleComPort443,
+		}, // port 443 with http is NOT default
+		{
+			"10.0.0.1",
+			schemeHTTP,
+			"10.0.0.1",
+		}, // no port at all
 	}
 	for _, tt := range tests {
 		got := stripDefaultPort(tt.hostPort, tt.scheme)
@@ -229,7 +251,7 @@ func TestReverseProxy_StripsDefaultPortFromHost(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHost = r.Host
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer backend.Close()
 
@@ -241,16 +263,15 @@ func TestReverseProxy_StripsDefaultPortFromHost(t *testing.T) {
 	go rp.Serve()
 	defer rp.Close()
 
-	resp, err := http.Get("http://" + rp.Addr() + "/test")
-	assert.NoError(t, err)
-	resp.Body.Close()
+	resp := httpGet(t, "http://"+rp.Addr()+"/test")
+	_ = resp.Body.Close()
 
 	// Non-default port: Host should include port
 	assert.Equal(t, targetAddr, receivedHost, "Host for non-default port should include port")
 }
 
 func TestReverseProxy_AddAndPort(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()
@@ -277,18 +298,18 @@ func TestReverseProxy_NewReverseProxy_InvalidListenAddr(t *testing.T) {
 }
 
 func TestReverseProxy_NewReverseProxy_EmptyProtocol(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()
 
 	rp, err := NewReverseProxy("127.0.0.1", 0, backend.Listener.Addr().String(), "")
 	assert.NoError(t, err, "empty protocol should default to http")
-	defer rp.Close()
+	rp.Close()
 }
 
 func TestReverseProxy_NewReverseProxy_TargetWithScheme(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()
@@ -297,11 +318,11 @@ func TestReverseProxy_NewReverseProxy_TargetWithScheme(t *testing.T) {
 	addr := "http://" + backend.Listener.Addr().String()
 	rp, err := NewReverseProxy("127.0.0.1", 0, addr, "http")
 	assert.NoError(t, err)
-	defer rp.Close()
+	rp.Close()
 }
 
 func TestReverseProxy_Serve_ServerClosed(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()

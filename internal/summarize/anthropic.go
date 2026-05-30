@@ -18,7 +18,7 @@ type AnthropicSummarizer struct {
 	Key        string       // API key (sent as x-api-key header)
 	Model      string       // Model name (default: "claude-3-5-haiku-latest")
 	HTTPClient *http.Client // Shared HTTP client with timeout
-	gs         ttsPipeline
+	gs         Pipeline
 }
 
 // NewAnthropic creates an AnthropicSummarizer with the given configuration.
@@ -64,7 +64,7 @@ type anthropicContentBlock struct {
 }
 
 // Summarize condenses text for voice output using the Anthropic Messages API.
-func (s *AnthropicSummarizer) Summarize(ctx context.Context, text string, language string) (string, error) {
+func (s *AnthropicSummarizer) Summarize(ctx context.Context, text, language string) (string, error) {
 	return s.gs.Summarize(ctx, text, language)
 }
 
@@ -100,7 +100,7 @@ func (s *AnthropicSummarizer) DoSummarizePass(ctx context.Context, text, systemP
 	if err != nil {
 		return "", fmt.Errorf("anthropic request (pass %d): %w", pass, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -115,7 +115,7 @@ func (s *AnthropicSummarizer) DoSummarizePass(ctx context.Context, text, systemP
 	// Extract text from content blocks
 	var resultBuilder strings.Builder
 	for _, block := range chatResp.Content {
-		if block.Type == "text" {
+		if block.Type == blockTypeText {
 			resultBuilder.WriteString(block.Text)
 		}
 	}
@@ -124,7 +124,8 @@ func (s *AnthropicSummarizer) DoSummarizePass(ctx context.Context, text, systemP
 		return "", fmt.Errorf("anthropic (pass %d) returned empty output", pass)
 	}
 
-	slog.Info("tts summarize pass completed",
+	slog.Info(
+		"tts summarize pass completed",
 		slog.Int("pass", pass),
 		slog.String("backend", "anthropic"),
 		slog.String("model", s.Model),

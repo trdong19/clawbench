@@ -4,7 +4,7 @@ import "context"
 
 // SpeechProvider abstracts audio synthesis.
 // Implementations can be swapped (Edge TTS, Piper, Kokoro, MOSS-Nano, etc.)
-type SpeechProvider interface {
+type SpeechProvider interface { //nolint:revive // stutter ok: speech.SpeechProvider is the established API name
 	// Synthesize generates an audio file at outputPath from the given text.
 	// language is a language code (e.g. "zh", "en") — implementations that
 	// support language-specific synthesis should use it; others may ignore it.

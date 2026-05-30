@@ -70,11 +70,12 @@ func ListDir(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
-		if isNotDirError(err) {
-			writeLocalizedErrorf(w, r, http.StatusBadRequest, "NotADirectory")
-		} else if os.IsNotExist(err) {
+		switch {
+		case os.IsNotExist(err):
 			writeLocalizedError(w, r, model.NotFound(nil, "DirectoryNotFound"))
-		} else {
+		case isNotDirError(err):
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "NotADirectory")
+		default:
 			model.WriteError(w, model.Internal(fmt.Errorf("cannot read directory")))
 		}
 		return
@@ -95,9 +96,9 @@ func ListDir(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"path":   relFromBase,
-		"parent": parent,
-		"items":  items,
+		jsonKeyPath: relFromBase,
+		"parent":    parent,
+		"items":     items,
 	})
 }
 
@@ -111,18 +112,18 @@ func ListFiles(w http.ResponseWriter, r *http.Request) {
 	var files []FileInfo
 	err := filepath.Walk(projectPath, func(fullPath string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // walkfunc: skip inaccessible paths
 		}
 		if info.IsDir() {
 			return nil
 		}
 		relPath, err := filepath.Rel(projectPath, fullPath)
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // walkfunc: skip paths with rel errors
 		}
-		entryType := "file"
+		entryType := jsonKeyFile
 		if model.IsImageFile(info.Name()) {
-			entryType = "image"
+			entryType = jsonKeyImage
 		}
 		files = append(files, FileInfo{
 			Name:      info.Name(),
@@ -130,13 +131,12 @@ func ListFiles(w http.ResponseWriter, r *http.Request) {
 			Modified:  info.ModTime().Format("2006-01-02T15:04:05Z07:00"),
 			Size:      info.Size(),
 			Type:      entryType,
-		Supported: model.IsSupportedFile(info.Name()),
+			Supported: model.IsSupportedFile(info.Name()),
+		})
+		return nil
 	})
-	return nil
-})
-
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Cannot access directory"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{jsonKeyError: "Cannot access directory"})
 		return
 	}
 
@@ -176,7 +176,7 @@ func GetFile(w http.ResponseWriter, r *http.Request) {
 	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-		writeLocalizedError(w, r, model.NotFound(nil, "FileNotFoundShort"))
+			writeLocalizedError(w, r, model.NotFound(nil, "FileNotFoundShort"))
 		} else {
 			model.WriteError(w, model.Internal(fmt.Errorf("cannot access file")))
 		}
@@ -281,7 +281,7 @@ func ServeLocalFile(w http.ResponseWriter, r *http.Request) {
 			model.WriteError(w, model.Internal(fmt.Errorf("cannot open file")))
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		http.ServeContent(w, r, fileName, info.ModTime(), f)
 		return
 	}
@@ -297,7 +297,7 @@ func ServeProjects(w http.ResponseWriter, r *http.Request) {
 		serveProjectsCreate(w, r)
 		return
 	case http.MethodGet:
-		// continue below
+		// GET: handled below
 	default:
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 		return
@@ -307,17 +307,7 @@ func ServeProjects(w http.ResponseWriter, r *http.Request) {
 
 	// Root-level browsing: when path is empty, show root entries
 	if rawPath == "" || rawPath == "/" {
-		if platform.IsWindows() && len(model.RootPaths) > 1 {
-			// Windows: return synthetic drive entries
-			items := make([]DirEntry, 0, len(model.RootPaths))
-			for _, drive := range model.RootPaths {
-				items = append(items, DirEntry{Name: drive, Type: "dir"})
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"path":   "",
-				"parent": nil,
-				"items":  items,
-			})
+		if serveProjectsRootEntries(w, r) {
 			return
 		}
 		// Unix or single-drive Windows: list the first root directory
@@ -326,16 +316,7 @@ func ServeProjects(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var absPath string
-	if filepath.IsAbs(rawPath) {
-		absPath = rawPath
-	} else {
-		// Relative path — resolve from first root
-		if len(model.RootPaths) > 0 {
-			absPath, _ = filepath.Abs(filepath.Join(model.RootPaths[0], rawPath))
-		}
-	}
-
+	absPath := resolveProjectsPath(rawPath)
 	if absPath == "" {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidPath")
 		return
@@ -348,51 +329,81 @@ func ServeProjects(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
-		if isNotDirError(err) {
-			writeLocalizedErrorf(w, r, http.StatusBadRequest, "NotADirectory")
-		} else if os.IsNotExist(err) {
+		switch {
+		case os.IsNotExist(err):
 			writeLocalizedError(w, r, model.NotFound(nil, "DirectoryNotFound"))
-		} else {
+		case isNotDirError(err):
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "NotADirectory")
+		default:
 			model.WriteError(w, model.Internal(fmt.Errorf("cannot read directory")))
 		}
 		return
 	}
 
 	items := buildDirEntries(entries)
-
-	// Compute parent — stop at root level (no parent above root/drives)
-	var parent *string
-	isAtRoot := false
-	for _, root := range model.RootPaths {
-		cleanRoot := filepath.Clean(root)
-		if filepath.Clean(absPath) == cleanRoot {
-			isAtRoot = true
-			break
-		}
-	}
-	if !isAtRoot {
-		p := filepath.Dir(absPath)
-		parent = &p
-	}
+	parent := computeProjectParent(absPath)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"path":   absPath,
-		"parent": parent,
+		jsonKeyPath: absPath,
+		"parent":    parent,
+		"items":     items,
+	})
+}
+
+// serveProjectsRootEntries handles root-level browsing when path is empty.
+// Returns true if a response was written (Windows drive listing).
+func serveProjectsRootEntries(w http.ResponseWriter, _ *http.Request) bool {
+	if !platform.IsWindows() || len(model.RootPaths) <= 1 {
+		return false
+	}
+	// Windows: return synthetic drive entries
+	items := make([]DirEntry, 0, len(model.RootPaths))
+	for _, drive := range model.RootPaths {
+		items = append(items, DirEntry{Name: drive, Type: "dir"})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"path":   "",
+		"parent": nil,
 		"items":  items,
 	})
+	return true
+}
+
+// resolveProjectsPath resolves rawPath to an absolute path for project browsing.
+func resolveProjectsPath(rawPath string) string {
+	if filepath.IsAbs(rawPath) {
+		return rawPath
+	}
+	if len(model.RootPaths) > 0 {
+		absPath, _ := filepath.Abs(filepath.Join(model.RootPaths[0], rawPath))
+		return absPath
+	}
+	return ""
+}
+
+// computeProjectParent returns the parent directory pointer for project browsing,
+// stopping at root level (no parent above root/drives).
+func computeProjectParent(absPath string) *string {
+	for _, root := range model.RootPaths {
+		if filepath.Clean(absPath) == filepath.Clean(root) {
+			return nil
+		}
+	}
+	p := filepath.Dir(absPath)
+	return &p
 }
 
 // containsGlobChars returns true if the path contains characters that are
 // invalid in filesystem paths (glob wildcards, angle brackets, double-star).
 // These characters indicate the string is a glob pattern or template variable,
 // not a real file path.
-func containsGlobChars(path string) bool {
-	return strings.ContainsAny(path, "*?[]<>") || strings.Contains(path, "**")
+func containsGlobChars(p string) bool {
+	return strings.ContainsAny(p, "*?[]<>") || strings.Contains(p, "**")
 }
 
 // ServeFileBatchExists handles POST /api/file/batch-exists
 // Body:   { "paths": ["src/main.go", "lib/", "**/*.class"] }
-// Response: { "results": { "src/main.go": "file", "lib": "dir", "**/*.class": "none" } }
+// Response: { jsonKeyResults: { "src/main.go": "file", "lib": "dir", "**/*.class": "none" } }
 // Each path is checked against the project directory. Paths containing glob
 // characters are short-circuited to "none" without touching the filesystem.
 func ServeFileBatchExists(w http.ResponseWriter, r *http.Request) {
@@ -429,27 +440,28 @@ func ServeFileBatchExists(w http.ResponseWriter, r *http.Request) {
 	for _, p := range req.Paths {
 		// Short-circuit glob patterns and template variables
 		if containsGlobChars(p) {
-			results[p] = "none"
+			results[p] = jsonKeyNone
 			continue
 		}
 		// Expand ~ to home directory so paths like ~/.bashrc resolve correctly
 		p = platform.ExpandTilde(p)
 		absPath, ok := model.ValidatePath(baseAbs, p)
 		if !ok {
-			results[p] = "none"
+			results[p] = jsonKeyNone
 			continue
 		}
 		info, err := os.Stat(absPath)
-		if err != nil {
-			results[p] = "none"
-		} else if info.IsDir() {
-			results[p] = "dir"
-		} else {
-			results[p] = "file"
+		switch {
+		case err != nil:
+			results[p] = jsonKeyNone
+		case info.IsDir():
+			results[p] = jsonKeyDir
+		default:
+			results[p] = jsonKeyFile
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"results": results})
+	writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyResults: results})
 }
 
 // ── File-related DTOs ──────────────────────────────────────────────────────────
@@ -494,8 +506,10 @@ func isNotDirError(err error) bool {
 	// Windows: ReadDir on a file returns ERROR_DIRECTORY (0x267) wrapped in PathError.
 	// We check the errno value directly because syscall.ERROR_DIRECTORY is not
 	// available on non-Windows builds.
-	if pe, ok := err.(*os.PathError); ok {
-		if errno, ok := pe.Err.(syscall.Errno); ok && errno == 0x267 {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		var errno syscall.Errno
+		if errors.As(pe.Err, &errno) && errno == 0x267 {
 			return true
 		}
 	}
@@ -513,12 +527,12 @@ func buildDirEntries(entries []os.DirEntry) []DirEntry {
 			// so the entry still appears in the listing (without size/modTime).
 			slog.Warn("failed to get file info, using fallback", slog.String("name", entry.Name()), slog.String("err", infoErr.Error()))
 			if entry.IsDir() {
-				items = append(items, DirEntry{Name: entry.Name(), Type: "dir"})
+				items = append(items, DirEntry{Name: entry.Name(), Type: jsonKeyDir})
 			} else {
 				name := entry.Name()
-				entryType := "file"
+				entryType := jsonKeyFile
 				if model.IsImageFile(name) {
-					entryType = "image"
+					entryType = jsonKeyImage
 				}
 				items = append(items, DirEntry{
 					Name:      name,
@@ -530,12 +544,12 @@ func buildDirEntries(entries []os.DirEntry) []DirEntry {
 		}
 		if entry.IsDir() {
 			modified := info.ModTime().Format(time.RFC3339)
-			items = append(items, DirEntry{Name: entry.Name(), Type: "dir", Modified: modified})
+			items = append(items, DirEntry{Name: entry.Name(), Type: jsonKeyDir, Modified: modified})
 		} else {
 			name := entry.Name()
-			entryType := "file"
+			entryType := jsonKeyFile
 			if model.IsImageFile(name) {
-				entryType = "image"
+				entryType = jsonKeyImage
 			}
 			items = append(items, DirEntry{
 				Name:      name,
@@ -548,7 +562,7 @@ func buildDirEntries(entries []os.DirEntry) []DirEntry {
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Type != items[j].Type {
-			return items[i].Type == "dir"
+			return items[i].Type == jsonKeyDir
 		}
 		return items[i].Name < items[j].Name
 	})
@@ -591,13 +605,14 @@ func serveProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var absPath string
-	if req.Path == "" || req.Path == "/" {
+	switch {
+	case req.Path == "" || req.Path == "/":
 		if len(model.RootPaths) > 0 {
 			absPath = model.RootPaths[0]
 		}
-	} else if filepath.IsAbs(req.Path) {
+	case filepath.IsAbs(req.Path):
 		absPath = req.Path
-	} else {
+	default:
 		rel := strings.TrimPrefix(req.Path, "/")
 		if len(model.RootPaths) > 0 {
 			var err error
@@ -623,9 +638,9 @@ func serveProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
 		return
 	}
-	if err := os.Mkdir(newDirAbs, 0755); err != nil {
+	if err := os.Mkdir(newDirAbs, 0o755); err != nil { //nolint:gosec // intentionally permissive for user-accessible files/directories
 		model.WriteError(w, model.Internal(fmt.Errorf("create directory failed: %w", err)))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": newDirAbs})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, jsonKeyPath: newDirAbs})
 }

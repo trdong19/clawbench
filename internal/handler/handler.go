@@ -8,14 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
-	"github.com/nicksnyder/go-i18n/v2/i18n"
-	i18npkg "clawbench/internal/i18n"
 	"clawbench/internal/middleware"
 	"clawbench/internal/model"
 	"clawbench/internal/platform"
 	"clawbench/internal/ws"
+
+	i18npkg "clawbench/internal/i18n"
+	"github.com/nicksnyder/go-i18n/v2/i18n"
 )
 
 // loc returns the Localizer for the current request.
@@ -37,7 +37,7 @@ func writeLocalizedErrorf(w http.ResponseWriter, r *http.Request, status int, ms
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(model.ErrorResponse{Error: localizedMsg, Code: status, MsgKey: msgKey, Detail: detail})
+	_ = json.NewEncoder(w).Encode(model.ErrorResponse{Error: localizedMsg, Code: status, MsgKey: msgKey, Detail: detail})
 }
 
 // writeLocalizedError writes a localized AppError response.
@@ -51,7 +51,7 @@ func writeLocalizedError(w http.ResponseWriter, r *http.Request, err error) {
 		localizedMsg := T(r, appErr.Message)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(appErr.Code)
-		json.NewEncoder(w).Encode(model.ErrorResponse{Error: localizedMsg, Code: appErr.Code, MsgKey: appErr.Message})
+		_ = json.NewEncoder(w).Encode(model.ErrorResponse{Error: localizedMsg, Code: appErr.Code, MsgKey: appErr.Message})
 		return
 	}
 	writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
@@ -82,7 +82,7 @@ func requireMethod(w http.ResponseWriter, r *http.Request, methods ...string) bo
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // decodeJSON decodes the request body into v. Writes 400 on failure.
@@ -114,8 +114,8 @@ func validateAndResolvePath(w http.ResponseWriter, r *http.Request, basePath, re
 func resolveAbsPath(w http.ResponseWriter, r *http.Request, pathStr string) (string, bool) {
 	if filepath.IsAbs(pathStr) {
 		// Absolute path — validate it's under any root path
-		absPath, err := filepath.Abs(pathStr)
-		if err != nil {
+		absPath, absErr := filepath.Abs(pathStr)
+		if absErr != nil {
 			writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
 			return "", false
 		}
@@ -150,31 +150,9 @@ func isPathUnderAnyRoot(absPath string) bool {
 	return platform.IsPathUnderAnyRoot(absPath, model.RootPaths)
 }
 
-// isPathUnderBase checks that absPath is under basePath by resolving symlinks
-// on both sides before comparing. This prevents symlink traversal attacks.
-// Both paths must be absolute.
-func isPathUnderBase(absPath, basePath string) bool {
-	evalBase, err := filepath.EvalSymlinks(basePath)
-	if err != nil {
-		return false
-	}
-	evalPath, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return false
-		}
-		// Target doesn't exist — resolve parent directory
-		evalPath = model.ResolveExistingPath(absPath, evalBase)
-		if evalPath == "" {
-			return false
-		}
-	}
-	return strings.HasPrefix(evalPath, evalBase+string(filepath.Separator)) || evalPath == evalBase
-}
-
 // resolveAgentConfig resolves agent configuration from model.Agents.
 // Returns (backend, defaultModelID, systemPrompt, command, ok).
-func resolveAgentConfig(agentID string) (string, string, string, string, bool) {
+func resolveAgentConfig(agentID string) (backend, defaultModelID, systemPrompt, command string, ok bool) {
 	if agentID == "" {
 		agentID = model.GetDefaultAgentID()
 	}

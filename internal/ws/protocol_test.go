@@ -82,17 +82,24 @@ func TestClientMessageJSON(t *testing.T) {
 	}
 }
 
+// jsonRoundtrip marshals v to JSON and unmarshals back into dest.
+func jsonRoundtrip(t *testing.T, v, dest any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := json.Unmarshal(data, dest); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return data
+}
+
 func TestDataTypesJSON(t *testing.T) {
 	t.Run("SessionUpdateData", func(t *testing.T) {
 		d := SessionUpdateData{SessionID: "s1", Status: "running", HasNewMessages: true, ProjectPath: "/home/user/project"}
-		data, err := json.Marshal(d)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded SessionUpdateData
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		jsonRoundtrip(t, d, &decoded)
 		if decoded.SessionID != "s1" || decoded.Status != "running" || !decoded.HasNewMessages || decoded.ProjectPath != "/home/user/project" {
 			t.Errorf("roundtrip failed: %+v", decoded)
 		}
@@ -111,14 +118,8 @@ func TestDataTypesJSON(t *testing.T) {
 
 	t.Run("TaskUpdateData", func(t *testing.T) {
 		d := TaskUpdateData{TaskID: "t1", Status: "completed", ExecutionID: "e1", SessionID: "s1", ProjectPath: "/home/user/project"}
-		data, err := json.Marshal(d)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded TaskUpdateData
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		jsonRoundtrip(t, d, &decoded)
 		if decoded.TaskID != "t1" || decoded.Status != "completed" || decoded.ExecutionID != "e1" || decoded.SessionID != "s1" || decoded.ProjectPath != "/home/user/project" {
 			t.Errorf("roundtrip failed: %+v", decoded)
 		}
@@ -126,14 +127,8 @@ func TestDataTypesJSON(t *testing.T) {
 
 	t.Run("QueueUpdateData", func(t *testing.T) {
 		d := QueueUpdateData{SessionID: "s1", Count: 5}
-		data, err := json.Marshal(d)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded QueueUpdateData
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		jsonRoundtrip(t, d, &decoded)
 		if decoded.SessionID != "s1" || decoded.Count != 5 {
 			t.Errorf("roundtrip failed: %+v", decoded)
 		}
@@ -175,7 +170,7 @@ func TestServerMessageDataWithMap(t *testing.T) {
 		Type:  "event",
 		ID:    "evt_1",
 		Event: "custom_event",
-		Data: map[string]any{"key": "value", "num": 42},
+		Data:  map[string]any{"key": "value", "num": 42},
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

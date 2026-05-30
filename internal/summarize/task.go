@@ -37,26 +37,26 @@ type TaskSummarizer struct {
 	model   string       // model ID override (empty = use backend default)
 
 	// When using an API backend (OpenAI/Anthropic) via pipeline:
-	pipeline *ttsPipeline
+	pipeline *Pipeline
 }
 
 // NewTaskSummarizer creates a TaskSummarizer using the specified AI CLI backend type.
 // For API backends (OpenAI/Anthropic), use NewTaskSummarizerFromPipeline instead.
-func NewTaskSummarizer(backendType, model string) (*TaskSummarizer, error) {
+func NewTaskSummarizer(backendType, modelName string) (*TaskSummarizer, error) {
 	backend, err := ai.NewBackend(backendType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AI backend for task summarization: %w", err)
 	}
 	return &TaskSummarizer{
 		Backend: backend,
-		model:   model,
+		model:   modelName,
 	}, nil
 }
 
 // NewTaskSummarizerFromPipeline creates a TaskSummarizer that delegates to a
 // pre-configured ttsPipeline (with PreserveMarkdown=true and task-specific prompt).
 // Used for API backends (OpenAI/Anthropic) where we can't shell out to a CLI.
-func NewTaskSummarizerFromPipeline(p ttsPipeline) *TaskSummarizer {
+func NewTaskSummarizerFromPipeline(p Pipeline) *TaskSummarizer {
 	return &TaskSummarizer{
 		pipeline: &p,
 	}
@@ -67,7 +67,7 @@ func NewTaskSummarizerFromPipeline(p ttsPipeline) *TaskSummarizer {
 // summarization is needed — the caller should display the original content.
 // The language parameter is currently unused; the prompt instructs the AI
 // to match the source language.
-func (t *TaskSummarizer) Summarize(ctx context.Context, text string, language string) (string, error) {
+func (t *TaskSummarizer) Summarize(ctx context.Context, text, language string) (string, error) {
 	// Short text bypass
 	if utf8.RuneCountInString(text) < ShortTextThreshold {
 		return "", nil
@@ -104,11 +104,11 @@ func (t *TaskSummarizer) Summarize(ctx context.Context, text string, language st
 	var buf strings.Builder
 	for event := range ch {
 		switch event.Type {
-		case "content":
+		case eventTypeContent:
 			buf.WriteString(event.Content)
-		case "done":
+		case eventTypeDone:
 			// completed
-		case "error":
+		case eventTypeError:
 			return "", fmt.Errorf("task summarization backend error: %s", event.Error)
 		}
 	}
@@ -118,7 +118,8 @@ func (t *TaskSummarizer) Summarize(ctx context.Context, text string, language st
 		return "", fmt.Errorf("task summarization returned empty output")
 	}
 
-	slog.Info("task summarization completed",
+	slog.Info(
+		"task summarization completed",
 		slog.Int("result_len", len([]rune(result))),
 	)
 
@@ -131,7 +132,7 @@ func (t *TaskSummarizer) Summarize(ctx context.Context, text string, language st
 func ExtractTextFromBlocks(blocks []model.ContentBlock) string {
 	var buf strings.Builder
 	for _, b := range blocks {
-		if b.Type == "text" && b.Text != "" {
+		if b.Type == blockTypeText && b.Text != "" {
 			if buf.Len() > 0 {
 				buf.WriteString("\n\n")
 			}

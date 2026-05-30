@@ -7,6 +7,8 @@ import (
 	"clawbench/internal/model"
 )
 
+const testIdleTimeout = "10m"
+
 func TestResolveShell(t *testing.T) {
 	shell := resolveShell()
 	if shell == "" {
@@ -18,10 +20,10 @@ func TestResolveShell(t *testing.T) {
 func TestNewSessionAndClose(t *testing.T) {
 	// PTY fork may be restricted in sandboxed environments
 	cfg := TerminalConfig{
-		IdleTimeout:   "5s",
-		BufferLines:   100,
-		MaxLineBytes:  65536,
-		MaxBufferMB:   4,
+		IdleTimeout:  "5s",
+		BufferLines:  100,
+		MaxLineBytes: 65536,
+		MaxBufferMB:  4,
 	}
 
 	session, err := NewSession("/tmp", "/tmp", cfg)
@@ -43,10 +45,10 @@ func TestNewSessionAndClose(t *testing.T) {
 
 func TestSessionIdleTimeout(t *testing.T) {
 	cfg := TerminalConfig{
-		IdleTimeout:   "1s", // Very short timeout for testing
-		BufferLines:   100,
-		MaxLineBytes:  65536,
-		MaxBufferMB:   4,
+		IdleTimeout:  "1s", // Very short timeout for testing
+		BufferLines:  100,
+		MaxLineBytes: 65536,
+		MaxBufferMB:  4,
 	}
 
 	session, err := NewSession("/tmp", "/tmp", cfg)
@@ -71,7 +73,7 @@ func TestSessionIdleTimeout(t *testing.T) {
 func TestManagerCloseAllSessions(t *testing.T) {
 	cfg := model.TerminalConfig{
 		Enabled:      true,
-		IdleTimeout:  "10m",
+		IdleTimeout:  testIdleTimeout,
 		BufferLines:  100,
 		MaxLineBytes: 65536,
 		MaxBufferMB:  4,
@@ -140,7 +142,7 @@ func TestManagerClearsSessionAfterShellExit(t *testing.T) {
 func TestManagerIsEnabled(t *testing.T) {
 	cfg := model.TerminalConfig{
 		Enabled:      true,
-		IdleTimeout:  "10m",
+		IdleTimeout:  testIdleTimeout,
 		BufferLines:  100,
 		MaxLineBytes: 65536,
 		MaxBufferMB:  4,
@@ -155,7 +157,7 @@ func TestManagerIsEnabled(t *testing.T) {
 
 	disabledCfg := model.TerminalConfig{
 		Enabled:      false,
-		IdleTimeout:  "10m",
+		IdleTimeout:  testIdleTimeout,
 		BufferLines:  100,
 		MaxLineBytes: 65536,
 		MaxBufferMB:  4,
@@ -172,7 +174,7 @@ func TestManagerIsEnabled(t *testing.T) {
 func TestManagerConfig(t *testing.T) {
 	cfg := model.TerminalConfig{
 		Enabled:      true,
-		IdleTimeout:  "10m",
+		IdleTimeout:  testIdleTimeout,
 		BufferLines:  2000,
 		MaxLineBytes: 65536,
 		MaxBufferMB:  4,
@@ -193,7 +195,7 @@ func TestManagerConfig(t *testing.T) {
 func TestManagerMultipleSessions(t *testing.T) {
 	cfg := model.TerminalConfig{
 		Enabled:      true,
-		IdleTimeout:  "10m",
+		IdleTimeout:  testIdleTimeout,
 		BufferLines:  100,
 		MaxLineBytes: 65536,
 		MaxBufferMB:  4,
@@ -207,7 +209,7 @@ func TestManagerMultipleSessions(t *testing.T) {
 
 	// Create multiple sessions
 	ids := make(map[string]bool)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		session, err := NewSession("/tmp", "/tmp", tc)
 		if err != nil {
 			t.Skipf("PTY not available in this environment: %v", err)

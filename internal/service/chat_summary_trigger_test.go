@@ -15,7 +15,7 @@ import (
 )
 
 // setupTestDBForTriggerSummary creates an in-memory DB with all tables needed for triggerChatSummarization.
-func setupTestDBForTriggerSummary(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForTriggerSummary(t *testing.T) (db *sql.DB, cleanup func()) {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -25,10 +25,10 @@ func setupTestDBForTriggerSummary(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS chat_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_path TEXT NOT NULL,
@@ -79,7 +79,7 @@ func setupTestDBForTriggerSummary(t *testing.T) (*sql.DB, func()) {
 	teardown := func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
 	return db, teardown
 }
@@ -92,7 +92,7 @@ type mockTriggerSummarizerBackend struct {
 
 func (m *mockTriggerSummarizerBackend) Name() string { return "mock-trigger" }
 
-func (m *mockTriggerSummarizerBackend) ExecuteStream(ctx context.Context, req ai.ChatRequest) (<-chan ai.StreamEvent, error) {
+func (m *mockTriggerSummarizerBackend) ExecuteStream(_ context.Context, _ ai.ChatRequest) (<-chan ai.StreamEvent, error) {
 	if m.executeErr != nil {
 		return nil, m.executeErr
 	}
@@ -120,7 +120,7 @@ func TestTriggerChatSummarization_NoMessages(t *testing.T) {
 
 	// Set up a mock summarizer
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: StreamTypeDone}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
@@ -137,15 +137,15 @@ func TestTriggerChatSummarization_NoAssistantMessages(t *testing.T) {
 	defer func() { taskSummarizerInstance = origInstance }()
 
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: StreamTypeDone}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
 
 	// Create session and user message only
-	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-1', '/test', 'claude', 'Test')")
+	_, err := db.ExecContext(context.Background(), "INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-1', '/test', 'claude', 'Test')")
 	assert.NoError(t, err)
-	_, err = db.Exec("INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'user', 'hello', 'sess-1', 'claude')")
+	_, err = db.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'user', 'hello', 'sess-1', 'claude')")
 	assert.NoError(t, err)
 
 	// No assistant message — should return without calling summarizer
@@ -160,24 +160,24 @@ func TestTriggerChatSummarization_AlreadySummarized(t *testing.T) {
 	defer func() { taskSummarizerInstance = origInstance }()
 
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: StreamTypeDone}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
 
 	// Create session with assistant message
-	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-2', '/test', 'claude', 'Test')")
+	_, err := db.ExecContext(context.Background(), "INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-2', '/test', 'claude', 'Test')")
 	assert.NoError(t, err)
 
 	content, _ := json.Marshal(map[string]any{
-		"blocks": []any{map[string]any{"type": "text", "text": strings.Repeat("这是一段较长的AI回复内容。", 30)}},
+		BlockKeyBlocks: []any{map[string]any{JSONKeyType: BlockTypeText, BlockTypeText: strings.Repeat("这是一段较长的AI回复内容。", 30)}},
 	})
-	_, err = db.Exec("INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'assistant', ?, 'sess-2', 'claude')", string(content))
+	_, err = db.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'assistant', ?, 'sess-2', 'claude')", string(content))
 	assert.NoError(t, err)
 
 	// Get the message ID
 	var msgID int64
-	db.QueryRow("SELECT id FROM chat_history WHERE session_id = 'sess-2' AND role = 'assistant'").Scan(&msgID)
+	_ = db.QueryRowContext(context.Background(), "SELECT id FROM chat_history WHERE session_id = 'sess-2' AND role = 'assistant'").Scan(&msgID)
 
 	// Pre-save a summary
 	err = SaveSummary("chat_message", msgID, "already summarized")
@@ -195,17 +195,17 @@ func TestTriggerChatSummarization_EmptyBlocks(t *testing.T) {
 	defer func() { taskSummarizerInstance = origInstance }()
 
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: StreamTypeDone}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
 
 	// Create session with assistant message that has no blocks
-	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-3', '/test', 'claude', 'Test')")
+	_, err := db.ExecContext(context.Background(), "INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-3', '/test', 'claude', 'Test')")
 	assert.NoError(t, err)
 
-	content, _ := json.Marshal(map[string]any{"blocks": []any{}})
-	_, err = db.Exec("INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'assistant', ?, 'sess-3', 'claude')", string(content))
+	content, _ := json.Marshal(map[string]any{BlockKeyBlocks: []any{}})
+	_, err = db.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'assistant', ?, 'sess-3', 'claude')", string(content))
 	assert.NoError(t, err)
 
 	// Should return since blocks are empty
@@ -220,15 +220,15 @@ func TestTriggerChatSummarization_InvalidJSON(t *testing.T) {
 	defer func() { taskSummarizerInstance = origInstance }()
 
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: StreamTypeDone}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
 
 	// Create session with assistant message that has invalid JSON content
-	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-4', '/test', 'claude', 'Test')")
+	_, err := db.ExecContext(context.Background(), "INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-4', '/test', 'claude', 'Test')")
 	assert.NoError(t, err)
-	_, err = db.Exec("INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'assistant', 'not valid json', 'sess-4', 'claude')")
+	_, err = db.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'assistant', 'not valid json', 'sess-4', 'claude')")
 	assert.NoError(t, err)
 
 	// Should return on JSON parse error without panicking
@@ -244,21 +244,21 @@ func TestTriggerChatSummarization_Success(t *testing.T) {
 
 	// Set up mock summarizer
 	ch := make(chan ai.StreamEvent, 3)
-	ch <- ai.StreamEvent{Type: "content", Content: "这是总结"}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: StreamTypeContent, Content: "这是总结"}
+	ch <- ai.StreamEvent{Type: StreamTypeDone}
 	close(ch)
 	mock := &mockTriggerSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
 
 	// Create session with assistant message containing long text
-	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-5', '/test', 'claude', 'Test')")
+	_, err := db.ExecContext(context.Background(), "INSERT INTO chat_sessions (id, project_path, backend, title) VALUES ('sess-5', '/test', 'claude', 'Test')")
 	assert.NoError(t, err)
 
 	longText := strings.Repeat("这是一段较长的AI回复内容。", 30)
 	content, _ := json.Marshal(map[string]any{
-		"blocks": []any{map[string]any{"type": "text", "text": longText}},
+		BlockKeyBlocks: []any{map[string]any{JSONKeyType: BlockTypeText, BlockTypeText: longText}},
 	})
-	_, err = db.Exec("INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'assistant', ?, 'sess-5', 'claude')", string(content))
+	_, err = db.ExecContext(context.Background(), "INSERT INTO chat_history (project_path, role, content, session_id, backend) VALUES ('/test', 'assistant', ?, 'sess-5', 'claude')", string(content))
 	assert.NoError(t, err)
 
 	// Trigger summarization
@@ -269,7 +269,7 @@ func TestTriggerChatSummarization_Success(t *testing.T) {
 
 	// Verify summary was saved
 	var msgID int64
-	db.QueryRow("SELECT id FROM chat_history WHERE session_id = 'sess-5' AND role = 'assistant'").Scan(&msgID)
+	_ = db.QueryRowContext(context.Background(), "SELECT id FROM chat_history WHERE session_id = 'sess-5' AND role = 'assistant'").Scan(&msgID)
 
 	summary, found := GetSummary("chat_message", msgID)
 	assert.True(t, found)

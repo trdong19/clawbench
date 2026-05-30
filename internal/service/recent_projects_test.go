@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -28,7 +29,7 @@ func setupRecentProjectsDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("sqlite", ":memory:")
 	assert.NoError(t, err)
 
-	_, err = db.Exec(recentProjectsSchema)
+	_, err = db.ExecContext(context.Background(), recentProjectsSchema)
 	assert.NoError(t, err)
 
 	origDB := service.DB
@@ -38,7 +39,7 @@ func setupRecentProjectsDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() {
 		service.DB = origDB
 		service.DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	})
 	return db
 }
@@ -47,7 +48,8 @@ func setupRecentProjectsDB(t *testing.T) *sql.DB {
 // to ensure deterministic ordering in tests (CURRENT_TIMESTAMP has only second precision).
 func insertProjectWithTime(t *testing.T, db *sql.DB, path string, accessedAt time.Time) {
 	t.Helper()
-	_, err := db.Exec(
+	_, err := db.ExecContext(
+		context.Background(),
 		"INSERT INTO recent_projects (project_path, accessed_at) VALUES (?, ?)",
 		path, accessedAt.Format("2006-01-02 15:04:05"),
 	)
@@ -60,7 +62,7 @@ func createTempProjectDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "recent-project-test-*")
 	assert.NoError(t, err)
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
 }
 
@@ -135,7 +137,7 @@ func TestAddRecentProject_PruneBeyond10(t *testing.T) {
 	setupRecentProjectsDB(t)
 
 	// Add 12 projects via the service (timestamps will be close but pruning still works)
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		dir := createTempProjectDir(t)
 		err := service.AddRecentProject(dir)
 		assert.NoError(t, err)
@@ -150,7 +152,7 @@ func TestGetRecentProjects_Limit10(t *testing.T) {
 	setupRecentProjectsDB(t)
 
 	// Add exactly 10 projects
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		dir := createTempProjectDir(t)
 		err := service.AddRecentProject(dir)
 		assert.NoError(t, err)
@@ -165,9 +167,9 @@ func TestAddRecentProject_PruneKeepsMostRecent(t *testing.T) {
 	db := setupRecentProjectsDB(t)
 
 	// Insert 10 projects with explicit timestamps
-	var dirs []string
+	dirs := make([]string, 0, 10)
 	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		dir := createTempProjectDir(t)
 		dirs = append(dirs, dir)
 		insertProjectWithTime(t, db, dir, baseTime.Add(time.Duration(i)*time.Second))
@@ -202,9 +204,9 @@ func TestAddRecentProject_DuplicateDoesNotIncreaseCount(t *testing.T) {
 	setupRecentProjectsDB(t)
 
 	dir := createTempProjectDir(t)
-	service.AddRecentProject(dir)
-	service.AddRecentProject(dir)
-	service.AddRecentProject(dir)
+	_ = service.AddRecentProject(dir)
+	_ = service.AddRecentProject(dir)
+	_ = service.AddRecentProject(dir)
 
 	paths, err := service.GetRecentProjects()
 	assert.NoError(t, err)
@@ -227,7 +229,7 @@ func TestGetRecentProjects_FiltersNonExistent(t *testing.T) {
 
 	// Verify the non-existent entry was cleaned from the database
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM recent_projects WHERE project_path = ?", nonExistentPath).Scan(&count)
+	err = db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM recent_projects WHERE project_path = ?", nonExistentPath).Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, count, "non-existent project should be removed from DB")
 }
@@ -240,8 +242,8 @@ func TestGetRecentProjects_FiltersFilePath(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "recent-project-file-*")
 	assert.NoError(t, err)
 	filePath := tmpFile.Name()
-	tmpFile.Close()
-	t.Cleanup(func() { os.Remove(filePath) })
+	_ = tmpFile.Close()
+	t.Cleanup(func() { _ = os.Remove(filePath) })
 
 	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	insertProjectWithTime(t, db, existingDir, baseTime)
@@ -253,7 +255,7 @@ func TestGetRecentProjects_FiltersFilePath(t *testing.T) {
 
 	// File path should have been removed from the database
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM recent_projects WHERE project_path = ?", filePath).Scan(&count)
+	err = db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM recent_projects WHERE project_path = ?", filePath).Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, count, "file path (not a directory) should be removed from DB")
 }
@@ -263,7 +265,7 @@ func TestGetRecentProjects_AllNonExistent(t *testing.T) {
 
 	// Insert only non-existent paths
 	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		insertProjectWithTime(t, db, fmt.Sprintf("/tmp/clawbench-nonexistent-%d-%d", time.Now().UnixNano(), i), baseTime.Add(time.Duration(i)*time.Second))
 	}
 
@@ -273,7 +275,7 @@ func TestGetRecentProjects_AllNonExistent(t *testing.T) {
 
 	// Database should be empty now
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM recent_projects").Scan(&count)
+	err = db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM recent_projects").Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, count, "all stale entries should be removed from DB")
 }
@@ -292,7 +294,7 @@ func TestGetRecentProjects_DeletedAfterListed(t *testing.T) {
 	assert.Equal(t, []string{dir}, paths)
 
 	// Now delete the directory on disk
-	os.RemoveAll(dir)
+	_ = os.RemoveAll(dir)
 
 	// GetRecentProjects should filter it out and clean up the database
 	paths, err = service.GetRecentProjects()
@@ -300,7 +302,7 @@ func TestGetRecentProjects_DeletedAfterListed(t *testing.T) {
 	assert.Empty(t, paths)
 
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM recent_projects WHERE project_path = ?", dir).Scan(&count)
+	err = db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM recent_projects WHERE project_path = ?", dir).Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, count, "deleted project should be removed from DB")
 }
@@ -320,7 +322,7 @@ func TestGetRecentProjects_DBQueryError(t *testing.T) {
 	})
 
 	// Close the DB before querying to trigger an error
-	db.Close()
+	_ = db.Close()
 
 	_, err = service.GetRecentProjects()
 	assert.Error(t, err, "should return error when DB query fails")
@@ -342,7 +344,7 @@ func TestGetRecentProjects_RemoveStaleFails(t *testing.T) {
 	// We need to set DB to a closed connection
 	origDB := service.DB
 	closedDB, _ := sql.Open("sqlite", ":memory:")
-	closedDB.Close()
+	_ = closedDB.Close()
 	service.DB = closedDB
 	t.Cleanup(func() {
 		service.DB = origDB
@@ -370,7 +372,7 @@ func TestAddRecentProject_DBError(t *testing.T) {
 	})
 
 	// Close the DB before operation
-	db.Close()
+	_ = db.Close()
 
 	err = service.AddRecentProject("/some/path")
 	assert.Error(t, err, "should return error when DB exec fails")
@@ -387,7 +389,7 @@ func TestGetRecentProjects_ConfigurableLimit(t *testing.T) {
 	t.Cleanup(func() { model.RecentProjectsMaxCount = origLimit })
 
 	// Add 5 projects
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		dir := createTempProjectDir(t)
 		err := service.AddRecentProject(dir)
 		assert.NoError(t, err)
@@ -407,7 +409,7 @@ func TestAddRecentProject_PruneToConfigurableLimit(t *testing.T) {
 	t.Cleanup(func() { model.RecentProjectsMaxCount = origLimit })
 
 	// Add 8 projects
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		dir := createTempProjectDir(t)
 		err := service.AddRecentProject(dir)
 		assert.NoError(t, err)
@@ -427,7 +429,7 @@ func TestGetRecentProjects_FallbackToDefaultLimit(t *testing.T) {
 	t.Cleanup(func() { model.RecentProjectsMaxCount = origLimit })
 
 	// Add 12 projects
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		dir := createTempProjectDir(t)
 		err := service.AddRecentProject(dir)
 		assert.NoError(t, err)
@@ -447,9 +449,9 @@ func TestAddRecentProject_PruneKeepsMostRecentWithCustomLimit(t *testing.T) {
 	t.Cleanup(func() { model.RecentProjectsMaxCount = origLimit })
 
 	// Insert 3 projects with explicit timestamps
-	var dirs []string
+	dirs := make([]string, 0, 3)
 	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		dir := createTempProjectDir(t)
 		dirs = append(dirs, dir)
 		insertProjectWithTime(t, db, dir, baseTime.Add(time.Duration(i)*time.Second))

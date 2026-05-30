@@ -24,11 +24,11 @@ func TestRegisterAndGetSessionStream(t *testing.T) {
 
 	// Write to original and read from got
 	go func() {
-		ch <- ai.StreamEvent{Type: "content", Content: "hello"}
+		ch <- ai.StreamEvent{Type: StreamTypeContent, Content: TestHello}
 	}()
 
 	event := <-gotCh
-	if event.Type != "content" || event.Content != "hello" {
+	if event.Type != StreamTypeContent || event.Content != TestHello {
 		t.Errorf("unexpected event: %+v", event)
 	}
 

@@ -1,3 +1,4 @@
+// Package rag provides RAG (Retrieval-Augmented Generation) storage, indexing, and search using DuckDB vector store and Ollama embeddings.
 package rag
 
 import (
@@ -15,11 +16,13 @@ type TextChunk struct {
 	Index      int
 }
 
+const roleUser = "user"
+
 // ExtractTextFromContent extracts text blocks from a chat message content.
 // For user messages, content is plain text.
 // For assistant messages, content is JSON with ContentBlocks.
 func ExtractTextFromContent(content, role string) string {
-	if role == "user" {
+	if role == roleUser {
 		return strings.TrimSpace(content)
 	}
 
@@ -114,37 +117,57 @@ func findBreakPoint(runes []rune, start, end int) int {
 		searchStart = start
 	}
 
-	// Priority 1: Double newline (paragraph break)
+	// Try each priority in order; first match wins
+	for _, fn := range []func([]rune, int, int) int{
+		breakAtDoubleNewline,
+		breakAtSingleNewline,
+		breakAtSentenceEnd,
+		breakAtWhitespace,
+	} {
+		if pos := fn(runes, searchStart, end); pos > 0 {
+			return pos
+		}
+	}
+
+	// No good break point found — use the estimated position
+	return end
+}
+
+func breakAtDoubleNewline(runes []rune, searchStart, end int) int {
 	for i := end; i > searchStart; i-- {
 		if i < len(runes)-1 && runes[i] == '\n' && runes[i+1] == '\n' {
 			return i + 2
 		}
 	}
+	return 0
+}
 
-	// Priority 2: Single newline
+func breakAtSingleNewline(runes []rune, searchStart, end int) int {
 	for i := end; i > searchStart; i-- {
 		if runes[i] == '\n' {
 			return i + 1
 		}
 	}
+	return 0
+}
 
-	// Priority 3: Sentence-ending punctuation
+func breakAtSentenceEnd(runes []rune, searchStart, end int) int {
 	for i := end; i > searchStart; i-- {
 		r := runes[i]
 		if r == '.' || r == '。' || r == '！' || r == '？' || r == '!' || r == '?' {
 			return i + 1
 		}
 	}
+	return 0
+}
 
-	// Priority 4: Whitespace
+func breakAtWhitespace(runes []rune, searchStart, end int) int {
 	for i := end; i > searchStart; i-- {
 		if unicode.IsSpace(runes[i]) {
 			return i + 1
 		}
 	}
-
-	// No good break point found — use the estimated position
-	return end
+	return 0
 }
 
 // estimateTokens provides a rough token count estimation.
@@ -155,18 +178,19 @@ func estimateTokens(text string) int {
 	inWord := false
 
 	for _, r := range text {
-		if isCJK(r) {
+		switch {
+		case isCJK(r):
 			cjkCount++
 			if inWord {
 				wordCount++
 				inWord = false
 			}
-		} else if unicode.IsSpace(r) {
+		case unicode.IsSpace(r):
 			if inWord {
 				wordCount++
 				inWord = false
 			}
-		} else {
+		default:
 			inWord = true
 		}
 	}

@@ -1,6 +1,9 @@
+// Package service provides the core business logic for ClawBench's backend,
+// including chat persistence, scheduling, proxy management, and database operations.
 package service
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,14 +14,149 @@ import (
 
 	"clawbench/internal/model"
 
+	// modernc.org/sqlite: SQLite driver registration required for database/sql.Open("sqlite", ...)
 	_ "modernc.org/sqlite"
 )
 
+// DB is the write database connection pool (MaxOpenConns=1) for INSERT/UPDATE/DELETE operations.
 var DB *sql.DB
 
 // DBRead is the read-only connection pool (MaxOpenConns=2) for SELECT queries.
 // In WAL mode, reads never block writes and vice versa.
 var DBRead *sql.DB
+
+// runSchemaMigrations applies column additions and table migrations for older databases.
+func runSchemaMigrations() error {
+	migrations := []struct {
+		table  string
+		column string
+		alter  string
+	}{
+		{"task_executions", "read_at", "ALTER TABLE task_executions ADD COLUMN read_at DATETIME"},
+		{"task_executions", "summary", "ALTER TABLE task_executions ADD COLUMN summary TEXT"},
+		{TableChatSessions, "thinking_effort", "ALTER TABLE " + TableChatSessions + " ADD COLUMN thinking_effort TEXT DEFAULT ''"},
+		{"forwarded_ports", "host", "ALTER TABLE forwarded_ports ADD COLUMN host TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, m := range migrations {
+		var count int
+		if err := DB.QueryRowContext(
+			context.Background(),
+			"SELECT COUNT(*) FROM pragma_table_info('"+m.table+"') WHERE name=?", m.column,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("failed to check %s.%s column: %w", m.table, m.column, err)
+		}
+		if count == 0 {
+			if _, err := DB.ExecContext(context.Background(), m.alter); err != nil {
+				return fmt.Errorf("failed to add %s.%s column: %w", m.table, m.column, err)
+			}
+		}
+	}
+
+	// local_port migration requires backfill
+	var hasLocalPort int
+	if err := DB.QueryRowContext(
+		context.Background(),
+		"SELECT COUNT(*) FROM pragma_table_info('forwarded_ports') WHERE name='local_port'",
+	).Scan(&hasLocalPort); err != nil {
+		return fmt.Errorf("failed to check local_port column: %w", err)
+	}
+	if hasLocalPort == 0 {
+		if _, err := DB.ExecContext(context.Background(), "ALTER TABLE forwarded_ports ADD COLUMN local_port INTEGER"); err != nil {
+			return fmt.Errorf("failed to add local_port column: %w", err)
+		}
+		if _, err := DB.ExecContext(context.Background(), "UPDATE forwarded_ports SET local_port = port WHERE local_port IS NULL"); err != nil {
+			return fmt.Errorf("failed to backfill local_port: %w", err)
+		}
+	}
+
+	// TTS summaries migration: cache_key → message_id
+	var hasTTSCacheKey int
+	if err := DB.QueryRowContext(
+		context.Background(),
+		"SELECT COUNT(*) FROM pragma_table_info('tts_summaries') WHERE name='cache_key'",
+	).Scan(&hasTTSCacheKey); err != nil {
+		return fmt.Errorf("failed to check tts_summaries cache_key: %w", err)
+	}
+	if hasTTSCacheKey > 0 {
+		if _, err := DB.ExecContext(context.Background(), "DROP TABLE tts_summaries"); err != nil {
+			return fmt.Errorf("failed to drop old tts_summaries table: %w", err)
+		}
+	}
+	var hasTTSSummaries int
+	if err := DB.QueryRowContext(
+		context.Background(),
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tts_summaries'",
+	).Scan(&hasTTSSummaries); err != nil {
+		return fmt.Errorf("failed to check tts_summaries table: %w", err)
+	}
+	if hasTTSSummaries == 0 {
+		if _, err := DB.ExecContext(context.Background(), `
+			CREATE TABLE tts_summaries (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				message_id   INTEGER NOT NULL,
+				tts_summary  TEXT NOT NULL,
+				created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(message_id)
+			);
+		`); err != nil {
+			return fmt.Errorf("failed to create tts_summaries table: %w", err)
+		}
+	}
+	return nil
+}
+
+// cleanupOrphanedStreaming finalizes orphaned streaming messages from previous crashes.
+func cleanupOrphanedStreaming() {
+	rows, err := DB.QueryContext(context.Background(), "SELECT id, content FROM chat_history WHERE streaming = 1")
+	if err != nil {
+		slog.Error("failed to query orphaned streaming messages", slog.String("err", err.Error()))
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	type orphanMsg struct {
+		id      int64
+		content string
+	}
+	var orphans []orphanMsg
+	for rows.Next() {
+		var m orphanMsg
+		if err := rows.Scan(&m.id, &m.content); err != nil {
+			slog.Error("failed to scan orphaned streaming message", slog.String("err", err.Error()))
+			return
+		}
+		orphans = append(orphans, m)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("failed to iterate orphaned streaming messages", slog.String("err", err.Error()))
+		return
+	}
+
+	for _, m := range orphans {
+		var contentMap map[string]any
+		if err := json.Unmarshal([]byte(m.content), &contentMap); err != nil {
+			contentMap = map[string]any{
+				BlockKeyBlocks:   []any{map[string]any{JSONKeyType: BlockTypeText, BlockTypeText: m.content}},
+				JSONKeyCancelled: true,
+			}
+		} else {
+			contentMap[JSONKeyCancelled] = true
+			blocks, _ := contentMap[BlockKeyBlocks].([]any)
+			blocks = append(blocks, map[string]any{
+				JSONKeyType:   BlockTypeWarning,
+				BlockTypeText: WarningServerRestarted,
+				JSONKeyReason: JSONValueRestart,
+			})
+			contentMap[BlockKeyBlocks] = blocks
+		}
+		updatedContent, _ := json.Marshal(contentMap)
+		if _, err := DB.ExecContext(context.Background(), "UPDATE chat_history SET content = ?, streaming = 0 WHERE id = ?", string(updatedContent), m.id); err != nil {
+			slog.Error("failed to finalize orphaned streaming message", slog.Int64("id", m.id), slog.String("err", err.Error()))
+		}
+	}
+	if len(orphans) > 0 {
+		slog.Info("cleaned up orphaned streaming messages", slog.Int("count", len(orphans)))
+	}
+}
 
 // InitDB initializes the SQLite database with latest schema.
 // When runFromServer is true (server startup), orphaned streaming messages
@@ -26,7 +164,7 @@ var DBRead *sql.DB
 // is skipped because the server process may still be actively streaming.
 func InitDB(runFromServer ...bool) error {
 	dbDir := filepath.Join(model.BinDir, ".clawbench")
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
+	if err := os.MkdirAll(dbDir, 0o750); err != nil {
 		return fmt.Errorf("failed to create db directory: %w", err)
 	}
 
@@ -41,16 +179,16 @@ func InitDB(runFromServer ...bool) error {
 	DB.SetMaxOpenConns(1)
 
 	// Enable WAL mode for concurrent reads during writes
-	if _, err := DB.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return fmt.Errorf("failed to set WAL mode: %w", err)
+	if _, walErr := DB.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); walErr != nil {
+		return fmt.Errorf("failed to set WAL mode: %w", walErr)
 	}
 	// Wait up to 5 seconds when database is locked instead of failing immediately
-	if _, err := DB.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		return fmt.Errorf("failed to set busy_timeout: %w", err)
+	if _, btErr := DB.ExecContext(context.Background(), "PRAGMA busy_timeout=5000"); btErr != nil {
+		return fmt.Errorf("failed to set busy_timeout: %w", btErr)
 	}
 
 	// Create tables with latest schema
-	_, err = DB.Exec(`
+	_, err = DB.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS chat_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_path TEXT NOT NULL,
@@ -183,64 +321,8 @@ func InitDB(runFromServer ...bool) error {
 	}
 
 	// Schema migrations: add columns that may not exist in older databases.
-	var hasReadAt int
-	DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('task_executions') WHERE name='read_at'").Scan(&hasReadAt)
-	if hasReadAt == 0 {
-		if _, err := DB.Exec("ALTER TABLE task_executions ADD COLUMN read_at DATETIME"); err != nil {
-			return fmt.Errorf("failed to add read_at column: %w", err)
-		}
-	}
-
-	// Migrate: add summary column for task execution summarization
-	var hasSummary int
-	DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('task_executions') WHERE name='summary'").Scan(&hasSummary)
-	if hasSummary == 0 {
-		if _, err := DB.Exec("ALTER TABLE task_executions ADD COLUMN summary TEXT"); err != nil {
-			return fmt.Errorf("failed to add summary column: %w", err)
-		}
-	}
-
-	// Migrate: add source_session_id column for "continue conversation" feature
-	var hasSourceSessionID int
-	DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name='source_session_id'").Scan(&hasSourceSessionID)
-	if hasSourceSessionID == 0 {
-		if _, err := DB.Exec("ALTER TABLE chat_sessions ADD COLUMN source_session_id TEXT DEFAULT NULL"); err != nil {
-			return fmt.Errorf("failed to add source_session_id column: %w", err)
-		}
-		// Best-effort index creation; ignore error since the column already exists
-		DB.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_source_session ON chat_sessions(source_session_id) WHERE source_session_id IS NOT NULL")
-	}
-
-	// Migrate: add thinking_effort column for per-session thinking effort selection
-	var hasThinkingEffort int
-	DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name='thinking_effort'").Scan(&hasThinkingEffort)
-	if hasThinkingEffort == 0 {
-		if _, err := DB.Exec("ALTER TABLE chat_sessions ADD COLUMN thinking_effort TEXT DEFAULT ''"); err != nil {
-			return fmt.Errorf("failed to add thinking_effort column: %w", err)
-		}
-	}
-
-	// Migrate: add host column to forwarded_ports for custom target host
-	var hasForwardedPortHost int
-	DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('forwarded_ports') WHERE name='host'").Scan(&hasForwardedPortHost)
-	if hasForwardedPortHost == 0 {
-		if _, err := DB.Exec("ALTER TABLE forwarded_ports ADD COLUMN host TEXT NOT NULL DEFAULT ''"); err != nil {
-			return fmt.Errorf("failed to add host column to forwarded_ports: %w", err)
-		}
-	}
-
-	// Migrate: add local_port column for auto-assigned local port
-	// For existing rows, local_port = port (backward compatible)
-	var hasForwardedPortLocalPort int
-	DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('forwarded_ports') WHERE name='local_port'").Scan(&hasForwardedPortLocalPort)
-	if hasForwardedPortLocalPort == 0 {
-		if _, err := DB.Exec("ALTER TABLE forwarded_ports ADD COLUMN local_port INTEGER"); err != nil {
-			return fmt.Errorf("failed to add local_port column to forwarded_ports: %w", err)
-		}
-		// Backfill: local_port = port for existing rows
-		if _, err := DB.Exec("UPDATE forwarded_ports SET local_port = port WHERE local_port IS NULL"); err != nil {
-			return fmt.Errorf("failed to backfill local_port in forwarded_ports: %w", err)
-		}
+	if migrateErr := runSchemaMigrations(); migrateErr != nil {
+		return migrateErr
 	}
 
 	// Clean up orphaned streaming messages from previous crashes/restarts.
@@ -251,46 +333,6 @@ func InitDB(runFromServer ...bool) error {
 	// may still be actively streaming, and these are NOT orphaned messages.
 	isServerStartup := len(runFromServer) > 0 && runFromServer[0]
 
-	// Migrate: replace old tts_summaries table (cache_key) with new schema (message_id).
-	// The old table has cache_key as primary key; the new table uses message_id.
-	// Since we don't do backward compatibility, drop the old table if it exists
-	// and recreate with the new schema.
-	var hasTTSCacheKey int
-	DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('tts_summaries') WHERE name='cache_key'").Scan(&hasTTSCacheKey)
-	if hasTTSCacheKey > 0 {
-		// Old table exists with cache_key — drop and recreate
-		if _, err := DB.Exec("DROP TABLE tts_summaries"); err != nil {
-			return fmt.Errorf("failed to drop old tts_summaries table: %w", err)
-		}
-		if _, err := DB.Exec(`
-			CREATE TABLE tts_summaries (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				message_id   INTEGER NOT NULL,
-				tts_summary  TEXT NOT NULL,
-				created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-				UNIQUE(message_id)
-			);
-		`); err != nil {
-			return fmt.Errorf("failed to create new tts_summaries table: %w", err)
-		}
-	}
-	// Create new tts_summaries table if it doesn't exist yet (fresh install)
-	var hasTTSSummaries int
-	DB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tts_summaries'").Scan(&hasTTSSummaries)
-	if hasTTSSummaries == 0 {
-		if _, err := DB.Exec(`
-			CREATE TABLE tts_summaries (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				message_id   INTEGER NOT NULL,
-				tts_summary  TEXT NOT NULL,
-				created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-				UNIQUE(message_id)
-			);
-		`); err != nil {
-			return fmt.Errorf("failed to create tts_summaries table: %w", err)
-		}
-	}
-
 	// Initialize read connection pool for concurrent reads (WAL mode).
 	// WAL contract: DB (MaxOpenConns=1) serializes writes; DBRead (MaxOpenConns=2)
 	// allows concurrent reads that never block writes and vice versa.
@@ -300,62 +342,17 @@ func InitDB(runFromServer ...bool) error {
 		return fmt.Errorf("failed to open read database: %w", err)
 	}
 	DBRead.SetMaxOpenConns(2)
-	DBRead.SetMaxIdleConns(2)           // match MaxOpenConns to avoid churn
-	DBRead.SetConnMaxLifetime(0)        // unlimited — SQLite file DB, no reconnection needed
+	DBRead.SetMaxIdleConns(2)                   // match MaxOpenConns to avoid churn
+	DBRead.SetConnMaxLifetime(0)                // unlimited — SQLite file DB, no reconnection needed
 	DBRead.SetConnMaxIdleTime(30 * time.Minute) // close idle conns after 30min
-	if _, err := DBRead.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	if _, err := DBRead.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
 		return fmt.Errorf("failed to set read DB WAL mode: %w", err)
 	}
-	if _, err := DBRead.Exec("PRAGMA busy_timeout=5000"); err != nil {
+	if _, err := DBRead.ExecContext(context.Background(), "PRAGMA busy_timeout=5000"); err != nil {
 		return fmt.Errorf("failed to set read DB busy_timeout: %w", err)
 	}
 	if isServerStartup {
-		rows, err := DB.Query("SELECT id, content FROM chat_history WHERE streaming = 1")
-		if err != nil {
-			return fmt.Errorf("failed to query orphaned streaming messages: %w", err)
-		}
-		type orphanMsg struct {
-			id      int64
-			content string
-		}
-		var orphans []orphanMsg
-		for rows.Next() {
-			var m orphanMsg
-			if err := rows.Scan(&m.id, &m.content); err != nil {
-				rows.Close()
-				return fmt.Errorf("failed to scan orphaned streaming message: %w", err)
-			}
-			orphans = append(orphans, m)
-		}
-		rows.Close()
-
-		for _, m := range orphans {
-			var contentMap map[string]any
-			if err := json.Unmarshal([]byte(m.content), &contentMap); err != nil {
-				// Non-JSON content — wrap it
-				contentMap = map[string]any{
-					"blocks":    []any{map[string]any{"type": "text", "text": m.content}},
-					"cancelled": true,
-				}
-			} else {
-				contentMap["cancelled"] = true
-				// Append warning block
-				blocks, _ := contentMap["blocks"].([]any)
-				blocks = append(blocks, map[string]any{
-					"type":   "warning",
-					"text":   "Server restarted, AI response interrupted",
-					"reason": "restart",
-				})
-				contentMap["blocks"] = blocks
-			}
-			updatedContent, _ := json.Marshal(contentMap)
-			if _, err := DB.Exec("UPDATE chat_history SET content = ?, streaming = 0 WHERE id = ?", string(updatedContent), m.id); err != nil {
-				slog.Error("failed to finalize orphaned streaming message", slog.Int64("id", m.id), slog.String("err", err.Error()))
-			}
-		}
-		if len(orphans) > 0 {
-			slog.Info("cleaned up orphaned streaming messages", slog.Int("count", len(orphans)))
-		}
+		cleanupOrphanedStreaming()
 	}
 
 	return nil
@@ -364,10 +361,10 @@ func InitDB(runFromServer ...bool) error {
 // CloseDB closes both write and read database connections.
 func CloseDB() {
 	if DB != nil {
-		DB.Close()
+		_ = DB.Close()
 	}
 	if DBRead != nil {
-		DBRead.Close()
+		_ = DBRead.Close()
 	}
 }
 
@@ -375,7 +372,8 @@ func CloseDB() {
 // Returns (summary, found). Empty summary = text was too short.
 func GetSummary(targetType string, targetID int64) (string, bool) {
 	var summary string
-	err := DBRead.QueryRow(
+	err := DBRead.QueryRowContext(
+		context.Background(),
 		"SELECT summary FROM summaries WHERE target_type = ? AND target_id = ?",
 		targetType, targetID,
 	).Scan(&summary)
@@ -388,7 +386,8 @@ func GetSummary(targetType string, targetID int64) (string, bool) {
 // SaveSummary persists a reading summary for a target (chat message or task execution).
 // summary = "" means text was too short; non-empty is the actual summary.
 func SaveSummary(targetType string, targetID int64, summary string) error {
-	_, err := DB.Exec(
+	_, err := DB.ExecContext(
+		context.Background(),
 		"INSERT OR REPLACE INTO summaries (target_type, target_id, summary, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
 		targetType, targetID, summary,
 	)
@@ -399,7 +398,8 @@ func SaveSummary(targetType string, targetID int64, summary string) error {
 // Returns (ttsSummary, found).
 func GetTTSSummaryByMessageID(messageID int64) (string, bool) {
 	var ttsSummary string
-	err := DBRead.QueryRow(
+	err := DBRead.QueryRowContext(
+		context.Background(),
 		"SELECT tts_summary FROM tts_summaries WHERE message_id = ?",
 		messageID,
 	).Scan(&ttsSummary)
@@ -411,7 +411,8 @@ func GetTTSSummaryByMessageID(messageID int64) (string, bool) {
 
 // SaveTTSSummaryByMessageID persists a TTS summary for a chat message.
 func SaveTTSSummaryByMessageID(messageID int64, ttsSummary string) error {
-	_, err := DB.Exec(
+	_, err := DB.ExecContext(
+		context.Background(),
 		"INSERT OR REPLACE INTO tts_summaries (message_id, tts_summary, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
 		messageID, ttsSummary,
 	)
@@ -479,11 +480,11 @@ type crudHelpers[T any, E any] struct {
 
 // list returns all rows from the helper's table ordered by sort_order.
 func (h crudHelpers[T, E]) list() ([]T, error) {
-	rows, err := DBRead.Query("SELECT " + h.scanCols + " FROM " + h.table + " ORDER BY sort_order")
+	rows, err := DBRead.QueryContext(context.Background(), "SELECT "+h.scanCols+" FROM "+h.table+" ORDER BY sort_order") //nolint:gosec // table/column names are constants, not user input
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var items []T
 	for rows.Next() {
 		item, err := h.scanFn(rows)
@@ -491,6 +492,9 @@ func (h crudHelpers[T, E]) list() ([]T, error) {
 			return nil, err
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }
@@ -502,12 +506,12 @@ func (h crudHelpers[T, E]) insert(item T) (int64, error) {
 	// without calling the closure twice.
 	label, command, sortOrder, extra := h.addFn(item)
 	if _, ok := any(extra).(quickCommandExtra); ok {
-		if _, err := DB.Exec("UPDATE " + h.table + " SET auto_execute = 0 WHERE auto_execute = 1"); err != nil {
+		if _, err := DB.ExecContext(context.Background(), "UPDATE "+h.table+" SET auto_execute = 0 WHERE auto_execute = 1"); err != nil { //nolint:gosec // table/column names are constants, not user input
 			return 0, err
 		}
 	}
 	var maxOrder sql.NullInt64
-	_ = DB.QueryRow("SELECT MAX(sort_order) FROM " + h.table).Scan(&maxOrder)
+	_ = DB.QueryRowContext(context.Background(), "SELECT MAX(sort_order) FROM "+h.table).Scan(&maxOrder)
 	if maxOrder.Valid {
 		sortOrder = int(maxOrder.Int64) + 1
 	}
@@ -517,7 +521,7 @@ func (h crudHelpers[T, E]) insert(item T) (int64, error) {
 	} else {
 		args = []any{label, command, sortOrder}
 	}
-	result, err := DB.Exec(h.insertSQL, args...)
+	result, err := DB.ExecContext(context.Background(), h.insertSQL, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -529,7 +533,7 @@ func (h crudHelpers[T, E]) insert(item T) (int64, error) {
 func (h crudHelpers[T, E]) update(id int64, item T) error {
 	label, command, _, extra := h.addFn(item)
 	if _, ok := any(extra).(quickCommandExtra); ok {
-		if _, err := DB.Exec("UPDATE "+h.table+" SET auto_execute = 0 WHERE auto_execute = 1 AND id != ?", id); err != nil {
+		if _, err := DB.ExecContext(context.Background(), "UPDATE "+h.table+" SET auto_execute = 0 WHERE auto_execute = 1 AND id != ?", id); err != nil { //nolint:gosec // table/column names are constants, not user input
 			return err
 		}
 	}
@@ -539,25 +543,25 @@ func (h crudHelpers[T, E]) update(id int64, item T) error {
 	} else {
 		args = []any{label, command, id}
 	}
-	_, err := DB.Exec(h.updateSQL, args...)
+	_, err := DB.ExecContext(context.Background(), h.updateSQL, args...)
 	return err
 }
 
 // delete removes a row by id.
 func (h crudHelpers[T, E]) delete(id int64) error {
-	_, err := DB.Exec("DELETE FROM "+h.table+" WHERE id = ?", id)
+	_, err := DB.ExecContext(context.Background(), "DELETE FROM "+h.table+" WHERE id = ?", id) //nolint:gosec // table/column names are constants, not user input
 	return err
 }
 
 // reorder updates sort_order for all rows matching the given id list.
 func (h crudHelpers[T, E]) reorder(ids []int64) error {
-	tx, err := DB.Begin()
+	tx, err := DB.BeginTx(context.Background(), nil)
 	if err != nil {
 		return err
 	}
 	for i, id := range ids {
-		if _, err := tx.Exec("UPDATE "+h.table+" SET sort_order = ? WHERE id = ?", i, id); err != nil {
-			tx.Rollback()
+		if _, err := tx.ExecContext(context.Background(), "UPDATE "+h.table+" SET sort_order = ? WHERE id = ?", i, id); err != nil { //nolint:gosec // table/column names are constants, not user input
+			_ = tx.Rollback()
 			return err
 		}
 	}

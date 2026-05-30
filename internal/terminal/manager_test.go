@@ -50,14 +50,14 @@ func TestManager_IsEnabled_False(t *testing.T) {
 func TestManager_Config(t *testing.T) {
 	cfg := model.TerminalConfig{
 		Enabled:     true,
-		IdleTimeout: "10m",
+		IdleTimeout: testIdleTimeout,
 		BufferLines: 2000,
 		MaxSessions: 10,
 	}
 	m := NewManager(cfg, 30000)
 	result := m.Config()
 	assert.Equal(t, true, result.Enabled)
-	assert.Equal(t, "10m", result.IdleTimeout)
+	assert.Equal(t, testIdleTimeout, result.IdleTimeout)
 	assert.Equal(t, 2000, result.BufferLines)
 	assert.Equal(t, 10, result.MaxSessions)
 }
@@ -82,14 +82,14 @@ func TestManager_AllSessionStatus_Empty(t *testing.T) {
 
 // ---------- Close ----------
 
-func TestManager_Close(t *testing.T) {
+func TestManager_Close(_ *testing.T) {
 	m := NewManager(model.TerminalConfig{Enabled: true}, 20000)
 	m.Close() // should not panic with no sessions
 }
 
 // ---------- CloseSessionByID ----------
 
-func TestManager_CloseSessionByID_NotFound(t *testing.T) {
+func TestManager_CloseSessionByID_NotFound(_ *testing.T) {
 	m := NewManager(model.TerminalConfig{Enabled: true}, 20000)
 	// Closing a non-existent session should not panic
 	m.CloseSessionByID("nonexistent")
@@ -97,7 +97,7 @@ func TestManager_CloseSessionByID_NotFound(t *testing.T) {
 
 // ---------- CloseAllSessions ----------
 
-func TestManager_CloseAllSessions_Empty(t *testing.T) {
+func TestManager_CloseAllSessions_Empty(_ *testing.T) {
 	m := NewManager(model.TerminalConfig{Enabled: true}, 20000)
 	m.CloseAllSessions() // should not panic with no sessions
 }

@@ -23,7 +23,7 @@ type ClaudeContentBlock struct {
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`    // tool_result blocks: output content (string or array of text blocks)
+	Content   json.RawMessage `json:"content,omitempty"`     // tool_result blocks: output content (string or array of text blocks)
 	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result blocks: references the tool_use ID this result belongs to
 	IsError   bool            `json:"is_error,omitempty"`    // tool_result blocks: whether the tool execution failed
 }
@@ -102,10 +102,10 @@ type StreamContentBlock struct {
 	Signature string          `json:"signature,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	ID        string          `json:"id,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`              // tool_use input (some CLIs include it in content_block_start)
-	ToolUseID string          `json:"tool_use_id,omitempty"`        // tool_result blocks: references the tool_use ID this result belongs to
-	Content   string          `json:"content,omitempty"`            // tool_result blocks: output content (non-streaming format)
-	IsError   bool            `json:"is_error,omitempty"`           // tool_result blocks: whether the tool execution failed
+	Input     json.RawMessage `json:"input,omitempty"`       // tool_use input (some CLIs include it in content_block_start)
+	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result blocks: references the tool_use ID this result belongs to
+	Content   string          `json:"content,omitempty"`     // tool_result blocks: output content (non-streaming format)
+	IsError   bool            `json:"is_error,omitempty"`    // tool_result blocks: whether the tool execution failed
 }
 
 // StreamDelta represents a content_block_delta payload
@@ -148,7 +148,7 @@ func extractContentText(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &blocks); err == nil {
 		var sb strings.Builder
 		for i, b := range blocks {
-			if b.Type == "text" {
+			if b.Type == "text" { //nolint:goconst // JSON 字段名/协议字符串
 				if i > 0 {
 					sb.WriteString("\n")
 				}
@@ -215,7 +215,7 @@ func (p *StreamParser) GetCapturedSessionID() string { return "" }
 // ParseLine parses a single JSON line from stream-json output and sends
 // StreamEvent(s) to the provided channel. This is the shared parser used by
 // both Claude and Codebuddy streaming implementations.
-func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) {
+func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) { //nolint:gocyclo,gocognit // 复杂的 stream 解析逻辑
 	var msg ClaudeStreamMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		slog.Debug("stream: skipping unparseable line", "line", line, "error", err)
@@ -227,7 +227,7 @@ func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 		// Claude verbose format: content blocks in msg.Message.Content
 		if msg.Message != nil {
 			for _, block := range msg.Message.Content {
-				if block.Type == "tool_use" {
+				if block.Type == "tool_use" { //nolint:goconst,gocritic // JSON 字段名; ifElseChain kept for readability
 					if p.receivedPartialToolUse {
 						// We already emitted this tool_use via stream_event.
 						// However, some CLIs/models send empty input_json_delta,
@@ -260,15 +260,15 @@ func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 						Input: inputStr,
 						Done:  true,
 					}}
-				} else if block.Type == "tool_result" {
+				} else if block.Type == "tool_result" { //nolint:goconst // JSON 字段名/协议字符串
 					// Tool result in assistant verbose format — emit tool_result event
 					toolUseID := block.ToolUseID
 					if toolUseID == "" {
 						toolUseID = block.ID
 					}
-					status := "success"
+					status := "success" //nolint:goconst // JSON 字段名/协议字符串
 					if block.IsError {
-						status = "error"
+						status = "error" //nolint:goconst // JSON 字段名/协议字符串
 					}
 					output := extractContentText(block.Content)
 					if output == "" && block.Text != "" {
@@ -279,10 +279,10 @@ func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 						Output: truncateToolOutput(output),
 						Status: status,
 					}}
-				} else if block.Type == "thinking" && block.Thinking != "" && !p.receivedPartialThinking {
+				} else if block.Type == "thinking" && block.Thinking != "" && !p.receivedPartialThinking { //nolint:goconst // JSON 字段名/协议字符串
 					ch <- StreamEvent{Type: "thinking", Content: block.Thinking}
 				} else if block.Type == "text" && block.Text != "" && !p.receivedPartial {
-					ch <- StreamEvent{Type: "content", Content: block.Text}
+					ch <- StreamEvent{Type: "content", Content: block.Text} //nolint:goconst // JSON 字段名/协议字符串
 				}
 			}
 			return
@@ -299,11 +299,11 @@ func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 
 	case "result":
 		meta := &Metadata{
-			SessionID:    msg.SessionID,
-			DurationMs:   msg.DurationMs,
-			CostUSD:      msg.TotalCostUSD,
-			StopReason:   msg.StopReason,
-			IsError:      msg.IsError,
+			SessionID:  msg.SessionID,
+			DurationMs: msg.DurationMs,
+			CostUSD:    msg.TotalCostUSD,
+			StopReason: msg.StopReason,
+			IsError:    msg.IsError,
 		}
 		if msg.Usage != nil {
 			meta.InputTokens = msg.Usage.InputTokens
@@ -347,12 +347,12 @@ func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			// Also emit warning event so error shows as warning block in chat message
 			if errMsg != "" {
 				slog.Warn("stream: CLI returned is_error result", "result", errMsg)
-				ch <- StreamEvent{Type: "warning", Content: errMsg}
+				ch <- StreamEvent{Type: "warning", Content: errMsg} //nolint:goconst // JSON 字段名/协议字符串
 			}
 		}
 		slog.Info("stream: emitting done event", "is_error", msg.IsError)
-		ch <- StreamEvent{Type: "metadata", Meta: meta}
-		ch <- StreamEvent{Type: "done"}
+		ch <- StreamEvent{Type: "metadata", Meta: meta} //nolint:goconst // JSON 字段名/协议字符串
+		ch <- StreamEvent{Type: "done"}                 //nolint:goconst // JSON 字段名/协议字符串
 
 	case "system":
 		// System messages (e.g., init, tool use) - skip
@@ -363,7 +363,7 @@ func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 		// so that tool_use blocks get their output/status populated.
 		if msg.Message != nil {
 			for _, block := range msg.Message.Content {
-				if block.Type == "tool_result" {
+				if block.Type == "tool_result" { //nolint:gocritic // nestingReduce: inverting would hurt readability of tool_result extraction
 					toolUseID := block.ToolUseID
 					if toolUseID == "" {
 						toolUseID = block.ID
@@ -432,7 +432,7 @@ func (p *StreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			}
 		case "content_block_start":
 			if msg.Event.ContentBlock != nil {
-				if msg.Event.ContentBlock.Type == "tool_use" {
+				if msg.Event.ContentBlock.Type == "tool_use" { //nolint:staticcheck // QF1003: single-if check, not a chain; switch not appropriate
 					p.receivedPartialToolUse = true
 					tool := &ToolCall{
 						Name: msg.Event.ContentBlock.Name,

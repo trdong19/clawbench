@@ -8,7 +8,7 @@ import (
 // checkHTTPResponse checks an HTTP response for errors.
 // It returns nil if status is http.StatusOK.
 // Otherwise it returns an error with the given context.
-func checkHTTPResponse(result map[string]any, status int, context string) error {
+func checkHTTPResponse(result map[string]any, status int, action string) error {
 	if status == http.StatusOK {
 		return nil
 	}
@@ -16,5 +16,5 @@ func checkHTTPResponse(result map[string]any, status int, context string) error 
 	if errMsg == "" {
 		errMsg = fmt.Sprintf("HTTP %d", status)
 	}
-	return fmt.Errorf("failed to %s: %s", context, errMsg)
+	return fmt.Errorf("failed to %s: %s", action, errMsg)
 }

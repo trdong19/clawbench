@@ -9,13 +9,18 @@ import (
 )
 
 var (
-	GlobalStore           *Store
-	GlobalIndexer         *Indexer
-	GlobalEmbedder        *EmbeddingClient
-	GlobalCleanupWorker   *CleanupWorker
-	embedderHealthyFlag   atomic.Bool
+	// GlobalStore is the shared RAG store instance, initialized by Init.
+	GlobalStore *Store
+	// GlobalIndexer is the shared RAG indexer instance.
+	GlobalIndexer *Indexer
+	// GlobalEmbedder is the shared embedding client instance.
+	GlobalEmbedder *EmbeddingClient
+	// GlobalCleanupWorker runs periodic retention-based cleanup of expired RAG data.
+	GlobalCleanupWorker *CleanupWorker
+	embedderHealthyFlag atomic.Bool
 )
 
+// Init initializes the RAG store, embedder, and loads the segmenter.
 func Init(cfg model.RAGConfig) error {
 	if err := InitSegmenter(); err != nil {
 		slog.Warn("rag: gse segmenter not available, Chinese FTS may be limited", slog.String("err", err.Error()))
@@ -30,12 +35,13 @@ func Init(cfg model.RAGConfig) error {
 	if err != nil {
 		slog.Warn("rag: failed to check dimension, continuing", slog.String("err", err.Error()))
 	} else if mismatch {
-		slog.Warn("rag: embedding dimension mismatch, resetting table",
+		slog.Warn(
+			"rag: embedding dimension mismatch, resetting table",
 			slog.Int("existing_dim", existingDim),
 			slog.Int("expected_dim", store.embeddingDim),
 		)
 		if err := store.ResetTable(); err != nil {
-			store.Close()
+			_ = store.Close()
 			return fmt.Errorf("reset rag table: %w", err)
 		}
 	}
@@ -45,7 +51,8 @@ func Init(cfg model.RAGConfig) error {
 	GlobalStore = store
 	GlobalEmbedder = embedder
 
-	slog.Info("rag initialized",
+	slog.Info(
+		"rag initialized",
 		slog.String("base_url", cfg.BaseURL),
 		slog.String("model", cfg.Model),
 		slog.Int("chunk_size", cfg.ChunkSize),
@@ -56,6 +63,7 @@ func Init(cfg model.RAGConfig) error {
 	return nil
 }
 
+// StartIndexer starts the background RAG indexer.
 func StartIndexer(cfg model.RAGConfig) {
 	if GlobalStore == nil {
 		slog.Warn("rag: cannot start indexer, store not initialized")
@@ -65,6 +73,7 @@ func StartIndexer(cfg model.RAGConfig) {
 	GlobalIndexer.Start()
 }
 
+// StartCleanupWorker starts the background cleanup worker that purges expired chunks.
 func StartCleanupWorker(cfg model.RAGConfig) {
 	if cfg.RetentionDays <= 0 {
 		return
@@ -73,6 +82,7 @@ func StartCleanupWorker(cfg model.RAGConfig) {
 	GlobalCleanupWorker.Start()
 }
 
+// Shutdown stops all RAG background workers and closes the store.
 func Shutdown() {
 	if GlobalCleanupWorker != nil {
 		GlobalCleanupWorker.Stop()
@@ -83,17 +93,19 @@ func Shutdown() {
 		GlobalIndexer = nil
 	}
 	if GlobalStore != nil {
-		GlobalStore.Close()
+		_ = GlobalStore.Close()
 		GlobalStore = nil
 	}
 	GlobalEmbedder = nil
 	slog.Info("rag shutdown complete")
 }
 
+// EmbedderHealthy returns whether the embedding service is healthy.
 func EmbedderHealthy() bool {
 	return embedderHealthyFlag.Load()
 }
 
+// SetEmbedderHealthy sets the embedding service health flag.
 func SetEmbedderHealthy(healthy bool) {
 	embedderHealthyFlag.Store(healthy)
 }

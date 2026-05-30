@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -137,15 +138,16 @@ func TestServeLogin(t *testing.T) {
 		// (ISS-117, ISS-131, ISS-183: cookie value must NOT equal the password hash)
 		var foundCookie bool
 		for _, c := range w.Result().Cookies() {
-			if c.Name == model.SessionCookie {
-				foundCookie = true
-				// Cookie value should be the random CookieToken, not the password-derived SessionToken
-				assert.Equal(t, model.CookieToken, c.Value)
-				assert.Equal(t, "/", c.Path)
-				assert.True(t, c.HttpOnly)
-				// Cookie must differ from the password hash (security: decoupled tokens)
-				assert.NotEqual(t, model.SessionToken, c.Value, "cookie must not equal password hash")
+			if c.Name != model.SessionCookie {
+				continue
 			}
+			foundCookie = true
+			// Cookie value should be the random CookieToken, not the password-derived SessionToken
+			assert.Equal(t, model.CookieToken, c.Value)
+			assert.Equal(t, "/", c.Path)
+			assert.True(t, c.HttpOnly)
+			// Cookie must differ from the password hash (security: decoupled tokens)
+			assert.NotEqual(t, model.SessionToken, c.Value, "cookie must not equal password hash")
 		}
 		assert.True(t, foundCookie, "expected session cookie to be set")
 	})
@@ -211,7 +213,7 @@ func TestServeLogin(t *testing.T) {
 		bcryptHash, _ := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
 		model.PasswordHash = bcryptHash
 
-		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("{invalid json"))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/login", strings.NewReader("{invalid json"))
 		req.Header.Set("Content-Type", "application/json")
 		w := callHandler(ServeLogin, req)
 
@@ -297,10 +299,10 @@ func TestServeLogin_RateLimiting(t *testing.T) {
 
 	// Reset the global limiter for this test
 	globalLoginLimiter = &loginLimiter{records: make(map[string]*ipRecord)}
-	globalLoginLimiterOnce = sync.Once{} //nolint:staticcheck // reset for test
+	globalLoginLimiterOnce = sync.Once{}
 
 	// Send maxLoginFails wrong password attempts
-	for i := 0; i < maxLoginFails; i++ {
+	for range maxLoginFails {
 		req := newRequest(t, http.MethodPost, "/login", map[string]string{
 			"password": "wrongpass",
 		})
@@ -329,7 +331,7 @@ func TestServeLogin_RateLimiting_SuccessUnblocks(t *testing.T) {
 	globalLoginLimiterOnce = sync.Once{}
 
 	// Send (maxLoginFails - 1) wrong password attempts (just under the limit)
-	for i := 0; i < maxLoginFails-1; i++ {
+	for range maxLoginFails - 1 {
 		req := newRequest(t, http.MethodPost, "/login", map[string]string{
 			"password": "wrongpass",
 		})

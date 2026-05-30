@@ -29,7 +29,7 @@ func setupFileWatcher(t *testing.T) *FileWatcher {
 	go fw.eventLoop()
 	t.Cleanup(func() {
 		close(fw.done)
-		fw.watcher.Close()
+		_ = fw.watcher.Close()
 	})
 	return fw
 }
@@ -68,7 +68,7 @@ func TestInitFileWatcher(t *testing.T) {
 	StopFileWatcher()
 }
 
-func TestStopFileWatcher_Nil(t *testing.T) {
+func TestStopFileWatcher_Nil(_ *testing.T) {
 	orig := GlobalFileWatcher
 	defer func() { GlobalFileWatcher = orig }()
 
@@ -114,16 +114,16 @@ func TestRegisterClient_ChannelCapacity(t *testing.T) {
 	fw.mu.Unlock()
 
 	// Channel should have capacity of watchPushChSize
-	for i := 0; i < watchPushChSize; i++ {
+	for range watchPushChSize {
 		select {
-		case ch <- WatchEvent{Type: "file_change", Path: "/test"}:
+		case ch <- WatchEvent{Type: WatchEventFileChange, Path: TestPathPrefix}:
 		default:
 			t.Fatalf("channel should accept %d events", watchPushChSize)
 		}
 	}
 	// Next write should block (channel full)
 	select {
-	case ch <- WatchEvent{Type: "file_change", Path: "/test"}:
+	case ch <- WatchEvent{Type: WatchEventFileChange, Path: TestPathPrefix}:
 		t.Fatal("channel should be full")
 	default:
 		// Expected
@@ -202,7 +202,7 @@ func TestUpdateWatch_SetsPaths(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "test.txt")
-	os.WriteFile(file, []byte("hello"), 0644)
+	_ = os.WriteFile(file, []byte("hello"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file)
 
@@ -243,8 +243,8 @@ func TestUpdateWatch_DiffFile(t *testing.T) {
 	dir := t.TempDir()
 	file1 := filepath.Join(dir, "a.txt")
 	file2 := filepath.Join(dir, "b.txt")
-	os.WriteFile(file1, []byte("a"), 0644)
-	os.WriteFile(file2, []byte("b"), 0644)
+	_ = os.WriteFile(file1, []byte("a"), 0o600)
+	_ = os.WriteFile(file2, []byte("b"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file1)
 	fw.UpdateWatch("c1", dir, file2)
@@ -294,9 +294,9 @@ func TestUpdateWatch_CancelsDebounceTimers(t *testing.T) {
 
 	// Simulate a pending debounce event
 	fw.mu.Lock()
-	key := "c1|dir_change"
+	key := TestDebounceKeyC1Dir
 	fw.debounceTimers[key] = time.AfterFunc(5*time.Second, func() {})
-	fw.debouncePending[key] = WatchEvent{Type: "dir_change", Path: dir}
+	fw.debouncePending[key] = WatchEvent{Type: WatchEventDirChange, Path: dir}
 	fw.mu.Unlock()
 
 	// UpdateWatch should cancel the old timer
@@ -327,7 +327,7 @@ func TestHandleFsEvent_DirCreate(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "dir_change", events[0].Type)
+	assert.Equal(t, WatchEventDirChange, events[0].Type)
 	assert.Equal(t, dir, events[0].Path)
 }
 
@@ -345,7 +345,7 @@ func TestHandleFsEvent_DirRemove(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "dir_change", events[0].Type)
+	assert.Equal(t, WatchEventDirChange, events[0].Type)
 }
 
 func TestHandleFsEvent_DirRename(t *testing.T) {
@@ -362,7 +362,7 @@ func TestHandleFsEvent_DirRename(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "dir_change", events[0].Type)
+	assert.Equal(t, WatchEventDirChange, events[0].Type)
 }
 
 func TestHandleFsEvent_DirWriteIgnored(t *testing.T) {
@@ -388,7 +388,7 @@ func TestHandleFsEvent_FileWrite(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "test.txt")
-	os.WriteFile(file, []byte("hello"), 0644)
+	_ = os.WriteFile(file, []byte("hello"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file)
 
@@ -399,7 +399,7 @@ func TestHandleFsEvent_FileWrite(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "file_change", events[0].Type)
+	assert.Equal(t, WatchEventFileChange, events[0].Type)
 	assert.Equal(t, file, events[0].Path)
 }
 
@@ -419,7 +419,7 @@ func TestHandleFsEvent_FileCreate(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "file_change", events[0].Type)
+	assert.Equal(t, WatchEventFileChange, events[0].Type)
 }
 
 func TestHandleFsEvent_FileRename(t *testing.T) {
@@ -428,7 +428,7 @@ func TestHandleFsEvent_FileRename(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "test.txt")
-	os.WriteFile(file, []byte("hello"), 0644)
+	_ = os.WriteFile(file, []byte("hello"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file)
 
@@ -439,7 +439,7 @@ func TestHandleFsEvent_FileRename(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "file_change", events[0].Type)
+	assert.Equal(t, WatchEventFileChange, events[0].Type)
 }
 
 func TestHandleFsEvent_UnrelatedPath(t *testing.T) {
@@ -475,7 +475,7 @@ func TestHandleFsEvent_DirAndFileSamePath(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "file_change", events[0].Type, "file match takes priority when dir and file are the same path")
+	assert.Equal(t, WatchEventFileChange, events[0].Type, "file match takes priority when dir and file are the same path")
 }
 
 func TestHandleFsEvent_FileChangeOverridesDirChange(t *testing.T) {
@@ -484,7 +484,7 @@ func TestHandleFsEvent_FileChangeOverridesDirChange(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "watched.txt")
-	os.WriteFile(file, []byte("hello"), 0644)
+	_ = os.WriteFile(file, []byte("hello"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file)
 
@@ -496,7 +496,7 @@ func TestHandleFsEvent_FileChangeOverridesDirChange(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "file_change", events[0].Type)
+	assert.Equal(t, WatchEventFileChange, events[0].Type)
 }
 
 func TestHandleFsEvent_SiblingFileGivesDirChange(t *testing.T) {
@@ -506,7 +506,7 @@ func TestHandleFsEvent_SiblingFileGivesDirChange(t *testing.T) {
 	dir := t.TempDir()
 	watchedFile := filepath.Join(dir, "watched.txt")
 	siblingFile := filepath.Join(dir, "sibling.txt")
-	os.WriteFile(watchedFile, []byte("hello"), 0644)
+	_ = os.WriteFile(watchedFile, []byte("hello"), 0o600)
 
 	fw.UpdateWatch("c1", dir, watchedFile)
 
@@ -518,7 +518,7 @@ func TestHandleFsEvent_SiblingFileGivesDirChange(t *testing.T) {
 
 	events := collectEvents(ch, 1, 500*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "dir_change", events[0].Type)
+	assert.Equal(t, WatchEventDirChange, events[0].Type)
 }
 
 func TestHandleFsEvent_MultipleClients(t *testing.T) {
@@ -528,7 +528,7 @@ func TestHandleFsEvent_MultipleClients(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "shared.txt")
-	os.WriteFile(file, []byte("hello"), 0644)
+	_ = os.WriteFile(file, []byte("hello"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file)
 	fw.UpdateWatch("c2", dir, file)
@@ -542,8 +542,8 @@ func TestHandleFsEvent_MultipleClients(t *testing.T) {
 	events2 := collectEvents(ch2, 1, 500*time.Millisecond)
 	assert.Len(t, events1, 1)
 	assert.Len(t, events2, 1)
-	assert.Equal(t, "file_change", events1[0].Type)
-	assert.Equal(t, "file_change", events2[0].Type)
+	assert.Equal(t, WatchEventFileChange, events1[0].Type)
+	assert.Equal(t, WatchEventFileChange, events2[0].Type)
 }
 
 func TestHandleFsEvent_ClientRemovedMidEvent(t *testing.T) {
@@ -577,7 +577,7 @@ func TestDebounce_Coalescing(t *testing.T) {
 	fw.UpdateWatch("c1", dir, "")
 
 	// Fire 5 rapid events
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		fw.handleFsEvent(fsnotify.Event{
 			Name: dir,
 			Op:   fsnotify.Create,
@@ -590,7 +590,7 @@ func TestDebounce_Coalescing(t *testing.T) {
 	// Should only receive 1 coalesced event
 	events := collectEvents(ch, 10, 300*time.Millisecond)
 	assert.Len(t, events, 1, "rapid events should be coalesced into one")
-	assert.Equal(t, "dir_change", events[0].Type)
+	assert.Equal(t, WatchEventDirChange, events[0].Type)
 }
 
 func TestDebounce_DifferentEventTypesNotCoalesced(t *testing.T) {
@@ -599,7 +599,7 @@ func TestDebounce_DifferentEventTypesNotCoalesced(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "test.txt")
-	os.WriteFile(file, []byte("hello"), 0644)
+	_ = os.WriteFile(file, []byte("hello"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file)
 
@@ -620,8 +620,8 @@ func TestDebounce_DifferentEventTypesNotCoalesced(t *testing.T) {
 	for _, e := range events {
 		types[e.Type] = true
 	}
-	assert.True(t, types["dir_change"])
-	assert.True(t, types["file_change"])
+	assert.True(t, types[WatchEventDirChange])
+	assert.True(t, types[WatchEventFileChange])
 }
 
 // ---------- isPathWatchedByOthers ----------
@@ -683,15 +683,15 @@ func TestCancelClientTimers(t *testing.T) {
 	fw.RegisterClient("c1")
 
 	fw.mu.Lock()
-	key1 := "c1|dir_change"
+	key1 := TestDebounceKeyC1Dir
 	key2 := "c1|file_change"
 	key3 := "c2|dir_change"
 	fw.debounceTimers[key1] = time.AfterFunc(5*time.Second, func() {})
 	fw.debounceTimers[key2] = time.AfterFunc(5*time.Second, func() {})
 	fw.debounceTimers[key3] = time.AfterFunc(5*time.Second, func() {})
-	fw.debouncePending[key1] = WatchEvent{Type: "dir_change"}
-	fw.debouncePending[key2] = WatchEvent{Type: "file_change"}
-	fw.debouncePending[key3] = WatchEvent{Type: "dir_change"}
+	fw.debouncePending[key1] = WatchEvent{Type: WatchEventDirChange}
+	fw.debouncePending[key2] = WatchEvent{Type: WatchEventFileChange}
+	fw.debouncePending[key3] = WatchEvent{Type: WatchEventDirChange}
 	fw.mu.Unlock()
 
 	fw.mu.Lock()
@@ -718,8 +718,8 @@ func TestFireDebouncedEvent(t *testing.T) {
 	dir := t.TempDir()
 	fw.UpdateWatch("c1", dir, "")
 
-	key := "c1|dir_change"
-	we := WatchEvent{Type: "dir_change", Path: dir}
+	key := TestDebounceKeyC1Dir
+	we := WatchEvent{Type: WatchEventDirChange, Path: dir}
 
 	fw.mu.Lock()
 	fw.debouncePending[key] = we
@@ -729,7 +729,7 @@ func TestFireDebouncedEvent(t *testing.T) {
 
 	events := collectEvents(ch, 1, 300*time.Millisecond)
 	assert.Len(t, events, 1)
-	assert.Equal(t, "dir_change", events[0].Type)
+	assert.Equal(t, WatchEventDirChange, events[0].Type)
 	assert.Equal(t, dir, events[0].Path)
 
 	// Pending should be cleared
@@ -746,16 +746,16 @@ func TestFireDebouncedEvent_NoPendingEvent(t *testing.T) {
 	fw.RegisterClient("c1")
 
 	// Should not panic
-	fw.fireDebouncedEvent("c1", "c1|dir_change")
+	fw.fireDebouncedEvent("c1", TestDebounceKeyC1Dir)
 }
 
 func TestFireDebouncedEvent_ClientRemoved(t *testing.T) {
 	fw := setupFileWatcher(t)
 	fw.RegisterClient("c1")
 
-	key := "c1|dir_change"
+	key := TestDebounceKeyC1Dir
 	fw.mu.Lock()
-	fw.debouncePending[key] = WatchEvent{Type: "dir_change", Path: "/test"}
+	fw.debouncePending[key] = WatchEvent{Type: WatchEventDirChange, Path: TestPathPrefix}
 	fw.mu.Unlock()
 
 	fw.UnregisterClient("c1")
@@ -777,13 +777,13 @@ func TestFireDebouncedEvent_ChannelFull(t *testing.T) {
 	fw.mu.Unlock()
 
 	// Fill the channel
-	for i := 0; i < watchPushChSize; i++ {
-		ch <- WatchEvent{Type: "dir_change", Path: dir}
+	for range watchPushChSize {
+		ch <- WatchEvent{Type: WatchEventDirChange, Path: dir}
 	}
 
-	key := "c1|dir_change"
+	key := TestDebounceKeyC1Dir
 	fw.mu.Lock()
-	fw.debouncePending[key] = WatchEvent{Type: "dir_change", Path: dir}
+	fw.debouncePending[key] = WatchEvent{Type: WatchEventDirChange, Path: dir}
 	fw.mu.Unlock()
 
 	// Should not block or panic — event is dropped
@@ -804,12 +804,12 @@ func TestFileWatcher_RealDirChangeEvent(t *testing.T) {
 
 	// Create a new file in the directory — this should trigger a Create event on the dir
 	newFile := filepath.Join(dir, "newfile.txt")
-	err := os.WriteFile(newFile, []byte("test"), 0644)
+	err := os.WriteFile(newFile, []byte("test"), 0o600)
 	assert.NoError(t, err)
 
 	events := collectEvents(ch, 1, 2*time.Second)
 	if assert.Len(t, events, 1) {
-		assert.Equal(t, "dir_change", events[0].Type)
+		assert.Equal(t, WatchEventDirChange, events[0].Type)
 	}
 }
 
@@ -819,7 +819,7 @@ func TestFileWatcher_RealFileWriteEvent(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "test.txt")
-	err := os.WriteFile(file, []byte("initial"), 0644)
+	err := os.WriteFile(file, []byte("initial"), 0o600)
 	assert.NoError(t, err)
 
 	fw.UpdateWatch("c1", dir, file)
@@ -828,12 +828,12 @@ func TestFileWatcher_RealFileWriteEvent(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Modify the file
-	err = os.WriteFile(file, []byte("modified"), 0644)
+	err = os.WriteFile(file, []byte("modified"), 0o600)
 	assert.NoError(t, err)
 
 	events := collectEvents(ch, 1, 2*time.Second)
 	if assert.Len(t, events, 1) {
-		assert.Equal(t, "file_change", events[0].Type)
+		assert.Equal(t, WatchEventFileChange, events[0].Type)
 	}
 }
 
@@ -843,7 +843,7 @@ func TestFileWatcher_DebounceRealEvents(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "test.txt")
-	err := os.WriteFile(file, []byte("initial"), 0644)
+	err := os.WriteFile(file, []byte("initial"), 0o600)
 	assert.NoError(t, err)
 
 	fw.UpdateWatch("c1", dir, file)
@@ -851,8 +851,8 @@ func TestFileWatcher_DebounceRealEvents(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Rapid writes
-	for i := 0; i < 5; i++ {
-		os.WriteFile(file, []byte("modify"+string(rune('0'+i))), 0644)
+	for i := range 5 {
+		_ = os.WriteFile(file, []byte("modify"+string(rune('0'+i))), 0o600)
 	}
 
 	// Wait for debounce to settle
@@ -870,7 +870,7 @@ func TestFileWatcher_MultipleClientsRealEvents(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "shared.txt")
-	os.WriteFile(file, []byte("hello"), 0644)
+	_ = os.WriteFile(file, []byte("hello"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file)
 	fw.UpdateWatch("c2", dir, file)
@@ -878,15 +878,15 @@ func TestFileWatcher_MultipleClientsRealEvents(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Modify the file
-	os.WriteFile(file, []byte("world"), 0644)
+	_ = os.WriteFile(file, []byte("world"), 0o600)
 
 	events1 := collectEvents(ch1, 1, 2*time.Second)
 	events2 := collectEvents(ch2, 1, 2*time.Second)
 
 	assert.Len(t, events1, 1)
 	assert.Len(t, events2, 1)
-	assert.Equal(t, "file_change", events1[0].Type)
-	assert.Equal(t, "file_change", events2[0].Type)
+	assert.Equal(t, WatchEventFileChange, events1[0].Type)
+	assert.Equal(t, WatchEventFileChange, events2[0].Type)
 }
 
 func TestFileWatcher_UpdateWatchSwitchesFile(t *testing.T) {
@@ -896,8 +896,8 @@ func TestFileWatcher_UpdateWatchSwitchesFile(t *testing.T) {
 	dir := t.TempDir()
 	file1 := filepath.Join(dir, "a.txt")
 	file2 := filepath.Join(dir, "b.txt")
-	os.WriteFile(file1, []byte("a"), 0644)
-	os.WriteFile(file2, []byte("b"), 0644)
+	_ = os.WriteFile(file1, []byte("a"), 0o600)
+	_ = os.WriteFile(file2, []byte("b"), 0o600)
 
 	fw.UpdateWatch("c1", dir, file1)
 	time.Sleep(100 * time.Millisecond)
@@ -907,11 +907,11 @@ func TestFileWatcher_UpdateWatchSwitchesFile(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Modify file2 — should trigger file_change
-	os.WriteFile(file2, []byte("b-modified"), 0644)
+	_ = os.WriteFile(file2, []byte("b-modified"), 0o600)
 
 	events := collectEvents(ch, 1, 2*time.Second)
 	if assert.Len(t, events, 1) {
-		assert.Equal(t, "file_change", events[0].Type)
+		assert.Equal(t, WatchEventFileChange, events[0].Type)
 		assert.Equal(t, file2, events[0].Path)
 	}
 }
@@ -922,7 +922,7 @@ func TestFileWatcher_ConcurrentRegisterUnregister(t *testing.T) {
 	fw := setupFileWatcher(t)
 
 	var done atomic.Int32
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		id := string(rune('a' + i))
 		go func() {
 			ch := fw.RegisterClient(id)
@@ -943,19 +943,19 @@ func TestFileWatcher_ConcurrentRegisterUnregister(t *testing.T) {
 // ---------- WatchEvent struct ----------
 
 func TestWatchEvent_JSONMarshal(t *testing.T) {
-	we := WatchEvent{Type: "file_change", Path: "/test/file.txt"}
+	we := WatchEvent{Type: WatchEventFileChange, Path: "/test/file.txt"}
 	data, err := json.Marshal(we)
 	assert.NoError(t, err)
 
 	var decoded WatchEvent
 	err = json.Unmarshal(data, &decoded)
 	assert.NoError(t, err)
-	assert.Equal(t, "file_change", decoded.Type)
+	assert.Equal(t, WatchEventFileChange, decoded.Type)
 	assert.Equal(t, "/test/file.txt", decoded.Path)
 }
 
 func TestWatchEvent_Fields(t *testing.T) {
-	we := WatchEvent{Type: "dir_change", Path: "/project"}
-	assert.Equal(t, "dir_change", we.Type)
+	we := WatchEvent{Type: WatchEventDirChange, Path: "/project"}
+	assert.Equal(t, WatchEventDirChange, we.Type)
 	assert.Equal(t, "/project", we.Path)
 }

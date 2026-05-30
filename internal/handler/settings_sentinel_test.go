@@ -47,7 +47,7 @@ func TestIsRunningUnderSupervisor_ContainerEnv(t *testing.T) {
 	assert.True(t, IsRunningUnderSupervisor(), "container env set should return true")
 }
 
-func TestIsRunningUnderSupervisor_NoIndicators(t *testing.T) {
+func TestIsRunningUnderSupervisor_NoIndicators(_ *testing.T) {
 	origNo := os.Getenv("CLAWBENCH_NO_SUPERVISOR")
 	origInv := os.Getenv("INVOCATION_ID")
 	origCont := os.Getenv("container")
@@ -83,7 +83,7 @@ func TestIsRunningUnderSupervisor_DockerenvFile(t *testing.T) {
 
 	// Create /.dockerenv temporarily
 	if os.Getuid() == 0 {
-		os.WriteFile("/.dockerenv", []byte{}, 0644)
+		os.WriteFile("/.dockerenv", []byte{}, 0o644)
 		defer os.Remove("/.dockerenv")
 		assert.True(t, IsRunningUnderSupervisor(), "/.dockerenv exists should return true")
 	}

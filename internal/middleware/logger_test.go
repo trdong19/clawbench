@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,14 +10,14 @@ import (
 )
 
 func TestRequestLogger(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("hello"))
+		_, _ = w.Write([]byte("hello"))
 	})
 
 	wrapped := RequestLogger(handler)
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
 
 	wrapped(rec, req)
@@ -26,13 +27,13 @@ func TestRequestLogger(t *testing.T) {
 }
 
 func TestRequestLogger_CapturesStatus(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 
 	wrapped := RequestLogger(handler)
 
-	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/missing", nil)
 	rec := httptest.NewRecorder()
 
 	wrapped(rec, req)
@@ -41,13 +42,13 @@ func TestRequestLogger_CapturesStatus(t *testing.T) {
 }
 
 func TestRequestLogger_CapturesBytesWritten(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("some response data"))
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("some response data"))
 	})
 
 	wrapped := RequestLogger(handler)
 
-	req := httptest.NewRequest(http.MethodPost, "/submit", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/submit", nil)
 	rec := httptest.NewRecorder()
 
 	wrapped(rec, req)
@@ -79,7 +80,7 @@ func TestResponseWriter_WriteAccumulates(t *testing.T) {
 	rec := httptest.NewRecorder()
 	rw := &ResponseWriter{ResponseWriter: rec, status: http.StatusOK}
 
-	rw.Write([]byte("hello "))
-	rw.Write([]byte("world"))
+	_, _ = rw.Write([]byte("hello "))
+	_, _ = rw.Write([]byte("world"))
 	assert.Equal(t, 11, rw.bytes) // "hello " (6) + "world" (5)
 }

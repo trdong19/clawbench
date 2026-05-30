@@ -57,18 +57,18 @@ func (m *MockAIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-c
 			// enabling instant cancellation (like real backends using cmd.Process.Kill).
 			select {
 			case <-ctx.Done():
-				ch <- StreamEvent{Type: "warning", Content: "mock stream cancelled", Reason: ReasonContextCancel}
+				ch <- StreamEvent{Type: "warning", Content: "mock stream cancelled", Reason: ReasonContextCancel} //nolint:goconst // JSON 字段名/协议字符串
 				return
 			case <-time.After(50 * time.Millisecond):
 				// Simulate streaming pace with instant cancel detection
 			}
 
-			ch <- StreamEvent{Type: "content", Content: sep + word}
+			ch <- StreamEvent{Type: "content", Content: sep + word} //nolint:goconst // JSON 字段名/协议字符串
 		}
 
 		// Send metadata
 		ch <- StreamEvent{
-			Type: "metadata",
+			Type: "metadata", //nolint:goconst // JSON 字段名/协议字符串
 			Meta: &Metadata{
 				Model:        "mock-model",
 				InputTokens:  10,
@@ -78,7 +78,7 @@ func (m *MockAIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-c
 			},
 		}
 
-		ch <- StreamEvent{Type: "done"}
+		ch <- StreamEvent{Type: "done"} //nolint:goconst // JSON 字段名/协议字符串
 	}()
 
 	return ch, nil

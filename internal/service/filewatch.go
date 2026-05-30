@@ -17,8 +17,8 @@ type WatchEvent struct {
 }
 
 type watchClient struct {
-	dirPath  string        // absolute path of watched directory (may be "")
-	filePath string        // absolute path of watched file (may be "")
+	dirPath  string // absolute path of watched directory (may be "")
+	filePath string // absolute path of watched file (may be "")
 	pushCh   chan WatchEvent
 }
 
@@ -74,7 +74,7 @@ func StopFileWatcher() {
 	GlobalFileWatcher = nil
 
 	close(fw.done)
-	fw.watcher.Close()
+	_ = fw.watcher.Close()
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 	for id, c := range fw.clients {
@@ -145,7 +145,8 @@ func (fw *FileWatcher) UpdateWatch(clientID, dirPath, filePath string) {
 	oldDir := client.dirPath
 	oldFile := client.filePath
 
-	slog.Debug("UpdateWatch",
+	slog.Debug(
+		"UpdateWatch",
 		slog.String("clientId", clientID),
 		slog.String("oldDir", oldDir),
 		slog.String("oldFile", oldFile),
@@ -167,7 +168,8 @@ func (fw *FileWatcher) UpdateWatch(clientID, dirPath, filePath string) {
 		}
 		if dirPath != "" {
 			if err := fw.watcher.Add(dirPath); err != nil {
-				slog.Warn("failed to watch directory",
+				slog.Warn(
+					"failed to watch directory",
 					slog.String("path", dirPath),
 					slog.String("err", err.Error()),
 				)
@@ -182,7 +184,8 @@ func (fw *FileWatcher) UpdateWatch(clientID, dirPath, filePath string) {
 		}
 		if filePath != "" {
 			if err := fw.watcher.Add(filePath); err != nil {
-				slog.Warn("failed to watch file",
+				slog.Warn(
+					"failed to watch file",
 					slog.String("path", filePath),
 					slog.String("err", err.Error()),
 				)
@@ -248,42 +251,13 @@ func (fw *FileWatcher) handleFsEvent(event fsnotify.Event) {
 	absPath := event.Name
 
 	for clientID, client := range fw.clients {
-		var eventType string
-
-		// Match file watch FIRST: Write/Create/Rename mean file content changed.
-		// File match takes priority over directory match because the client explicitly
-		// opened this file and wants content updates, not just listing changes.
-		if client.filePath != "" && absPath == client.filePath {
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
-				eventType = "file_change"
-			}
-		}
-
-		// Match directory watch: Create/Remove/Rename affect directory listing.
-		// When a file is created/removed inside a watched directory, fsnotify
-		// reports the event on the CHILD path (e.g., /dir/newfile.txt), not
-		// the directory itself. So we check both exact match and child match.
-		// Only emit dir_change if no file_change was already matched (i.e., the
-		// event is not for a specifically-watched file).
-		if eventType == "" && client.dirPath != "" {
-			dirMatch := false
-			if absPath == client.dirPath {
-				// Direct event on the directory (e.g., Rename of the dir itself)
-				dirMatch = event.Has(fsnotify.Create) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)
-			} else if strings.HasPrefix(absPath, client.dirPath+string(filepath.Separator)) {
-				// Child event — file created/removed/renamed inside the directory
-				dirMatch = event.Has(fsnotify.Create) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)
-			}
-			if dirMatch {
-				eventType = "dir_change"
-			}
-		}
-
+		eventType := fw.matchClientEvent(event, client, absPath)
 		if eventType == "" {
 			continue
 		}
 
-		slog.Debug("handleFsEvent matched",
+		slog.Debug(
+			"handleFsEvent matched",
 			slog.String("clientId", clientID),
 			slog.String("eventType", eventType),
 			slog.String("absPath", absPath),
@@ -309,6 +283,32 @@ func (fw *FileWatcher) handleFsEvent(event fsnotify.Event) {
 	}
 }
 
+// matchClientEvent determines the event type for a client, or "" if no match.
+// File match takes priority over directory match.
+func (fw *FileWatcher) matchClientEvent(event fsnotify.Event, client *watchClient, absPath string) string {
+	// Match file watch FIRST: Write/Create/Rename mean file content changed.
+	if client.filePath != "" && absPath == client.filePath {
+		if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
+			return WatchEventFileChange
+		}
+	}
+
+	// Match directory watch: Create/Remove/Rename affect directory listing.
+	if client.dirPath != "" {
+		dirMatch := false
+		if absPath == client.dirPath {
+			dirMatch = event.Has(fsnotify.Create) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)
+		} else if strings.HasPrefix(absPath, client.dirPath+string(filepath.Separator)) {
+			dirMatch = event.Has(fsnotify.Create) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)
+		}
+		if dirMatch {
+			return WatchEventDirChange
+		}
+	}
+
+	return ""
+}
+
 // fireDebouncedEvent is called when a debounce timer expires.
 // It pushes the pending event to the client's channel.
 func (fw *FileWatcher) fireDebouncedEvent(clientID, debounceKey string) {
@@ -329,14 +329,16 @@ func (fw *FileWatcher) fireDebouncedEvent(clientID, debounceKey string) {
 
 	select {
 	case client.pushCh <- we:
-		slog.Debug("file watch event pushed",
+		slog.Debug(
+			"file watch event pushed",
 			slog.String("clientId", clientID),
 			slog.String("type", we.Type),
 			slog.String("path", we.Path),
 		)
 	default:
 		// Channel full — drop event (client will get the next one)
-		slog.Debug("file watch push channel full, dropping event",
+		slog.Debug(
+			"file watch push channel full, dropping event",
 			slog.String("clientId", clientID),
 			slog.String("type", we.Type),
 		)

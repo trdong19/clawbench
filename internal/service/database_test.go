@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"clawbench/internal/model"
+	// modernc.org/sqlite: SQLite driver registration required for database/sql.Open("sqlite", ...)
 	_ "modernc.org/sqlite"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +17,7 @@ import (
 
 // setupTestDBForTTS creates an in-memory SQLite database with the tts_summaries table
 // for testing TTS summary functions.
-func setupTestDBForTTS(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForTTS(t *testing.T) (db *sql.DB, cleanup func()) {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -25,10 +27,10 @@ func setupTestDBForTTS(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS tts_summaries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			message_id   INTEGER NOT NULL,
@@ -84,14 +86,14 @@ func setupTestDBForTTS(t *testing.T) (*sql.DB, func()) {
 	teardown := func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
 	return db, teardown
 }
 
 // setupTestDBForQuickSend creates an in-memory SQLite database with the chat_quick_send table
 // for testing ChatQuickSend CRUD functions.
-func setupTestDBForQuickSend(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForQuickSend(t *testing.T) func() {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -101,10 +103,10 @@ func setupTestDBForQuickSend(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS chat_quick_send (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			label TEXT NOT NULL,
@@ -120,12 +122,11 @@ func setupTestDBForQuickSend(t *testing.T) (*sql.DB, func()) {
 
 	DB = db
 	DBRead = db // Same instance for :memory: SQLite — data is shared
-	teardown := func() {
+	return func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
-	return db, teardown
 }
 
 // ---------- Schema: session_type, task_executions columns, new indexes ----------
@@ -144,7 +145,7 @@ func TestSchema_SessionTypeColumnExists(t *testing.T) {
 	assert.NoError(t, err)
 	defer CloseDB()
 
-	columns := getTableColumns(t, DB, "chat_sessions")
+	columns := getTableColumns(t, DB, TableChatSessions)
 	assert.Contains(t, columns, "session_type", "chat_sessions should have session_type column")
 }
 
@@ -190,9 +191,9 @@ func TestSchema_NewIndexes(t *testing.T) {
 // getTableColumns returns a set of column names for the given table.
 func getTableColumns(t *testing.T, db *sql.DB, table string) map[string]bool {
 	t.Helper()
-	rows, err := db.Query("PRAGMA table_info('" + table + "')")
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info('"+table+"')")
 	assert.NoError(t, err)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	cols := make(map[string]bool)
 	for rows.Next() {
@@ -203,6 +204,9 @@ func getTableColumns(t *testing.T, db *sql.DB, table string) map[string]bool {
 		var pk int
 		assert.NoError(t, rows.Scan(&cid, &name, &typ, &notNull, &dfltVal, &pk))
 		cols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		assert.NoError(t, err)
 	}
 	return cols
 }
@@ -250,15 +254,18 @@ func TestSchema_TTSSummariesNewSchema(t *testing.T) {
 // getIndexes returns a set of index names from sqlite_master.
 func getIndexes(t *testing.T, db *sql.DB) map[string]bool {
 	t.Helper()
-	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='index'")
+	rows, err := db.QueryContext(context.Background(), "SELECT name FROM sqlite_master WHERE type='index'")
 	assert.NoError(t, err)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	indexes := make(map[string]bool)
 	for rows.Next() {
 		var name string
 		assert.NoError(t, rows.Scan(&name))
 		indexes[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		assert.NoError(t, err)
 	}
 	return indexes
 }
@@ -297,7 +304,7 @@ func TestInitDB_ReadWriteSeparation(t *testing.T) {
 
 	// Verify both can query
 	var count int
-	err = DBRead.QueryRow("SELECT COUNT(*) FROM chat_sessions").Scan(&count)
+	err = DBRead.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM chat_sessions").Scan(&count)
 	assert.NoError(t, err, "DBRead should be able to query")
 
 	// Verify CloseDB closes both
@@ -305,7 +312,7 @@ func TestInitDB_ReadWriteSeparation(t *testing.T) {
 }
 
 // TestCloseDB_NilDB verifies that CloseDB does not panic when DB and DBRead are nil.
-func TestCloseDB_NilDB(t *testing.T) {
+func TestCloseDB_NilDB(_ *testing.T) {
 	origDB := DB
 	origDBRead := DBRead
 	defer func() { DB = origDB; DBRead = origDBRead }()
@@ -376,10 +383,11 @@ func TestInitDB_CreatesTables(t *testing.T) {
 	db, teardown := setupTestDBForTTS(t)
 	defer teardown()
 
-	tables := []string{"tts_summaries", "chat_history", "chat_sessions"}
+	tables := []string{"tts_summaries", "chat_history", TableChatSessions}
 	for _, table := range tables {
 		var count int
-		err := db.QueryRow(
+		err := db.QueryRowContext(
+			context.Background(),
 			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
 			table,
 		).Scan(&count)
@@ -395,19 +403,21 @@ func TestInitDB_CleansOrphanedStreamingJSON(t *testing.T) {
 	defer teardown()
 
 	content := map[string]any{
-		"blocks": []any{
-			map[string]any{"type": "text", "text": "partial response"},
+		BlockKeyBlocks: []any{
+			map[string]any{JSONKeyType: BlockTypeText, BlockTypeText: "partial response"},
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
-	_, err := db.Exec(
+	_, err := db.ExecContext(
+		context.Background(),
 		"INSERT INTO chat_history (project_path, role, content, session_id, backend, streaming) VALUES (?, 'assistant', ?, ?, 'claude', 1)",
 		"/test", string(contentJSON), "sess-1",
 	)
 	assert.NoError(t, err)
 
-	rows, err := db.Query("SELECT id, content FROM chat_history WHERE streaming = 1")
+	rows, err := db.QueryContext(context.Background(), "SELECT id, content FROM chat_history WHERE streaming = 1")
 	assert.NoError(t, err)
+	defer func() { _ = rows.Close() }()
 
 	type orphanMsg struct {
 		id      int64
@@ -419,51 +429,55 @@ func TestInitDB_CleansOrphanedStreamingJSON(t *testing.T) {
 		assert.NoError(t, rows.Scan(&m.id, &m.content))
 		orphans = append(orphans, m)
 	}
-	rows.Close()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		assert.NoError(t, rowsErr)
+	}
 	assert.Len(t, orphans, 1)
 
 	m := orphans[0]
 	var contentMap map[string]any
-	json.Unmarshal([]byte(m.content), &contentMap)
-	contentMap["cancelled"] = true
-	blocks, _ := contentMap["blocks"].([]any)
+	_ = json.Unmarshal([]byte(m.content), &contentMap)
+	contentMap[JSONKeyCancelled] = true
+	blocks, _ := contentMap[BlockKeyBlocks].([]any)
 	blocks = append(blocks, map[string]any{
-		"type":   "warning",
-		"text":   "Server restarted, AI response interrupted",
-		"reason": "restart",
+		JSONKeyType:   BlockTypeWarning,
+		BlockTypeText: WarningServerRestarted,
+		JSONKeyReason: JSONValueRestart,
 	})
-	contentMap["blocks"] = blocks
+	contentMap[BlockKeyBlocks] = blocks
 	updatedContent, _ := json.Marshal(contentMap)
-	db.Exec("UPDATE chat_history SET content = ?, streaming = 0 WHERE id = ?", string(updatedContent), m.id)
+	_, _ = db.ExecContext(context.Background(), "UPDATE chat_history SET content = ?, streaming = 0 WHERE id = ?", string(updatedContent), m.id)
 
 	var streaming int
 	var updated string
-	err = db.QueryRow("SELECT streaming, content FROM chat_history WHERE id = ?", m.id).Scan(&streaming, &updated)
+	err = db.QueryRowContext(context.Background(), "SELECT streaming, content FROM chat_history WHERE id = ?", m.id).Scan(&streaming, &updated)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, streaming)
 
 	var result map[string]any
-	json.Unmarshal([]byte(updated), &result)
-	assert.Equal(t, true, result["cancelled"])
-	blocksArr := result["blocks"].([]any)
+	_ = json.Unmarshal([]byte(updated), &result)
+	assert.Equal(t, true, result[JSONKeyCancelled])
+	blocksArr := result[BlockKeyBlocks].([]any)
 	assert.Len(t, blocksArr, 2)
 	warningBlock := blocksArr[1].(map[string]any)
-	assert.Equal(t, "warning", warningBlock["type"])
-	assert.Equal(t, "restart", warningBlock["reason"])
+	assert.Equal(t, BlockTypeWarning, warningBlock["type"])
+	assert.Equal(t, JSONValueRestart, warningBlock[JSONKeyReason])
 }
 
 func TestInitDB_CleansOrphanedStreamingPlain(t *testing.T) {
 	db, teardown := setupTestDBForTTS(t)
 	defer teardown()
 
-	_, err := db.Exec(
+	_, err := db.ExecContext(
+		context.Background(),
 		"INSERT INTO chat_history (project_path, role, content, session_id, backend, streaming) VALUES (?, 'assistant', ?, ?, 'claude', 1)",
 		"/test", "plain text response", "sess-2",
 	)
 	assert.NoError(t, err)
 
-	rows, err := db.Query("SELECT id, content FROM chat_history WHERE streaming = 1")
+	rows, err := db.QueryContext(context.Background(), "SELECT id, content FROM chat_history WHERE streaming = 1")
 	assert.NoError(t, err)
+	defer func() { _ = rows.Close() }()
 
 	type orphanMsg struct {
 		id      int64
@@ -475,7 +489,9 @@ func TestInitDB_CleansOrphanedStreamingPlain(t *testing.T) {
 		assert.NoError(t, rows.Scan(&m.id, &m.content))
 		orphans = append(orphans, m)
 	}
-	rows.Close()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		assert.NoError(t, rowsErr)
+	}
 	assert.Len(t, orphans, 1)
 
 	m := orphans[0]
@@ -483,26 +499,26 @@ func TestInitDB_CleansOrphanedStreamingPlain(t *testing.T) {
 	err = json.Unmarshal([]byte(m.content), &contentMap)
 	if err != nil {
 		contentMap = map[string]any{
-			"blocks":    []any{map[string]any{"type": "text", "text": m.content}},
-			"cancelled": true,
+			BlockKeyBlocks:   []any{map[string]any{JSONKeyType: BlockTypeText, BlockTypeText: m.content}},
+			JSONKeyCancelled: true,
 		}
 	}
 	updatedContent, _ := json.Marshal(contentMap)
-	db.Exec("UPDATE chat_history SET content = ?, streaming = 0 WHERE id = ?", string(updatedContent), m.id)
+	_, _ = db.ExecContext(context.Background(), "UPDATE chat_history SET content = ?, streaming = 0 WHERE id = ?", string(updatedContent), m.id)
 
 	var streaming int
 	var updated string
-	db.QueryRow("SELECT streaming, content FROM chat_history WHERE id = ?", m.id).Scan(&streaming, &updated)
+	_ = db.QueryRowContext(context.Background(), "SELECT streaming, content FROM chat_history WHERE id = ?", m.id).Scan(&streaming, &updated)
 	assert.Equal(t, 0, streaming)
 
 	var result map[string]any
-	json.Unmarshal([]byte(updated), &result)
-	assert.Equal(t, true, result["cancelled"])
-	blocksArr := result["blocks"].([]any)
+	_ = json.Unmarshal([]byte(updated), &result)
+	assert.Equal(t, true, result[JSONKeyCancelled])
+	blocksArr := result[BlockKeyBlocks].([]any)
 	assert.Len(t, blocksArr, 1)
 	textBlock := blocksArr[0].(map[string]any)
-	assert.Equal(t, "text", textBlock["type"])
-	assert.Equal(t, "plain text response", textBlock["text"])
+	assert.Equal(t, BlockTypeText, textBlock["type"])
+	assert.Equal(t, "plain text response", textBlock[BlockTypeText])
 }
 
 func TestInitDB_CLIModeSkipsOrphanCleanup(t *testing.T) {
@@ -512,12 +528,13 @@ func TestInitDB_CLIModeSkipsOrphanCleanup(t *testing.T) {
 
 	// Insert a streaming message (simulating an active AI response)
 	content := map[string]any{
-		"blocks": []any{
-			map[string]any{"type": "text", "text": "active streaming response"},
+		BlockKeyBlocks: []any{
+			map[string]any{JSONKeyType: BlockTypeText, BlockTypeText: "active streaming response"},
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
-	_, err := db.Exec(
+	_, err := db.ExecContext(
+		context.Background(),
 		"INSERT INTO chat_history (project_path, role, content, session_id, backend, streaming) VALUES (?, 'assistant', ?, ?, 'claude', 1)",
 		"/test", string(contentJSON), "sess-active",
 	)
@@ -529,7 +546,7 @@ func TestInitDB_CLIModeSkipsOrphanCleanup(t *testing.T) {
 	orphanCleanup(t, db, false)
 
 	var streaming int
-	err = db.QueryRow("SELECT streaming FROM chat_history WHERE session_id = 'sess-active'").Scan(&streaming)
+	err = db.QueryRowContext(context.Background(), "SELECT streaming FROM chat_history WHERE session_id = 'sess-active'").Scan(&streaming)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, streaming, "CLI mode should NOT clean up active streaming messages")
 }
@@ -541,12 +558,13 @@ func TestInitDB_ServerModeCleansOrphans(t *testing.T) {
 
 	// Insert a streaming message (simulating an orphaned message from crash)
 	content := map[string]any{
-		"blocks": []any{
-			map[string]any{"type": "text", "text": "orphaned response"},
+		BlockKeyBlocks: []any{
+			map[string]any{JSONKeyType: BlockTypeText, BlockTypeText: "orphaned response"},
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
-	_, err := db.Exec(
+	_, err := db.ExecContext(
+		context.Background(),
 		"INSERT INTO chat_history (project_path, role, content, session_id, backend, streaming) VALUES (?, 'assistant', ?, ?, 'claude', 1)",
 		"/test", string(contentJSON), "sess-orphan",
 	)
@@ -557,17 +575,17 @@ func TestInitDB_ServerModeCleansOrphans(t *testing.T) {
 	orphanCleanup(t, db, true)
 
 	var streaming int
-	err = db.QueryRow("SELECT streaming FROM chat_history WHERE session_id = 'sess-orphan'").Scan(&streaming)
+	err = db.QueryRowContext(context.Background(), "SELECT streaming FROM chat_history WHERE session_id = 'sess-orphan'").Scan(&streaming)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, streaming, "server mode should clean up orphaned streaming messages")
 
 	// Verify the warning block was added
 	var updated string
-	err = db.QueryRow("SELECT content FROM chat_history WHERE session_id = 'sess-orphan'").Scan(&updated)
+	err = db.QueryRowContext(context.Background(), "SELECT content FROM chat_history WHERE session_id = 'sess-orphan'").Scan(&updated)
 	assert.NoError(t, err)
 	var result map[string]any
-	json.Unmarshal([]byte(updated), &result)
-	assert.Equal(t, true, result["cancelled"])
+	_ = json.Unmarshal([]byte(updated), &result)
+	assert.Equal(t, true, result[JSONKeyCancelled])
 }
 
 // orphanCleanup replicates the orphan cleanup logic from InitDB for testing.
@@ -576,9 +594,9 @@ func orphanCleanup(t *testing.T, db *sql.DB, isServerStartup bool) {
 	if !isServerStartup {
 		return
 	}
-	rows, err := db.Query("SELECT id, content FROM chat_history WHERE streaming = 1")
+	rows, err := db.QueryContext(context.Background(), "SELECT id, content FROM chat_history WHERE streaming = 1")
 	assert.NoError(t, err)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type orphanMsg struct {
 		id      int64
@@ -590,26 +608,29 @@ func orphanCleanup(t *testing.T, db *sql.DB, isServerStartup bool) {
 		assert.NoError(t, rows.Scan(&m.id, &m.content))
 		orphans = append(orphans, m)
 	}
+	if err := rows.Err(); err != nil {
+		assert.NoError(t, err)
+	}
 
 	for _, m := range orphans {
 		var contentMap map[string]any
 		if err := json.Unmarshal([]byte(m.content), &contentMap); err != nil {
 			contentMap = map[string]any{
-				"blocks":    []any{map[string]any{"type": "text", "text": m.content}},
-				"cancelled": true,
+				BlockKeyBlocks:   []any{map[string]any{JSONKeyType: BlockTypeText, BlockTypeText: m.content}},
+				JSONKeyCancelled: true,
 			}
 		} else {
-			contentMap["cancelled"] = true
-			blocks, _ := contentMap["blocks"].([]any)
+			contentMap[JSONKeyCancelled] = true
+			blocks, _ := contentMap[BlockKeyBlocks].([]any)
 			blocks = append(blocks, map[string]any{
-				"type":   "warning",
-				"text":   "Server restarted, AI response interrupted",
-				"reason": "restart",
+				JSONKeyType:   BlockTypeWarning,
+				BlockTypeText: WarningServerRestarted,
+				JSONKeyReason: JSONValueRestart,
 			})
-			contentMap["blocks"] = blocks
+			contentMap[BlockKeyBlocks] = blocks
 		}
 		updatedContent, _ := json.Marshal(contentMap)
-		db.Exec("UPDATE chat_history SET content = ?, streaming = 0 WHERE id = ?", string(updatedContent), m.id)
+		_, _ = db.ExecContext(context.Background(), "UPDATE chat_history SET content = ?, streaming = 0 WHERE id = ?", string(updatedContent), m.id)
 	}
 }
 
@@ -666,7 +687,7 @@ func TestSaveTTSSummary_Upsert(t *testing.T) {
 // ---------- ChatQuickSend CRUD ----------
 
 func TestGetChatQuickSend_Empty(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	items, err := GetChatQuickSend()
@@ -675,7 +696,7 @@ func TestGetChatQuickSend_Empty(t *testing.T) {
 }
 
 func TestAddChatQuickSend_Single(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	id, err := AddChatQuickSend("▶️ 继续", "继续")
@@ -692,7 +713,7 @@ func TestAddChatQuickSend_Single(t *testing.T) {
 }
 
 func TestAddChatQuickSend_MultipleAutoIncrement(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	id1, _ := AddChatQuickSend("继续", "继续")
@@ -712,10 +733,10 @@ func TestAddChatQuickSend_MultipleAutoIncrement(t *testing.T) {
 }
 
 func TestUpdateChatQuickSend(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
-	AddChatQuickSend("继续", "继续")
+	_, _ = AddChatQuickSend("继续", "继续")
 
 	err := UpdateChatQuickSend(1, "▶️ 继续", "请继续")
 	assert.NoError(t, err)
@@ -727,7 +748,7 @@ func TestUpdateChatQuickSend(t *testing.T) {
 }
 
 func TestUpdateChatQuickSend_Nonexistent(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	err := UpdateChatQuickSend(999, "x", "y")
@@ -735,11 +756,11 @@ func TestUpdateChatQuickSend_Nonexistent(t *testing.T) {
 }
 
 func TestDeleteChatQuickSend(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
-	AddChatQuickSend("继续", "继续")
-	AddChatQuickSend("提交", "提交")
+	_, _ = AddChatQuickSend("继续", "继续")
+	_, _ = AddChatQuickSend("提交", "提交")
 
 	err := DeleteChatQuickSend(1)
 	assert.NoError(t, err)
@@ -750,7 +771,7 @@ func TestDeleteChatQuickSend(t *testing.T) {
 }
 
 func TestDeleteChatQuickSend_Nonexistent(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	err := DeleteChatQuickSend(999)
@@ -758,12 +779,12 @@ func TestDeleteChatQuickSend_Nonexistent(t *testing.T) {
 }
 
 func TestReorderChatQuickSend(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
-	AddChatQuickSend("继续", "继续") // id=1, sort_order=0
-	AddChatQuickSend("提交", "提交") // id=2, sort_order=1
-	AddChatQuickSend("调试", "调试") // id=3, sort_order=2
+	_, _ = AddChatQuickSend("继续", "继续") // id=1, sort_order=0
+	_, _ = AddChatQuickSend("提交", "提交") // id=2, sort_order=1
+	_, _ = AddChatQuickSend("调试", "调试") // id=3, sort_order=2
 
 	// Reverse order: 3, 2, 1
 	err := ReorderChatQuickSend([]int64{3, 2, 1})
@@ -780,10 +801,10 @@ func TestReorderChatQuickSend(t *testing.T) {
 }
 
 func TestReorderChatQuickSend_EmptyIDs(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
-	AddChatQuickSend("继续", "继续")
+	_, _ = AddChatQuickSend("继续", "继续")
 
 	err := ReorderChatQuickSend([]int64{})
 	assert.NoError(t, err)
@@ -793,12 +814,12 @@ func TestReorderChatQuickSend_EmptyIDs(t *testing.T) {
 }
 
 func TestReorderChatQuickSend_PartialIDs(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
-	AddChatQuickSend("继续", "继续") // id=1
-	AddChatQuickSend("提交", "提交") // id=2
-	AddChatQuickSend("调试", "调试") // id=3
+	_, _ = AddChatQuickSend("继续", "继续") // id=1
+	_, _ = AddChatQuickSend("提交", "提交") // id=2
+	_, _ = AddChatQuickSend("调试", "调试") // id=3
 
 	// Only reorder the first two
 	err := ReorderChatQuickSend([]int64{2, 1})
@@ -813,15 +834,15 @@ func TestReorderChatQuickSend_PartialIDs(t *testing.T) {
 }
 
 func TestGetChatQuickSend_OrderedBySortOrder(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
-	AddChatQuickSend("A", "a") // sort=0
-	AddChatQuickSend("B", "b") // sort=1
-	AddChatQuickSend("C", "c") // sort=2
+	_, _ = AddChatQuickSend("A", "a") // sort=0
+	_, _ = AddChatQuickSend("B", "b") // sort=1
+	_, _ = AddChatQuickSend("C", "c") // sort=2
 
 	// Reorder to C, A, B
-	ReorderChatQuickSend([]int64{3, 1, 2})
+	_ = ReorderChatQuickSend([]int64{3, 1, 2})
 
 	items, _ := GetChatQuickSend()
 	assert.Equal(t, "C", items[0].Label)
@@ -889,12 +910,12 @@ func TestSchema_ForwardedPortsMigration_LocalPortColumn(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Insert a row and verify local_port defaults correctly
-	_, err = DB.Exec("INSERT INTO forwarded_ports (local_port, port, host, name, protocol) VALUES (8080, 8080, '', 'test', 'http')")
+	_, err = DB.ExecContext(context.Background(), "INSERT INTO forwarded_ports (local_port, port, host, name, protocol) VALUES (8080, 8080, '', 'test', 'http')")
 	assert.NoError(t, err)
 
 	var localPort, port int
 	var host string
-	err = DB.QueryRow("SELECT local_port, port, host FROM forwarded_ports WHERE local_port = 8080").Scan(&localPort, &port, &host)
+	err = DB.QueryRowContext(context.Background(), "SELECT local_port, port, host FROM forwarded_ports WHERE local_port = 8080").Scan(&localPort, &port, &host)
 	assert.NoError(t, err)
 	assert.Equal(t, 8080, localPort)
 	assert.Equal(t, 8080, port)
@@ -919,11 +940,11 @@ func TestSchema_ForwardedPortsMigration_LocalPortBackfill(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Insert with local_port = port (backward compatible default)
-	_, err = DB.Exec("INSERT INTO forwarded_ports (local_port, port, host, name, protocol) VALUES (3000, 3000, '', 'app', 'http')")
+	_, err = DB.ExecContext(context.Background(), "INSERT INTO forwarded_ports (local_port, port, host, name, protocol) VALUES (3000, 3000, '', 'app', 'http')")
 	assert.NoError(t, err)
 
 	var localPort, port int
-	err = DB.QueryRow("SELECT local_port, port FROM forwarded_ports WHERE port = 3000").Scan(&localPort, &port)
+	err = DB.QueryRowContext(context.Background(), "SELECT local_port, port FROM forwarded_ports WHERE port = 3000").Scan(&localPort, &port)
 	assert.NoError(t, err)
 	assert.Equal(t, port, localPort, "local_port should equal port for backward compatibility")
 
@@ -944,11 +965,11 @@ func TestSchema_ForwardedPortsMigration_HostDefaultValue(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Insert without specifying host — should default to empty string
-	_, err = DB.Exec("INSERT INTO forwarded_ports (local_port, port, name, protocol) VALUES (5173, 5173, 'vite', 'http')")
+	_, err = DB.ExecContext(context.Background(), "INSERT INTO forwarded_ports (local_port, port, name, protocol) VALUES (5173, 5173, 'vite', 'http')")
 	assert.NoError(t, err)
 
 	var host string
-	err = DB.QueryRow("SELECT host FROM forwarded_ports WHERE local_port = 5173").Scan(&host)
+	err = DB.QueryRowContext(context.Background(), "SELECT host FROM forwarded_ports WHERE local_port = 5173").Scan(&host)
 	assert.NoError(t, err)
 	assert.Equal(t, "", host, "host should default to empty string")
 
@@ -969,11 +990,11 @@ func TestSchema_ForwardedPortsMigration_HostWithCustomValue(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Insert with a custom host value
-	_, err = DB.Exec("INSERT INTO forwarded_ports (local_port, port, host, name, protocol) VALUES (8081, 8080, '192.168.1.100', 'remote', 'http')")
+	_, err = DB.ExecContext(context.Background(), "INSERT INTO forwarded_ports (local_port, port, host, name, protocol) VALUES (8081, 8080, '192.168.1.100', 'remote', 'http')")
 	assert.NoError(t, err)
 
 	var host string
-	err = DB.QueryRow("SELECT host FROM forwarded_ports WHERE local_port = 8081").Scan(&host)
+	err = DB.QueryRowContext(context.Background(), "SELECT host FROM forwarded_ports WHERE local_port = 8081").Scan(&host)
 	assert.NoError(t, err)
 	assert.Equal(t, "192.168.1.100", host)
 
@@ -1014,16 +1035,16 @@ func TestSchema_ForwardedPortsMigration_HostColumnFromOldSchema(t *testing.T) {
 
 	// Step 1: Create DB with old schema (no host column, uses port as primary key)
 	dbDir := filepath.Join(tmpDir, ".clawbench")
-	assert.NoError(t, os.MkdirAll(dbDir, 0755))
+	assert.NoError(t, os.MkdirAll(dbDir, 0o750))
 	db, err := sql.Open("sqlite", filepath.Join(dbDir, "ClawBench.db"))
 	assert.NoError(t, err)
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
 	// Create old-style table without host column and without local_port
 	// Other tables must have enough columns so InitDB's index creation succeeds
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS forwarded_ports (
 			port INTEGER PRIMARY KEY,
 			name TEXT NOT NULL DEFAULT '',
@@ -1118,12 +1139,12 @@ func TestSchema_ForwardedPortsMigration_HostColumnFromOldSchema(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Insert data with old schema (port is primary key)
-	_, err = db.Exec("INSERT INTO forwarded_ports (port, name, protocol) VALUES (8080, 'app', 'http')")
+	_, err = db.ExecContext(context.Background(), "INSERT INTO forwarded_ports (port, name, protocol) VALUES (8080, 'app', 'http')")
 	assert.NoError(t, err)
-	_, err = db.Exec("INSERT INTO forwarded_ports (port, name, protocol) VALUES (3000, 'web', 'https')")
+	_, err = db.ExecContext(context.Background(), "INSERT INTO forwarded_ports (port, name, protocol) VALUES (3000, 'web', 'https')")
 	assert.NoError(t, err)
 
-	db.Close()
+	_ = db.Close()
 
 	// Step 2: Call InitDB which should detect missing columns and run migrations
 	err = InitDB()
@@ -1136,9 +1157,9 @@ func TestSchema_ForwardedPortsMigration_HostColumnFromOldSchema(t *testing.T) {
 	assert.Contains(t, columns, "local_port", "local_port column should exist after migration")
 
 	// Step 4: Verify existing data is preserved and local_port is backfilled
-	rows, err := DB.Query("SELECT port, local_port, host, name FROM forwarded_ports ORDER BY port")
+	rows, err := DB.QueryContext(context.Background(), "SELECT port, local_port, host, name FROM forwarded_ports ORDER BY port")
 	assert.NoError(t, err)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var count int
 	for rows.Next() {
@@ -1149,6 +1170,9 @@ func TestSchema_ForwardedPortsMigration_HostColumnFromOldSchema(t *testing.T) {
 		assert.Equal(t, "", host, "host should default to empty string after migration")
 		count++
 	}
+	if err := rows.Err(); err != nil {
+		assert.NoError(t, err)
+	}
 	assert.Equal(t, 2, count, "should have 2 rows after migration")
 }
 
@@ -1156,7 +1180,7 @@ func TestSchema_ForwardedPortsMigration_HostColumnFromOldSchema(t *testing.T) {
 
 // setupTestDBForSummaries creates an in-memory SQLite database with the summaries table
 // for testing SaveSummary and GetSummary.
-func setupTestDBForSummaries(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForSummaries(t *testing.T) func() {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -1166,10 +1190,10 @@ func setupTestDBForSummaries(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS summaries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			target_type TEXT NOT NULL,
@@ -1185,16 +1209,15 @@ func setupTestDBForSummaries(t *testing.T) (*sql.DB, func()) {
 
 	DB = db
 	DBRead = db
-	teardown := func() {
+	return func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
-	return db, teardown
 }
 
 func TestGetSummary_NotFound(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	summary, found := GetSummary("chat_message", 42)
@@ -1203,7 +1226,7 @@ func TestGetSummary_NotFound(t *testing.T) {
 }
 
 func TestSaveSummary_AndGetSummary(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	err := SaveSummary("chat_message", 123, "This is a summary")
@@ -1215,7 +1238,7 @@ func TestSaveSummary_AndGetSummary(t *testing.T) {
 }
 
 func TestSaveSummary_ShortText(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	// Short text: save empty string
@@ -1228,7 +1251,7 @@ func TestSaveSummary_ShortText(t *testing.T) {
 }
 
 func TestSaveSummary_DifferentTargetTypes(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	// Same target_id, different target_type → different rows
@@ -1248,7 +1271,7 @@ func TestSaveSummary_DifferentTargetTypes(t *testing.T) {
 }
 
 func TestSaveSummary_Upsert(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	err := SaveSummary("chat_message", 789, "version 1")
@@ -1266,7 +1289,7 @@ func TestSaveSummary_Upsert(t *testing.T) {
 
 // setupTestDBForNewTTSSummaries creates an in-memory SQLite database with the new tts_summaries table
 // for testing GetTTSSummary and SaveTTSSummary with message_id.
-func setupTestDBForNewTTSSummaries(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForNewTTSSummaries(t *testing.T) func() {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -1276,10 +1299,10 @@ func setupTestDBForNewTTSSummaries(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS tts_summaries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			message_id   INTEGER NOT NULL,
@@ -1294,16 +1317,15 @@ func setupTestDBForNewTTSSummaries(t *testing.T) (*sql.DB, func()) {
 
 	DB = db
 	DBRead = db
-	teardown := func() {
+	return func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
-	return db, teardown
 }
 
 func TestGetTTSSummaryByMessageID_NotFound(t *testing.T) {
-	_, teardown := setupTestDBForNewTTSSummaries(t)
+	teardown := setupTestDBForNewTTSSummaries(t)
 	defer teardown()
 
 	summary, found := GetTTSSummaryByMessageID(42)
@@ -1312,7 +1334,7 @@ func TestGetTTSSummaryByMessageID_NotFound(t *testing.T) {
 }
 
 func TestSaveTTSSummaryByMessageID_AndGet(t *testing.T) {
-	_, teardown := setupTestDBForNewTTSSummaries(t)
+	teardown := setupTestDBForNewTTSSummaries(t)
 	defer teardown()
 
 	err := SaveTTSSummaryByMessageID(123, "TTS summary for message 123")
@@ -1324,7 +1346,7 @@ func TestSaveTTSSummaryByMessageID_AndGet(t *testing.T) {
 }
 
 func TestSaveTTSSummaryByMessageID_Upsert(t *testing.T) {
-	_, teardown := setupTestDBForNewTTSSummaries(t)
+	teardown := setupTestDBForNewTTSSummaries(t)
 	defer teardown()
 
 	err := SaveTTSSummaryByMessageID(456, "version 1")
@@ -1352,11 +1374,11 @@ func TestInitDB_TTSSummariesMigrationFromOldSchema(t *testing.T) {
 
 	// First: create a DB with the old schema (cache_key column)
 	dbPath := filepath.Join(tmpDir, ".clawbench", "clawbench.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	assert.NoError(t, os.MkdirAll(filepath.Dir(dbPath), 0o750))
 
 	db, err := sql.Open("sqlite", dbPath)
 	assert.NoError(t, err)
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS tts_summaries (
 			cache_key TEXT PRIMARY KEY,
 			summary TEXT NOT NULL,
@@ -1364,7 +1386,7 @@ func TestInitDB_TTSSummariesMigrationFromOldSchema(t *testing.T) {
 		);
 	`)
 	assert.NoError(t, err)
-	db.Close()
+	_ = db.Close()
 
 	// Now call InitDB — should detect cache_key column and migrate
 	err = InitDB()
@@ -1405,105 +1427,4 @@ func TestInitDB_TTSSummariesFreshInstall(t *testing.T) {
 	assert.Contains(t, columns, "tts_summary", "tts_summaries should have tts_summary column on fresh install")
 
 	CloseDB()
-}
-
-// TestSchema_SourceSessionIDMigration adds source_session_id column
-// for the "continue conversation" feature.
-func TestSchema_SourceSessionIDMigration(t *testing.T) {
-	tmpDir := t.TempDir()
-	origBinDir := model.BinDir
-	model.BinDir = tmpDir
-	defer func() { model.BinDir = origBinDir }()
-
-	origDB := DB
-	origDBRead := DBRead
-	defer func() { DB = origDB; DBRead = origDBRead }()
-
-	// Step 1: Create DB with schema that lacks source_session_id
-	dbDir := filepath.Join(tmpDir, ".clawbench")
-	assert.NoError(t, os.MkdirAll(dbDir, 0755))
-	db, err := sql.Open("sqlite", filepath.Join(dbDir, "ClawBench.db"))
-	assert.NoError(t, err)
-	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
-
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS chat_sessions (
-			id TEXT PRIMARY KEY, project_path TEXT NOT NULL, backend TEXT NOT NULL,
-			title TEXT NOT NULL, agent_id TEXT DEFAULT '', agent_source TEXT DEFAULT 'default',
-			model TEXT DEFAULT '', session_type TEXT NOT NULL DEFAULT 'chat',
-			external_session_id TEXT DEFAULT '', deleted INTEGER NOT NULL DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(project_path, backend, id)
-		);
-		CREATE TABLE IF NOT EXISTS chat_history (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, project_path TEXT NOT NULL,
-			role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL,
-			session_id TEXT, backend TEXT NOT NULL DEFAULT 'claude',
-			streaming INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS scheduled_tasks (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, project_path TEXT NOT NULL, name TEXT NOT NULL,
-			cron_expr TEXT NOT NULL, agent_id TEXT NOT NULL, prompt TEXT NOT NULL,
-			status TEXT DEFAULT 'active', repeat_mode TEXT NOT NULL DEFAULT 'unlimited',
-			max_runs INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS task_executions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL,
-			session_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'completed',
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS forwarded_ports (
-			port INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
-			protocol TEXT NOT NULL DEFAULT 'http', created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS recent_projects (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, project_path TEXT UNIQUE NOT NULL,
-			accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS ai_raw_responses (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
-			message_id INTEGER NOT NULL, backend TEXT NOT NULL DEFAULT '',
-			raw_output TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS summaries (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, target_type TEXT NOT NULL,
-			target_id INTEGER NOT NULL, summary TEXT NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(target_type, target_id)
-		);
-		CREATE TABLE IF NOT EXISTS tts_summaries (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER NOT NULL,
-			tts_summary TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(message_id)
-		);
-		CREATE TABLE IF NOT EXISTS terminal_quick_commands (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, command TEXT NOT NULL,
-			hidden INTEGER NOT NULL DEFAULT 0, auto_execute INTEGER NOT NULL DEFAULT 0,
-			sort_order INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS chat_quick_send (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, command TEXT NOT NULL,
-			sort_order INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-	`)
-	assert.NoError(t, err)
-
-	// Verify source_session_id does not exist
-	columns := getTableColumns(t, db, "chat_sessions")
-	assert.NotContains(t, columns, "source_session_id")
-	db.Close()
-
-	// Step 2: Run InitDB — should add source_session_id
-	err = InitDB()
-	assert.NoError(t, err)
-	defer CloseDB()
-
-	// Step 3: Verify column was added
-	columns = getTableColumns(t, DB, "chat_sessions")
-	assert.Contains(t, columns, "source_session_id", "source_session_id column should exist after migration")
 }

@@ -36,8 +36,8 @@ type GeminiStreamMessage struct {
 	Message  string `json:"message"`  // error message
 
 	// result event fields
-	Error  *GeminiResultError `json:"error"`  // only when status="error"
-	Stats  *GeminiStreamStats `json:"stats"`
+	Error *GeminiResultError `json:"error"` // only when status="error"
+	Stats *GeminiStreamStats `json:"stats"`
 }
 
 // GeminiResultError represents the error field in a result event
@@ -79,7 +79,7 @@ func (p *GeminiStreamParser) GetCapturedSessionID() string { return "" }
 
 // ParseLine parses a single JSON line from Gemini's stream-json output and sends
 // StreamEvent(s) to the provided channel.
-func (p *GeminiStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
+func (p *GeminiStreamParser) ParseLine(line string, ch chan<- StreamEvent) { //nolint:gocyclo,gocognit // 复杂的 stream 解析逻辑
 	var msg GeminiStreamMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		slog.Debug("gemini stream: skipping unparseable line", "line", line, "error", err)
@@ -98,11 +98,11 @@ func (p *GeminiStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 
 	case "message":
 		if msg.Role == "assistant" && msg.Content != "" {
-			ch <- StreamEvent{Type: "content", Content: msg.Content}
+			ch <- StreamEvent{Type: "content", Content: msg.Content} //nolint:goconst // JSON 字段名/协议字符串
 		}
 		// Skip user messages — they echo back the input prompt
 
-	case "tool_use":
+	case "tool_use": //nolint:goconst // JSON 字段名/协议字符串
 		inputStr := "{}"
 		if len(msg.Parameters) > 0 {
 			// Normalize input field names from Gemini's camelCase to canonical snake_case
@@ -120,7 +120,7 @@ func (p *GeminiStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			Done:  true, // Gemini sends full tool input in one event
 		}}
 
-	case "tool_result":
+	case "tool_result": //nolint:goconst // JSON 字段名/协议字符串
 		// Emit tool_result event so the frontend can display tool output
 		if msg.ToolID != "" {
 			ch <- StreamEvent{Type: "tool_result", Tool: &ToolCall{
@@ -130,13 +130,13 @@ func (p *GeminiStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			}}
 		}
 
-	case "error":
+	case "error": //nolint:goconst // JSON 字段名/协议字符串
 		// Emit as warning for severity="warning", error for "error"
 		if msg.Message != "" {
 			if msg.Severity == "error" {
 				ch <- StreamEvent{Type: "error", Error: msg.Message}
 			} else {
-				ch <- StreamEvent{Type: "warning", Content: msg.Message}
+				ch <- StreamEvent{Type: "warning", Content: msg.Message} //nolint:goconst // JSON 字段名/协议字符串
 			}
 		}
 
@@ -159,10 +159,10 @@ func (p *GeminiStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 				ch <- StreamEvent{Type: "warning", Content: meta.ErrorMessage}
 			}
 		} else {
-			meta.StopReason = "stop"
+			meta.StopReason = "stop" //nolint:goconst // JSON 字段名/协议字符串
 		}
-		ch <- StreamEvent{Type: "metadata", Meta: meta}
-		ch <- StreamEvent{Type: "done"}
+		ch <- StreamEvent{Type: "metadata", Meta: meta} //nolint:goconst // JSON 字段名/协议字符串
+		ch <- StreamEvent{Type: "done"}                 //nolint:goconst // JSON 字段名/协议字符串
 
 	default:
 		slog.Debug("gemini stream: skipping unknown message type", "type", msg.Type)
@@ -176,7 +176,7 @@ func buildGeminiStreamArgs(req ChatRequest) []string {
 
 	args := []string{
 		"--prompt", prompt,
-		"--output-format", "stream-json",
+		"--output-format", "stream-json", //nolint:goconst // JSON 字段名/协议字符串
 		"--yolo",
 	}
 
@@ -197,4 +197,3 @@ func buildGeminiStreamArgs(req ChatRequest) []string {
 
 	return args
 }
-

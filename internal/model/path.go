@@ -45,7 +45,7 @@ func ValidatePath(basePath, relPath string) (string, bool) {
 // resolves its symlinks, then appends the remaining non-existent components.
 // Returns empty string if no ancestor can be resolved or if the resolved path
 // escapes evalBase. Exported for use by handler.isPathUnderBase.
-func ResolveExistingPath(absPath, evalBase string) string {
+func ResolveExistingPath(absPath, _ string) string {
 	dir := filepath.Dir(absPath)
 	base := filepath.Base(absPath)
 	parts := []string{base}

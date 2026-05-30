@@ -35,7 +35,7 @@ func createTestJPG(t *testing.T, projectDir, relPath string, width, height int) 
 func createTestImage(t *testing.T, projectDir, relPath string, width, height int, encode encoderFunc) {
 	t.Helper()
 	fullPath := filepath.Join(projectDir, relPath)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatalf("failed to create directories: %v", err)
 	}
 	f, err := os.Create(fullPath)
@@ -45,8 +45,8 @@ func createTestImage(t *testing.T, projectDir, relPath string, width, height int
 	defer f.Close()
 
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			img.Set(x, y, color.RGBA{R: 255, G: 100, B: 50, A: 255})
 		}
 	}
@@ -187,7 +187,7 @@ func TestFileThumb(t *testing.T) {
 		env, teardown := setupTestEnv(t)
 		defer teardown()
 
-		os.MkdirAll(filepath.Join(env.ProjectDir, "subdir"), 0755)
+		os.MkdirAll(filepath.Join(env.ProjectDir, "subdir"), 0o755)
 
 		req := newRequest(t, http.MethodGet, "/api/file/thumb?path=subdir", nil)
 		withProjectCookie(req, env.ProjectDir)

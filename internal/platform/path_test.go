@@ -6,9 +6,11 @@ import (
 	"testing"
 )
 
+const testUnixPath = "/home/user/project"
+
 func TestIsWindows(t *testing.T) {
 	result := IsWindows()
-	expected := runtime.GOOS == "windows"
+	expected := runtime.GOOS == goosWindows
 	if result != expected {
 		t.Errorf("IsWindows() = %v, want %v", result, expected)
 	}
@@ -42,7 +44,7 @@ func TestManglePathForOS(t *testing.T) {
 		// Unix paths
 		{
 			name:     "unix path on linux",
-			input:    "/home/user/project",
+			input:    testUnixPath,
 			goos:     "linux",
 			expected: "-home-user-project",
 		},
@@ -80,7 +82,7 @@ func TestManglePathForOS(t *testing.T) {
 		},
 		{
 			name:     "unix path on windows no drive",
-			input:    "/home/user/project",
+			input:    testUnixPath,
 			goos:     "windows",
 			expected: "-home-user-project",
 		},
@@ -125,7 +127,7 @@ func TestExpandTilde(t *testing.T) {
 		},
 		{
 			name:     "absolute path unchanged",
-			input:    "/home/user/project",
+			input:    testUnixPath,
 			expected: "/home/user/project",
 		},
 		{

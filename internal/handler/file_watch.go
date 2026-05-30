@@ -32,6 +32,8 @@ func newWatchClientID() string {
 
 // FileWatchSSE handles GET /api/file/watch — SSE stream for file change notifications.
 // Query params: dir (required, relative path), file (optional, relative path).
+//
+//nolint:gocyclo // SSE handler with multiple sequential validation/setup steps
 func FileWatchSSE(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
@@ -88,7 +90,7 @@ func FileWatchSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Send connected event with clientID
 	data, _ := json.Marshal(map[string]string{"clientId": clientID})
-	fmt.Fprintf(w, "event: connected\ndata: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: %s\n\n", data)
 	if canFlush {
 		flusher.Flush()
 	}
@@ -97,7 +99,8 @@ func FileWatchSSE(w http.ResponseWriter, r *http.Request) {
 	heartbeat := time.NewTicker(watchHeartbeatSec * time.Second)
 	defer heartbeat.Stop()
 
-	slog.Debug("file watch SSE connected",
+	slog.Debug(
+		"file watch SSE connected",
 		slog.String("clientId", clientID),
 		slog.String("dir", dirRel),
 		slog.String("file", fileRel),
@@ -111,19 +114,20 @@ func FileWatchSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			data, _ := json.Marshal(event)
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
 			if canFlush {
 				flusher.Flush()
 			}
 
 		case <-heartbeat.C:
-			fmt.Fprintf(w, "event: heartbeat\ndata: {}\n\n")
+			_, _ = fmt.Fprintf(w, "event: heartbeat\ndata: {}\n\n")
 			if canFlush {
 				flusher.Flush()
 			}
 
 		case <-r.Context().Done():
-			slog.Debug("file watch SSE disconnected",
+			slog.Debug(
+				"file watch SSE disconnected",
 				slog.String("clientId", clientID),
 			)
 			return
@@ -142,7 +146,8 @@ func FileWatchUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Debug("file watch update received",
+	slog.Debug(
+		"file watch update received",
 		slog.String("projectPath", projectPath),
 	)
 

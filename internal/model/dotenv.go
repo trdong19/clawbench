@@ -16,7 +16,7 @@ func LoadDotEnv(path string) error {
 	if err != nil {
 		return fmt.Errorf("dotenv: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	lineNo := 0
@@ -34,7 +34,9 @@ func LoadDotEnv(path string) error {
 		if err != nil {
 			return fmt.Errorf("dotenv: line %d: %w", lineNo, err)
 		}
-		os.Setenv(key, value)
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("dotenv: set %s: %w", key, err)
+		}
 	}
 	return scanner.Err()
 }
@@ -43,12 +45,12 @@ func LoadDotEnv(path string) error {
 // VALUE may be unquoted, double-quoted ("value"), or single-quoted ('value').
 // Quoted values may contain spaces; unquoted values are trimmed at the first
 // whitespace or # comment.
-func parseEnvLine(line string) (string, string, error) {
+func parseEnvLine(line string) (key, value string, err error) {
 	idx := strings.Index(line, "=")
 	if idx < 1 { // key must be non-empty
 		return "", "", fmt.Errorf("invalid format: %q", line)
 	}
-	key := strings.TrimSpace(line[:idx])
+	key = strings.TrimSpace(line[:idx])
 	if key == "" {
 		return "", "", fmt.Errorf("empty key: %q", line)
 	}

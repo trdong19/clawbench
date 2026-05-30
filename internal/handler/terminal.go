@@ -15,6 +15,8 @@ import (
 // terminalMgr is set via SetTerminalManager during startup.
 var terminalMgr *terminal.Manager
 
+const jsonKeyAutoExecute = "auto_execute"
+
 // SetTerminalManager sets the terminal manager for handlers.
 func SetTerminalManager(m *terminal.Manager) {
 	terminalMgr = m
@@ -58,7 +60,7 @@ func TerminalWebSocket(w http.ResponseWriter, r *http.Request) {
 func TerminalStatus(w http.ResponseWriter, r *http.Request) {
 	if terminalMgr == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled": false,
+			jsonKeyEnabled: false,
 		})
 		return
 	}
@@ -67,11 +69,11 @@ func TerminalStatus(w http.ResponseWriter, r *http.Request) {
 	if sessionID := r.URL.Query().Get("session"); sessionID != "" {
 		found, cwd, running := terminalMgr.SessionStatus(sessionID)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled":    terminalMgr.IsEnabled(),
-			"hasSession": found,
-			"sessionId":  sessionID,
-			"cwd":        cwd,
-			"running":    running,
+			jsonKeyEnabled: terminalMgr.IsEnabled(),
+			"hasSession":   found,
+			"sessionId":    sessionID,
+			"cwd":          cwd,
+			"running":      running,
 		})
 		return
 	}
@@ -79,8 +81,8 @@ func TerminalStatus(w http.ResponseWriter, r *http.Request) {
 	// No session ID — return all sessions
 	sessions := terminalMgr.AllSessionStatus()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":  terminalMgr.IsEnabled(),
-		"sessions": sessions,
+		jsonKeyEnabled: terminalMgr.IsEnabled(),
+		"sessions":     sessions,
 	})
 }
 
@@ -98,22 +100,22 @@ func TerminalClose(w http.ResponseWriter, r *http.Request) {
 		terminalMgr.CloseAllSessions()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success": true,
+		jsonKeySuccess: true,
 	})
 }
 
 // TerminalConfigHandler returns the terminal configuration for the frontend.
-func TerminalConfigHandler(w http.ResponseWriter, r *http.Request) {
+func TerminalConfigHandler(w http.ResponseWriter, _ *http.Request) {
 	if terminalMgr == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled": false,
+			jsonKeyEnabled: false,
 		})
 		return
 	}
 
 	cfg := terminalMgr.Config()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": cfg.Enabled,
+		jsonKeyEnabled: cfg.Enabled,
 	})
 }
 
@@ -122,75 +124,83 @@ func TerminalConfigHandler(w http.ResponseWriter, r *http.Request) {
 func ServeQuickCommands(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		cmds, err := service.GetQuickCommands()
-		if err != nil {
-			slog.Error("failed to get quick commands", slog.String("error", err.Error()))
-			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
-			return
-		}
-		if cmds == nil {
-			cmds = []service.QuickCommand{}
-		}
-		writeJSON(w, http.StatusOK, cmds)
-
+		serveQuickCommandsGet(w, r)
 	case http.MethodPost:
+		serveQuickCommandsPost(w, r)
+	case http.MethodPut:
+		serveQuickCommandsPut(w, r)
+	default:
+		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
+	}
+}
+
+func serveQuickCommandsGet(w http.ResponseWriter, r *http.Request) {
+	cmds, err := service.GetQuickCommands()
+	if err != nil {
+		slog.Error("failed to get quick commands", slog.String("error", err.Error()))
+		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+		return
+	}
+	if cmds == nil {
+		cmds = []service.QuickCommand{}
+	}
+	writeJSON(w, http.StatusOK, cmds)
+}
+
+func serveQuickCommandsPost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Label       string `json:"label"`
+		Command     string `json:"command"`
+		Hidden      bool   `json:"hidden"`
+		AutoExecute bool   `json:"auto_execute"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Label = strings.TrimSpace(req.Label)
+	req.Command = strings.TrimSpace(req.Command)
+	if req.Label == "" || req.Command == "" {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
+		return
+	}
+	if len(req.Label) > 100 || len(req.Command) > 4096 {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
+		return
+	}
+	id, err := service.AddQuickCommand(req.Label, req.Command, req.Hidden, req.AutoExecute)
+	if err != nil {
+		slog.Error("failed to add quick command", slog.String("error", err.Error()))
+		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": id, "label": req.Label, jsonKeyCommand: req.Command,
+		"hidden": req.Hidden, jsonKeyAutoExecute: req.AutoExecute,
+	})
+}
+
+func serveQuickCommandsPut(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/terminal/quick-commands")
+	if strings.TrimPrefix(path, "/") == "reorder" {
 		var req struct {
-			Label       string `json:"label"`
-			Command     string `json:"command"`
-			Hidden      bool   `json:"hidden"`
-			AutoExecute bool   `json:"auto_execute"`
+			IDs []int64 `json:"ids"`
 		}
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		req.Label = strings.TrimSpace(req.Label)
-		req.Command = strings.TrimSpace(req.Command)
-		if req.Label == "" || req.Command == "" {
-			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
+		if len(req.IDs) == 0 {
+			writeJSON(w, http.StatusOK, map[string]any{jsonKeySuccess: true})
 			return
 		}
-		if len(req.Label) > 100 || len(req.Command) > 4096 {
-			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
-			return
-		}
-		id, err := service.AddQuickCommand(req.Label, req.Command, req.Hidden, req.AutoExecute)
-		if err != nil {
-			slog.Error("failed to add quick command", slog.String("error", err.Error()))
+		if err := service.ReorderQuickCommands(req.IDs); err != nil {
+			slog.Error("failed to reorder quick commands", slog.String("error", err.Error()))
 			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"id": id, "label": req.Label, "command": req.Command,
-			"hidden": req.Hidden, "auto_execute": req.AutoExecute,
-		})
-
-	case http.MethodPut:
-		// PUT /api/terminal/quick-commands/reorder
-		path := strings.TrimPrefix(r.URL.Path, "/api/terminal/quick-commands")
-		if strings.TrimPrefix(path, "/") == "reorder" {
-			var req struct {
-				IDs []int64 `json:"ids"`
-			}
-			if !decodeJSON(w, r, &req) {
-				return
-			}
-			if len(req.IDs) == 0 {
-				writeJSON(w, http.StatusOK, map[string]any{"success": true})
-				return
-			}
-			if err := service.ReorderQuickCommands(req.IDs); err != nil {
-				slog.Error("failed to reorder quick commands", slog.String("error", err.Error()))
-				writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"success": true})
-			return
-		}
-		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
-
-	default:
-		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
+		writeJSON(w, http.StatusOK, map[string]any{jsonKeySuccess: true})
+		return
 	}
+	writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 }
 
 // ServeQuickCommandByID handles PUT (update) and DELETE for a single quick command.
@@ -235,7 +245,7 @@ func ServeQuickCommandByID(w http.ResponseWriter, r *http.Request) {
 			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"success": true})
+		writeJSON(w, http.StatusOK, map[string]any{jsonKeySuccess: true})
 
 	case http.MethodDelete:
 		if err := service.DeleteQuickCommand(id); err != nil {
@@ -243,7 +253,7 @@ func ServeQuickCommandByID(w http.ResponseWriter, r *http.Request) {
 			writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"success": true})
+		writeJSON(w, http.StatusOK, map[string]any{jsonKeySuccess: true})
 
 	default:
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")

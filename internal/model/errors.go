@@ -30,28 +30,34 @@ func (e *AppError) Unwrap() error { return e.Err }
 
 // Constructor helpers
 
+// NewAppError creates a new AppError with the given HTTP status code, message, and cause.
 func NewAppError(code int, message string, err error) *AppError {
 	return &AppError{Code: code, Message: message, Err: err}
 }
 
+// Forbidden creates a 403 Forbidden AppError.
 func Forbidden(err error, msg string) *AppError {
 	return NewAppError(http.StatusForbidden, msg, err)
 }
 
+// NotFound creates a 404 Not Found AppError.
 func NotFound(err error, msg string) *AppError {
 	return NewAppError(http.StatusNotFound, msg, err)
 }
 
+// Internal creates a 500 Internal Server Error AppError.
 func Internal(err error) *AppError {
 	return NewAppError(http.StatusInternalServerError, "internal server error", err)
 }
 
+// Unauthorized creates a 401 Unauthorized AppError.
 func Unauthorized(err error) *AppError {
 	return NewAppError(http.StatusUnauthorized, "unauthorized", err)
 }
 
 // JSON error response helpers
 
+// ErrorResponse is the JSON structure returned for API errors.
 type ErrorResponse struct {
 	Error  string         `json:"error"`
 	Code   int            `json:"code,omitempty"`
@@ -59,12 +65,13 @@ type ErrorResponse struct {
 	Detail map[string]any `json:"detail,omitempty"`
 }
 
+// WriteError writes a JSON error response to w based on the error type.
 func WriteError(w http.ResponseWriter, err error) {
 	var appErr *AppError
 	if errors.As(err, &appErr) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(appErr.Code)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: appErr.Message, Code: appErr.Code})
+		_ = json.NewEncoder(w).Encode(ErrorResponse{Error: appErr.Message, Code: appErr.Code})
 		return
 	}
 	writeErrorf(w, http.StatusInternalServerError, "Internal server error")
@@ -73,5 +80,5 @@ func WriteError(w http.ResponseWriter, err error) {
 func writeErrorf(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: msg, Code: status})
+	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: msg, Code: status})
 }

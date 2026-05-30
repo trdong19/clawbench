@@ -46,7 +46,7 @@ type openaiEmbedRequest struct {
 // openaiEmbeddingData is one item in the response "data" array.
 type openaiEmbeddingData struct {
 	Embedding []float64 `json:"embedding"`
-	Index     int        `json:"index"`
+	Index     int       `json:"index"`
 }
 
 // openaiEmbedResponse is the response body for POST /v1/embeddings.
@@ -82,6 +82,26 @@ func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]f
 		return nil, nil
 	}
 
+	req, err := c.buildEmbedRequest(ctx, texts)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embed request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("embedding API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return c.parseEmbedResponse(resp, texts)
+}
+
+func (c *EmbeddingClient) buildEmbedRequest(ctx context.Context, texts []string) (*http.Request, error) {
 	reqBody := openaiEmbedRequest{
 		Model: c.Model,
 		Input: texts,
@@ -101,18 +121,10 @@ func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]f
 	if c.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
+	return req, nil
+}
 
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("embed request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("embedding API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
+func (c *EmbeddingClient) parseEmbedResponse(resp *http.Response, texts []string) ([][]float64, error) {
 	var embedResp openaiEmbedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&embedResp); err != nil {
 		return nil, fmt.Errorf("decode embed response: %w", err)
@@ -146,9 +158,9 @@ func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]f
 // IsHealthy checks if the embedding service is reachable and the configured model is available.
 // Returns (reachable, modelAvailable, error).
 // Gracefully handles servers that do not implement /v1/models.
-func (c *EmbeddingClient) IsHealthy(ctx context.Context) (bool, bool, error) {
+func (c *EmbeddingClient) IsHealthy(ctx context.Context) (reachable, modelAvailable bool, err error) {
 	url := c.BaseURL + "/v1/models"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return false, false, fmt.Errorf("create health request: %w", err)
 	}
@@ -160,7 +172,7 @@ func (c *EmbeddingClient) IsHealthy(ctx context.Context) (bool, bool, error) {
 	if err != nil {
 		return false, false, nil // Not reachable
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		// Server does not implement /v1/models (e.g. some Ollama versions)
@@ -184,7 +196,8 @@ func (c *EmbeddingClient) IsHealthy(ctx context.Context) (bool, bool, error) {
 		}
 	}
 
-	slog.Warn("embedding service reachable but model not found",
+	slog.Warn(
+		"embedding service reachable but model not found",
 		slog.String("model", c.Model),
 		slog.Int("available_models", len(modelsResp.Data)),
 	)

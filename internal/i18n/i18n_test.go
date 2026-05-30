@@ -1,6 +1,7 @@
 package i18n
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,63 +10,68 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	testKeySessionNotRunning = "SessionNotRunning"
+	testKeyFileTooLarge      = "FileTooLarge"
+)
+
 func TestBundleLoaded(t *testing.T) {
 	assert.NotNil(t, bundle, "bundle should be initialized")
 }
 
 func TestLocalizer_DefaultEnglish(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	loc := Localizer(r)
 
-	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: "SessionNotRunning"})
+	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: testKeySessionNotRunning})
 	assert.NoError(t, err)
 	assert.Equal(t, "Session is not running", msg)
 }
 
 func TestLocalizer_Chinese(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.Header.Set("X-Locale", "zh")
 	loc := Localizer(r)
 
-	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: "SessionNotRunning"})
+	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: testKeySessionNotRunning})
 	assert.NoError(t, err)
 	assert.Equal(t, "会话未在运行", msg)
 }
 
 func TestLocalizer_Cookie(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.AddCookie(&http.Cookie{Name: "clawbench-locale", Value: "zh"})
 	loc := Localizer(r)
 
-	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: "FileTooLarge"})
+	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: testKeyFileTooLarge})
 	assert.NoError(t, err)
 	assert.Equal(t, "文件过大", msg)
 }
 
 func TestLocalizer_AcceptLanguage(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	loc := Localizer(r)
 
-	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: "FileTooLarge"})
+	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: testKeyFileTooLarge})
 	assert.NoError(t, err)
 	assert.Equal(t, "文件过大", msg)
 }
 
 func TestLocalizer_XLocaleOverridesCookie(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.Header.Set("X-Locale", "en")
 	r.AddCookie(&http.Cookie{Name: "clawbench-locale", Value: "zh"})
 	loc := Localizer(r)
 
 	// X-Locale takes priority over cookie
-	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: "FileTooLarge"})
+	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: testKeyFileTooLarge})
 	assert.NoError(t, err)
 	assert.Equal(t, "File too large", msg)
 }
 
 func TestT_FallbackToKey(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	loc := Localizer(r)
 
 	// Non-existent key should return the key itself
@@ -74,7 +80,7 @@ func TestT_FallbackToKey(t *testing.T) {
 }
 
 func TestT_TemplateData(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.Header.Set("X-Locale", "en")
 	loc := Localizer(r)
 
@@ -83,7 +89,7 @@ func TestT_TemplateData(t *testing.T) {
 }
 
 func TestT_TemplateDataChinese(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.Header.Set("X-Locale", "zh")
 	loc := Localizer(r)
 
@@ -126,13 +132,13 @@ func TestT_AllKeysPresentInBothLanguages(t *testing.T) {
 	}
 
 	for _, key := range keys {
-		enR := httptest.NewRequest(http.MethodGet, "/", nil)
+		enR := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		enR.Header.Set("X-Locale", "en")
 		enLoc := Localizer(enR)
 		enMsg := T(enLoc, key)
 		assert.NotEqual(t, key, enMsg, "English translation missing for key: %s", key)
 
-		zhR := httptest.NewRequest(http.MethodGet, "/", nil)
+		zhR := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 		zhR.Header.Set("X-Locale", "zh")
 		zhLoc := Localizer(zhR)
 		zhMsg := T(zhLoc, key)
@@ -144,12 +150,12 @@ func TestT_AllKeysPresentInBothLanguages(t *testing.T) {
 }
 
 func TestT_NewSessionN(t *testing.T) {
-	enR := httptest.NewRequest(http.MethodGet, "/", nil)
+	enR := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	enR.Header.Set("X-Locale", "en")
 	enLoc := Localizer(enR)
 	assert.Equal(t, "New Session 3", T(enLoc, "NewSessionN", map[string]interface{}{"N": 3}))
 
-	zhR := httptest.NewRequest(http.MethodGet, "/", nil)
+	zhR := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	zhR.Header.Set("X-Locale", "zh")
 	zhLoc := Localizer(zhR)
 	assert.Equal(t, "新会话 3", T(zhLoc, "NewSessionN", map[string]interface{}{"N": 3}))

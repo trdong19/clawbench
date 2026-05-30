@@ -13,7 +13,7 @@ import (
 func TestNewEdgeTTSProvider_Defaults(t *testing.T) {
 	p := NewEdgeTTSProvider()
 	assert.Equal(t, edgeDefaultVoice, p.Voice)
-	assert.Equal(t, "+0%", p.Rate)
+	assert.Equal(t, edgeDefaultRate, p.Rate)
 }
 
 func TestEdgeTTSProvider_Synthesize_CancelledContext(t *testing.T) {
@@ -59,7 +59,7 @@ func TestEdgeTTSProvider_RateArgs(t *testing.T) {
 		rate       string
 		expectRate bool // whether --rate should be in args
 	}{
-		{"default rate +0%", "+0%", false},
+		{"default rate +0%", edgeDefaultRate, false},
 		{"empty rate", "", false},
 		{"faster rate +20%", "+20%", true},
 		{"slower rate -10%", "-10%", true},
@@ -75,11 +75,11 @@ func TestEdgeTTSProvider_RateArgs(t *testing.T) {
 
 			// Build args the same way Synthesize does
 			args := []string{
-				"--voice", p.Voice,
+				edgeFlagVoice, p.Voice,
 				"--file", "/tmp/dummy.txt",
 				"--write-media", "/tmp/dummy.mp3",
 			}
-			if p.Rate != "" && p.Rate != "+0%" {
+			if p.Rate != "" && p.Rate != edgeDefaultRate {
 				args = append(args, "--rate", p.Rate)
 			}
 
@@ -105,7 +105,7 @@ func TestEdgeTTSProvider_DifferentVoices(t *testing.T) {
 	}
 
 	for _, voice := range voices {
-		p := &EdgeTTSProvider{Voice: voice, Rate: "+0%"}
+		p := &EdgeTTSProvider{Voice: voice}
 		assert.Equal(t, voice, p.Voice)
 	}
 }

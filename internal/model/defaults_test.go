@@ -6,16 +6,22 @@ import (
 	"testing"
 )
 
+const (
+	testKeyPort     = "port"
+	testKeyTTS      = "tts"
+	testKeyPassword = "password"
+)
+
 func TestParsePresenceMap(t *testing.T) {
 	raw := map[string]any{
-		"port": 20000,
+		testKeyPort: 20000,
 		"proxy": map[string]any{
 			"enabled": true,
 		},
 		"ssh": map[string]any{
 			"enabled": false,
 		},
-		"tts": map[string]any{
+		testKeyTTS: map[string]any{
 			"engine": "edge",
 		},
 	}
@@ -23,12 +29,12 @@ func TestParsePresenceMap(t *testing.T) {
 	presence := ParsePresenceMap(raw)
 
 	expectedKeys := []string{
-		"port",
+		testKeyPort,
 		"proxy",
 		"proxy.enabled",
 		"ssh",
 		"ssh.enabled",
-		"tts",
+		testKeyTTS,
 		"tts.engine",
 	}
 	for _, key := range expectedKeys {
@@ -38,7 +44,7 @@ func TestParsePresenceMap(t *testing.T) {
 	}
 
 	// Keys that should NOT be present
-	unexpectedKeys := []string{"password", "proxy.port", "ssh.port"}
+	unexpectedKeys := []string{testKeyPassword, "proxy.port", "ssh.port"}
 	for _, key := range unexpectedKeys {
 		if presence[key] {
 			t.Errorf("expected key %q to NOT be present", key)
@@ -60,7 +66,7 @@ func TestParsePresenceMapEmpty(t *testing.T) {
 
 func TestParsePresenceMapDeeplyNested(t *testing.T) {
 	raw := map[string]any{
-		"tts": map[string]any{
+		testKeyTTS: map[string]any{
 			"api": map[string]any{
 				"base_url": "https://api.openai.com/v1/chat/completions",
 			},

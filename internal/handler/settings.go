@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,6 @@ import (
 
 	"clawbench/internal/model"
 	"clawbench/internal/version"
-	"net/http"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -33,20 +33,22 @@ var configMutex sync.RWMutex
 // hotReloadFields is the set of config dot-paths that take effect immediately
 // via applyHotReloadGlobals() and do NOT require a server restart.
 var hotReloadFields = map[string]bool{
-	"chat.collapsed_height":      true,
-	"chat.initial_messages":      true,
-	"chat.page_size":             true,
+	"chat.collapsed_height":       true,
+	"chat.initial_messages":       true,
+	"chat.page_size":              true,
 	"chat.system_prompt_interval": true,
-	"session.max_count":          true,
-	"recent_projects.max_count":  true,
-	"upload.max_size_mb":        true,
-	"upload.max_files":          true,
-	"tts.max_cache_files":       true,
+	"session.max_count":           true,
+	"recent_projects.max_count":   true,
+	"upload.max_size_mb":          true,
+	"upload.max_files":            true,
+	"tts.max_cache_files":         true,
 }
 
 // restartGracePeriod is the delay before shutting down the server after a restart
 // request, giving the HTTP response time to reach the client.
 const restartGracePeriod = 200 * time.Millisecond
+
+const summarizeBackendAPI = "api"
 
 // restartFunc is the function called to trigger a server restart.
 // Set by main.go via SetRestartFunc(). Defaults to a no-op for tests.
@@ -73,8 +75,8 @@ type configResponse struct {
 	TTS            configTTS            `json:"tts"`
 	RAG            configRAG            `json:"rag"`
 	PortForward    configPortForward    `json:"port_forward"`
-	Push           configPush          `json:"push"`
-	Summarize      configSummarize     `json:"summarize"`
+	Push           configPush           `json:"push"`
+	Summarize      configSummarize      `json:"summarize"`
 }
 
 type configChat struct {
@@ -176,28 +178,28 @@ type configSummarize struct {
 // PatchableConfigPaths defines the whitelist of config paths that PATCH /api/config accepts.
 // Any path not in this list will be rejected with 400 Bad Request.
 var PatchableConfigPaths = map[string]bool{
-	"default_agent":                true,
-	"chat.initial_messages":        true,
-	"chat.page_size":               true,
-	"chat.collapsed_height":        true,
-	"chat.system_prompt_interval":  true,
-	"session.max_count":            true,
+	"default_agent":               true,
+	"chat.initial_messages":       true,
+	"chat.page_size":              true,
+	"chat.collapsed_height":       true,
+	"chat.system_prompt_interval": true,
+	"session.max_count":           true,
 	"recent_projects.max_count":   true,
-	"upload.max_size_mb":           true,
-	"upload.max_files":             true,
-	"terminal.enabled":             true,
-	"terminal.idle_timeout":        true,
-	"terminal.max_sessions":        true,
-	"terminal.buffer_lines":        true,
-	"tts.engine":                   true,
-	"tts.tts_model":                true,
-	"tts.format":                   true,
-	"tts.speed":                    true,
-	"tts.voice":                    true,
-	"tts.max_cache_files":          true,
-	"tts.piper.model_path":         true,
-	"tts.piper.noise_scale":        true,
-	"tts.piper.length_scale":       true,
+	"upload.max_size_mb":          true,
+	"upload.max_files":            true,
+	"terminal.enabled":            true,
+	"terminal.idle_timeout":       true,
+	"terminal.max_sessions":       true,
+	"terminal.buffer_lines":       true,
+	"tts.engine":                  true,
+	"tts.tts_model":               true,
+	"tts.format":                  true,
+	"tts.speed":                   true,
+	"tts.voice":                   true,
+	"tts.max_cache_files":         true,
+	"tts.piper.model_path":        true,
+	"tts.piper.noise_scale":       true,
+	"tts.piper.length_scale":      true,
 	"tts.piper.sentence_silence":  true,
 	"tts.kokoro.model_path":       true,
 	"tts.kokoro.voices_path":      true,
@@ -206,15 +208,15 @@ var PatchableConfigPaths = map[string]bool{
 	"tts.moss_nano.prompt_speech": true,
 	"tts.moss_nano.voice":         true,
 	"tts.moss_nano.backend":       true,
-	"rag.base_url":              true,
-	"rag.model":                 true,
-	"rag.api_key":               true,
-	"rag.chunk_size":            true,
-	"rag.search_limit":          true,
-	"rag.search_pool_size":      true,
-	"rag.retention_days":        true,
-	"port_forward.enabled":                 true,
-	"port_forward.port":                    true,
+	"rag.base_url":                true,
+	"rag.model":                   true,
+	"rag.api_key":                 true,
+	"rag.chunk_size":              true,
+	"rag.search_limit":            true,
+	"rag.search_pool_size":        true,
+	"rag.retention_days":          true,
+	"port_forward.enabled":        true,
+	"port_forward.port":           true,
 	"push.jpush.enabled":          true,
 	"push.jpush.app_key":          true,
 	"push.jpush.master_secret":    true,
@@ -227,15 +229,15 @@ var PatchableConfigPaths = map[string]bool{
 
 // validTTSEngines is the set of valid TTS engine values.
 var validTTSEngines = map[string]bool{
-	"edge": true, "piper": true, "kokoro": true, "moss-nano": true,
+	"edge": true, jsonKeyPiper: true, jsonKeyKokoro: true, jsonKeyMossNano: true,
 }
 
 // validSummarizeBackends is the set of valid summarization backend values.
 var validSummarizeBackends = map[string]bool{
-	"simple": true, "api": true,
-	"claude": true, "codebuddy": true, "gemini": true,
-	"opencode": true, "codex": true, "qoder": true,
-	"vecli": true, "deepseek": true, "pi": true,
+	"simple": true, summarizeBackendAPI: true,
+	"claude": true, jsonKeyCodebuddy: true, "gemini": true,
+	"opencode": true, jsonKeyCodex: true, "qoder": true,
+	"vecli": true, jsonKeyDeepSeek: true, "pi": true,
 }
 
 // validTTSFormats is the set of valid TTS output format values.
@@ -309,7 +311,7 @@ func ServeConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func serveConfigGet(w http.ResponseWriter, r *http.Request) {
+func serveConfigGet(w http.ResponseWriter, _ *http.Request) {
 	configMutex.RLock()
 	cfg := model.ConfigInstance
 	configMutex.RUnlock()
@@ -375,7 +377,7 @@ func serveConfigGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Conditionally populate Summarize API sub-config when backend is "api"
-	if cfg.Summarize.Backend == "api" {
+	if cfg.Summarize.Backend == summarizeBackendAPI {
 		resp.Summarize.API = &configAPI{
 			BaseURL: cfg.Summarize.API.BaseURL,
 			Key:     maskAPIKey(cfg.Summarize.API.Key),
@@ -385,20 +387,20 @@ func serveConfigGet(w http.ResponseWriter, r *http.Request) {
 
 	// Conditionally populate engine-specific sub-configs
 	switch cfg.TTS.Engine {
-	case "piper":
+	case jsonKeyPiper:
 		resp.TTS.Piper = &configPiper{
 			ModelPath:       cfg.TTS.Piper.ModelPath,
 			NoiseScale:      cfg.TTS.Piper.NoiseScale,
 			LengthScale:     cfg.TTS.Piper.LengthScale,
 			SentenceSilence: cfg.TTS.Piper.SentenceSilence,
 		}
-	case "kokoro":
+	case jsonKeyKokoro:
 		resp.TTS.Kokoro = &configKokoro{
 			ModelPath:  cfg.TTS.Kokoro.ModelPath,
 			VoicesPath: cfg.TTS.Kokoro.VoicesPath,
 			Lang:       cfg.TTS.Kokoro.Lang,
 		}
-	case "moss-nano":
+	case jsonKeyMossNano:
 		resp.TTS.MossNano = &configMossNano{
 			ModelDir:     cfg.TTS.MossNano.ModelDir,
 			PromptSpeech: cfg.TTS.MossNano.PromptSpeech,
@@ -406,7 +408,6 @@ func serveConfigGet(w http.ResponseWriter, r *http.Request) {
 			Backend:      cfg.TTS.MossNano.Backend,
 		}
 	}
-
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -419,10 +420,10 @@ func serveConfigPatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var patch map[string]any
-	if err := json.Unmarshal(body, &patch); err != nil {
+	if err = json.Unmarshal(body, &patch); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "invalid_json",
-			"message": "failed to parse request body as JSON",
+			jsonKeyError:   "invalid_json",
+			jsonKeyMessage: "failed to parse request body as JSON",
 		})
 		return
 	}
@@ -430,16 +431,16 @@ func serveConfigPatch(w http.ResponseWriter, r *http.Request) {
 	changedFields, err := validatePatchFields(patch, "")
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "forbidden_field",
-			"message": err.Error(),
+			jsonKeyError:   "forbidden_field",
+			jsonKeyMessage: err.Error(),
 		})
 		return
 	}
 
 	if err := validatePatchValues(patch); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "invalid_value",
-			"message": err.Error(),
+			jsonKeyError:   "invalid_value",
+			jsonKeyMessage: err.Error(),
 		})
 		return
 	}
@@ -453,8 +454,8 @@ func serveConfigPatch(w http.ResponseWriter, r *http.Request) {
 	if err := applyConfigPatch(patch); err != nil {
 		model.ConfigInstance = snapshot
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "apply_failed",
-			"message": err.Error(),
+			jsonKeyError:   "apply_failed",
+			jsonKeyMessage: err.Error(),
 		})
 		return
 	}
@@ -466,8 +467,8 @@ func serveConfigPatch(w http.ResponseWriter, r *http.Request) {
 		applyHotReloadGlobals()
 		slog.Error("failed to write config.yaml after patch", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "write_failed",
-			"message": fmt.Sprintf("failed to write config.yaml: %v", err),
+			jsonKeyError:   "write_failed",
+			jsonKeyMessage: fmt.Sprintf("failed to write config.yaml: %v", err),
 		})
 		return
 	}
@@ -515,149 +516,23 @@ func validatePatchFields(patch map[string]any, prefix string) ([]string, error) 
 }
 
 func validatePatchValues(patch map[string]any) error {
-	tts, ok := patch["tts"].(map[string]any)
-	if ok {
-		if engine, ok := tts["engine"].(string); ok {
-			if !validTTSEngines[engine] {
-				return fmt.Errorf("tts.engine must be one of: edge,piper,kokoro,moss-nano")
-			}
-		}
-		if format, ok := tts["format"].(string); ok {
-			if format != "" && !validTTSFormats[format] {
-				return fmt.Errorf("tts.format must be one of: mp3,wav,pcm")
-			}
-		}
-		if speed, ok := tts["speed"].(float64); ok {
-			if speed < 0.5 || speed > 3.0 {
-				return fmt.Errorf("tts.speed must be between 0.5 and 3.0")
-			}
-		}
-		// Validate engine-specific sub-configs
-		if piper, ok := tts["piper"].(map[string]any); ok {
-			if v, ok := piper["noise_scale"].(float64); ok && (v < 0 || v > 1) {
-				return fmt.Errorf("tts.piper.noise_scale must be between 0 and 1")
-			}
-			if v, ok := piper["length_scale"].(float64); ok && v <= 0 {
-				return fmt.Errorf("tts.piper.length_scale must be positive")
-			}
-			if v, ok := piper["sentence_silence"].(float64); ok && v < 0 {
-				return fmt.Errorf("tts.piper.sentence_silence must be non-negative")
-			}
-		}
-		if kokoro, ok := tts["kokoro"].(map[string]any); ok {
-			if v, ok := kokoro["lang"].(string); ok && v == "" {
-				return fmt.Errorf("tts.kokoro.lang must not be empty")
-			}
-		}
-		if mossNano, ok := tts["moss_nano"].(map[string]any); ok {
-			if v, ok := mossNano["backend"].(string); ok {
-				if !validMossNanoBackends[v] {
-					return fmt.Errorf("tts.moss_nano.backend must be one of: onnx,pytorch")
-				}
-			}
+	if tts, ok := patch["tts"].(map[string]any); ok {
+		if err := validateTTSFields(tts); err != nil {
+			return err
 		}
 	}
 
-	// ── Cross-field consistency checks ──────────────────────────
 	cfg := model.ConfigInstance
 
-	// 1. When summarize.backend is "api", summarize.api.base_url must not be empty.
-	//    Skip when the patch *switches* backend to "api" — the user hasn't had a
-	//    chance to fill in the API sub-config yet (frontend auto-saves one field at a time).
-	effectiveBackend := cfg.Summarize.Backend
-	backendSwitchedToAPI := false
-	if summarize, ok := patch["summarize"].(map[string]any); ok {
-		if v, ok := summarize["backend"].(string); ok {
-			if v == "api" && cfg.Summarize.Backend != "api" {
-				backendSwitchedToAPI = true
-			}
-			effectiveBackend = v
-		}
-	}
-	if effectiveBackend == "api" && !backendSwitchedToAPI {
-		effectiveBaseURL := cfg.Summarize.API.BaseURL
-		if summarize, ok := patch["summarize"].(map[string]any); ok {
-			if api, ok := summarize["api"].(map[string]any); ok {
-				if v, ok := api["base_url"].(string); ok {
-					effectiveBaseURL = v
-				}
-			}
-		}
-		if effectiveBaseURL == "" {
-			return fmt.Errorf("summarize.api.base_url is required when summarize.backend is \"api\"")
-		}
+	if err := validateSummarizeCrossField(patch, cfg); err != nil {
+		return err
 	}
 
-	// 2. Engine-specific model path requirements.
-	// When the patch switches tts.engine to a new value, skip required-field
-	// validation for the *target* engine — the user hasn't had a chance to
-	// fill in the sub-config yet (frontend auto-saves one field at a time).
-	// Only enforce when the engine is already set to that value (i.e. the
-	// user is saving sub-config fields for the current engine).
-	effectiveEngine := cfg.TTS.Engine
-	engineSwitched := false
-	if tts, ok := patch["tts"].(map[string]any); ok {
-		if v, ok := tts["engine"].(string); ok && v != cfg.TTS.Engine {
-			effectiveEngine = v
-			engineSwitched = true
-		}
-	}
-	switch effectiveEngine {
-	case "piper":
-		if engineSwitched {
-			break // will be validated after user fills in sub-config
-		}
-		effectiveModelPath := cfg.TTS.Piper.ModelPath
-		if tts, ok := patch["tts"].(map[string]any); ok {
-			if piper, ok := tts["piper"].(map[string]any); ok {
-				if v, ok := piper["model_path"].(string); ok {
-					effectiveModelPath = v
-				}
-			}
-		}
-		if effectiveModelPath == "" {
-			return fmt.Errorf("tts.piper.model_path is required when tts.engine is \"piper\"")
-		}
-	case "kokoro":
-		if engineSwitched {
-			break // will be validated after user fills in sub-config
-		}
-		effectiveKokoroModel := cfg.TTS.Kokoro.ModelPath
-		effectiveVoicesPath := cfg.TTS.Kokoro.VoicesPath
-		if tts, ok := patch["tts"].(map[string]any); ok {
-			if kokoro, ok := tts["kokoro"].(map[string]any); ok {
-				if v, ok := kokoro["model_path"].(string); ok {
-					effectiveKokoroModel = v
-				}
-				if v, ok := kokoro["voices_path"].(string); ok {
-					effectiveVoicesPath = v
-				}
-			}
-		}
-		if effectiveKokoroModel == "" {
-			return fmt.Errorf("tts.kokoro.model_path is required when tts.engine is \"kokoro\"")
-		}
-		if effectiveVoicesPath == "" {
-			return fmt.Errorf("tts.kokoro.voices_path is required when tts.engine is \"kokoro\"")
-		}
-	case "moss-nano":
-		if engineSwitched {
-			break // will be validated after user fills in sub-config
-		}
-		effectiveModelDir := cfg.TTS.MossNano.ModelDir
-		if tts, ok := patch["tts"].(map[string]any); ok {
-			if mossNano, ok := tts["moss_nano"].(map[string]any); ok {
-				if v, ok := mossNano["model_dir"].(string); ok {
-					effectiveModelDir = v
-				}
-			}
-		}
-		if effectiveModelDir == "" {
-			return fmt.Errorf("tts.moss_nano.model_dir is required when tts.engine is \"moss-nano\"")
-		}
+	if err := validateTTSEngineRequirements(patch, cfg); err != nil {
+		return err
 	}
 
-	// 3. default_agent must be an existing agent ID.
+	// default_agent must be an existing agent ID.
 	if v, ok := patch["default_agent"].(string); ok && v != "" {
 		if model.Agents != nil {
 			if _, exists := model.Agents[v]; !exists {
@@ -670,257 +545,582 @@ func validatePatchValues(patch map[string]any) error {
 		}
 	}
 
-	// Validate summarize section
 	if summarize, ok := patch["summarize"].(map[string]any); ok {
-		if v, ok := summarize["backend"].(string); ok && v != "" {
-			if !validSummarizeBackends[v] {
-				return fmt.Errorf("summarize.backend must be one of: simple,api,claude,codebuddy,gemini,opencode,codex,qoder,vecli,deepseek,pi")
-			}
-		}
-		// Validate Summarize API sub-config
-		if api, ok := summarize["api"].(map[string]any); ok {
-			if v, ok := api["format"].(string); ok {
-				if v != "" && !validAPIFormats[v] {
-					return fmt.Errorf("summarize.api.format must be one of: openai, anthropic")
-				}
-			}
-			if v, ok := api["key"].(string); ok && strings.Contains(v, "***") {
-				return fmt.Errorf("summarize.api.key must not contain '***' — please provide the full key value")
-			}
+		if err := validateSummarizeFields(summarize); err != nil {
+			return err
 		}
 	}
 
-	chat, ok := patch["chat"].(map[string]any)
-	if ok {
+	if err := validateNumericFields(patch); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateTTSFields validates TTS engine, format, speed, and sub-config fields.
+func validateTTSFields(tts map[string]any) error {
+	if err := validateTTSEngine(tts); err != nil {
+		return err
+	}
+	if err := validateTTSFormat(tts); err != nil {
+		return err
+	}
+	if err := validateTTSSpeed(tts); err != nil {
+		return err
+	}
+	if err := validateTTSPiper(tts); err != nil {
+		return err
+	}
+	if err := validateTTSKokoro(tts); err != nil {
+		return err
+	}
+	if err := validateTTSMossNano(tts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateTTSEngine(tts map[string]any) error {
+	engine, ok := tts["engine"].(string)
+	if !ok {
+		return nil
+	}
+	if !validTTSEngines[engine] {
+		return fmt.Errorf("tts.engine must be one of: edge,piper,kokoro,moss-nano")
+	}
+	return nil
+}
+
+func validateTTSFormat(tts map[string]any) error {
+	format, ok := tts["format"].(string)
+	if !ok || format == "" {
+		return nil
+	}
+	if !validTTSFormats[format] {
+		return fmt.Errorf("tts.format must be one of: mp3,wav,pcm")
+	}
+	return nil
+}
+
+func validateTTSSpeed(tts map[string]any) error {
+	speed, ok := tts["speed"].(float64)
+	if !ok {
+		return nil
+	}
+	if speed < 0.5 || speed > 3.0 {
+		return fmt.Errorf("tts.speed must be between 0.5 and 3.0")
+	}
+	return nil
+}
+
+func validateTTSPiper(tts map[string]any) error {
+	piper, ok := tts[jsonKeyPiper].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if v, ok := piper["noise_scale"].(float64); ok && (v < 0 || v > 1) {
+		return fmt.Errorf("tts.piper.noise_scale must be between 0 and 1")
+	}
+	if v, ok := piper["length_scale"].(float64); ok && v <= 0 {
+		return fmt.Errorf("tts.piper.length_scale must be positive")
+	}
+	if v, ok := piper["sentence_silence"].(float64); ok && v < 0 {
+		return fmt.Errorf("tts.piper.sentence_silence must be non-negative")
+	}
+	return nil
+}
+
+func validateTTSKokoro(tts map[string]any) error {
+	kokoro, ok := tts["kokoro"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if v, ok := kokoro["lang"].(string); ok && v == "" {
+		return fmt.Errorf("tts.kokoro.lang must not be empty")
+	}
+	return nil
+}
+
+func validateTTSMossNano(tts map[string]any) error {
+	mossNano, ok := tts["moss_nano"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if v, ok := mossNano["backend"].(string); ok {
+		if !validMossNanoBackends[v] {
+			return fmt.Errorf("tts.moss_nano.backend must be one of: onnx,pytorch")
+		}
+	}
+	return nil
+}
+
+// validateSummarizeCrossField validates cross-field consistency for summarize backend switch.
+func validateSummarizeCrossField(patch map[string]any, cfg model.Config) error {
+	effectiveBackend := cfg.Summarize.Backend
+	backendSwitchedToAPI := false
+	if summarize, ok := patch["summarize"].(map[string]any); ok {
+		if v, ok := summarize["backend"].(string); ok {
+			if v == summarizeBackendAPI && cfg.Summarize.Backend != summarizeBackendAPI {
+				backendSwitchedToAPI = true
+			}
+			effectiveBackend = v
+		}
+	}
+	if effectiveBackend == summarizeBackendAPI && !backendSwitchedToAPI {
+		effectiveBaseURL := cfg.Summarize.API.BaseURL
+		if summarize, ok := patch["summarize"].(map[string]any); ok {
+			if api, ok := summarize[summarizeBackendAPI].(map[string]any); ok {
+				if v, ok := api["base_url"].(string); ok {
+					effectiveBaseURL = v
+				}
+			}
+		}
+		if effectiveBaseURL == "" {
+			return fmt.Errorf("summarize.api.base_url is required when summarize.backend is \"api\"")
+		}
+	}
+	return nil
+}
+
+// validateTTSEngineRequirements validates engine-specific model path requirements.
+func validateTTSEngineRequirements(patch map[string]any, cfg model.Config) error {
+	effectiveEngine := cfg.TTS.Engine
+	engineSwitched := false
+	if tts, ok := patch["tts"].(map[string]any); ok {
+		if v, ok := tts["engine"].(string); ok && v != cfg.TTS.Engine {
+			effectiveEngine = v
+			engineSwitched = true
+		}
+	}
+	switch effectiveEngine {
+	case jsonKeyPiper:
+		return validatePiperRequirements(patch, cfg, engineSwitched)
+	case jsonKeyKokoro:
+		return validateKokoroRequirements(patch, cfg, engineSwitched)
+	case jsonKeyMossNano:
+		return validateMossNanoRequirements(patch, cfg, engineSwitched)
+	}
+	return nil
+}
+
+func validatePiperRequirements(patch map[string]any, cfg model.Config, engineSwitched bool) error {
+	if engineSwitched {
+		return nil
+	}
+	effectiveModelPath := cfg.TTS.Piper.ModelPath
+	if tts, ok := patch["tts"].(map[string]any); ok {
+		if piper, ok := tts[jsonKeyPiper].(map[string]any); ok {
+			if v, ok := piper["model_path"].(string); ok {
+				effectiveModelPath = v
+			}
+		}
+	}
+	if effectiveModelPath == "" {
+		return fmt.Errorf("tts.piper.model_path is required when tts.engine is \"piper\"")
+	}
+	return nil
+}
+
+func validateKokoroRequirements(patch map[string]any, cfg model.Config, engineSwitched bool) error {
+	if engineSwitched {
+		return nil
+	}
+	effectiveKokoroModel := cfg.TTS.Kokoro.ModelPath
+	effectiveVoicesPath := cfg.TTS.Kokoro.VoicesPath
+	if tts, ok := patch["tts"].(map[string]any); ok {
+		if kokoro, ok := tts["kokoro"].(map[string]any); ok {
+			if v, ok := kokoro["model_path"].(string); ok {
+				effectiveKokoroModel = v
+			}
+			if v, ok := kokoro["voices_path"].(string); ok {
+				effectiveVoicesPath = v
+			}
+		}
+	}
+	if effectiveKokoroModel == "" {
+		return fmt.Errorf("tts.kokoro.model_path is required when tts.engine is \"kokoro\"")
+	}
+	if effectiveVoicesPath == "" {
+		return fmt.Errorf("tts.kokoro.voices_path is required when tts.engine is \"kokoro\"")
+	}
+	return nil
+}
+
+func validateMossNanoRequirements(patch map[string]any, cfg model.Config, engineSwitched bool) error {
+	if engineSwitched {
+		return nil
+	}
+	effectiveModelDir := cfg.TTS.MossNano.ModelDir
+	if tts, ok := patch["tts"].(map[string]any); ok {
+		if mossNano, ok := tts["moss_nano"].(map[string]any); ok {
+			if v, ok := mossNano["model_dir"].(string); ok {
+				effectiveModelDir = v
+			}
+		}
+	}
+	if effectiveModelDir == "" {
+		return fmt.Errorf("tts.moss_nano.model_dir is required when tts.engine is \"moss-nano\"")
+	}
+	return nil
+}
+
+// validateSummarizeFields validates summarize backend and API sub-config fields.
+func validateSummarizeFields(summarize map[string]any) error {
+	if v, ok := summarize["backend"].(string); ok && v != "" {
+		if !validSummarizeBackends[v] {
+			return fmt.Errorf("summarize.backend must be one of: simple,api,claude,codebuddy,gemini,opencode,codex,qoder,vecli,deepseek,pi")
+		}
+	}
+	if api, ok := summarize[summarizeBackendAPI].(map[string]any); ok {
+		if v, ok := api["format"].(string); ok {
+			if v != "" && !validAPIFormats[v] {
+				return fmt.Errorf("summarize.api.format must be one of: openai, anthropic")
+			}
+		}
+		if v, ok := api["key"].(string); ok && strings.Contains(v, "***") {
+			return fmt.Errorf("summarize.api.key must not contain '***' — please provide the full key value")
+		}
+	}
+	return nil
+}
+
+// validateNumericFields validates numeric patch fields (chat, session, recent_projects, upload).
+func validateNumericFields(patch map[string]any) error {
+	if chat, ok := patch["chat"].(map[string]any); ok {
 		for _, key := range []string{"collapsed_height", "initial_messages", "page_size", "system_prompt_interval"} {
 			if v, ok := chat[key].(float64); ok && v < 0 {
 				return fmt.Errorf("chat.%s must be non-negative", key)
 			}
 		}
 	}
-	session, ok := patch["session"].(map[string]any)
-	if ok {
-		if v, ok := session["max_count"].(float64); ok && v < 0 {
-			return fmt.Errorf("session.max_count must be non-negative")
-		}
+	if err := validateSessionNumeric(patch); err != nil {
+		return err
 	}
-	recentProjects, ok := patch["recent_projects"].(map[string]any)
-	if ok {
-		if v, ok := recentProjects["max_count"].(float64); ok && v < 1 {
-			return fmt.Errorf("recent_projects.max_count must be at least 1")
-		}
+	if err := validateRecentProjectsNumeric(patch); err != nil {
+		return err
 	}
-	upload, ok := patch["upload"].(map[string]any)
-	if ok {
-		if v, ok := upload["max_size_mb"].(float64); ok && v < 0 {
-			return fmt.Errorf("upload.max_size_mb must be non-negative")
-		}
-		if v, ok := upload["max_files"].(float64); ok && v < 0 {
-			return fmt.Errorf("upload.max_files must be non-negative")
-		}
+	if err := validateUploadNumeric(patch); err != nil {
+		return err
 	}
+	return nil
+}
 
+func validateSessionNumeric(patch map[string]any) error {
+	session, ok := patch["session"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if v, ok := session["max_count"].(float64); ok && v < 0 {
+		return fmt.Errorf("session.max_count must be non-negative")
+	}
+	return nil
+}
+
+func validateRecentProjectsNumeric(patch map[string]any) error {
+	recentProjects, ok := patch["recent_projects"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if v, ok := recentProjects["max_count"].(float64); ok && v < 1 {
+		return fmt.Errorf("recent_projects.max_count must be at least 1")
+	}
+	return nil
+}
+
+func validateUploadNumeric(patch map[string]any) error {
+	upload, ok := patch["upload"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if v, ok := upload["max_size_mb"].(float64); ok && v < 0 {
+		return fmt.Errorf("upload.max_size_mb must be non-negative")
+	}
+	if v, ok := upload["max_files"].(float64); ok && v < 0 {
+		return fmt.Errorf("upload.max_files must be non-negative")
+	}
 	return nil
 }
 
 func applyConfigPatch(patch map[string]any) error {
 	cfg := &model.ConfigInstance
 
-	// Top-level fields
 	if v, ok := patch["default_agent"].(string); ok {
 		cfg.DefaultAgent = v
 		model.DefaultAgentID = v
 	}
 
-	if chat, ok := patch["chat"].(map[string]any); ok {
-		if v, ok := chat["collapsed_height"].(float64); ok {
-			cfg.Chat.CollapsedHeight = int(v)
-		}
-		if v, ok := chat["initial_messages"].(float64); ok {
-			cfg.Chat.InitialMessages = int(v)
-		}
-		if v, ok := chat["page_size"].(float64); ok {
-			cfg.Chat.PageSize = int(v)
-		}
-		if v, ok := chat["system_prompt_interval"].(float64); ok {
-			cfg.Chat.SystemPromptInterval = int(v)
-		}
+	applyChatPatch(patch)
+	applySessionPatch(patch)
+	applyRecentProjectsPatch(patch)
+	applyUploadPatch(patch)
+	applyTerminalPatch(patch)
+	applyTTSPatch(patch)
+	if err := applyRAGPatch(patch); err != nil {
+		return err
 	}
+	applyPortForwardPatch(patch)
+	applyPushPatch(patch)
+	applySummarizePatch(patch)
 
-	if session, ok := patch["session"].(map[string]any); ok {
-		if v, ok := session["max_count"].(float64); ok {
-			cfg.Session.MaxCount = int(v)
-		}
-	}
-
-	if rp, ok := patch["recent_projects"].(map[string]any); ok {
-		if v, ok := rp["max_count"].(float64); ok {
-			cfg.RecentProjects.MaxCount = int(v)
-		}
-	}
-
-	if upload, ok := patch["upload"].(map[string]any); ok {
-		if v, ok := upload["max_size_mb"].(float64); ok {
-			cfg.Upload.MaxSizeMB = int(v)
-		}
-		if v, ok := upload["max_files"].(float64); ok {
-			cfg.Upload.MaxFiles = int(v)
-		}
-	}
-
-	if terminal, ok := patch["terminal"].(map[string]any); ok {
-		if v, ok := terminal["enabled"].(bool); ok {
-			cfg.Terminal.Enabled = v
-		}
-		if v, ok := terminal["idle_timeout"].(string); ok {
-			cfg.Terminal.IdleTimeout = v
-		}
-		if v, ok := terminal["max_sessions"].(float64); ok {
-			cfg.Terminal.MaxSessions = int(v)
-		}
-		if v, ok := terminal["buffer_lines"].(float64); ok {
-			cfg.Terminal.BufferLines = int(v)
-		}
-	}
-
-	if tts, ok := patch["tts"].(map[string]any); ok {
-		if v, ok := tts["engine"].(string); ok {
-			cfg.TTS.Engine = v
-		}
-		if v, ok := tts["tts_model"].(string); ok {
-			cfg.TTS.TTSModel = v
-		}
-		if v, ok := tts["format"].(string); ok {
-			cfg.TTS.Format = v
-		}
-		if v, ok := tts["speed"].(float64); ok {
-			cfg.TTS.Speed = v
-		}
-		if v, ok := tts["voice"].(string); ok {
-			cfg.TTS.Voice = v
-		}
-		if v, ok := tts["max_cache_files"].(float64); ok {
-			cfg.TTS.MaxCacheFiles = int(v)
-		}
-		// Piper sub-config
-		if piper, ok := tts["piper"].(map[string]any); ok {
-			if v, ok := piper["model_path"].(string); ok {
-				cfg.TTS.Piper.ModelPath = v
-			}
-			if v, ok := piper["noise_scale"].(float64); ok {
-				cfg.TTS.Piper.NoiseScale = v
-			}
-			if v, ok := piper["length_scale"].(float64); ok {
-				cfg.TTS.Piper.LengthScale = v
-			}
-			if v, ok := piper["sentence_silence"].(float64); ok {
-				cfg.TTS.Piper.SentenceSilence = v
-			}
-		}
-		// Kokoro sub-config
-		if kokoro, ok := tts["kokoro"].(map[string]any); ok {
-			if v, ok := kokoro["model_path"].(string); ok {
-				cfg.TTS.Kokoro.ModelPath = v
-			}
-			if v, ok := kokoro["voices_path"].(string); ok {
-				cfg.TTS.Kokoro.VoicesPath = v
-			}
-			if v, ok := kokoro["lang"].(string); ok {
-				cfg.TTS.Kokoro.Lang = v
-			}
-		}
-		// MossNano sub-config
-		if mossNano, ok := tts["moss_nano"].(map[string]any); ok {
-			if v, ok := mossNano["model_dir"].(string); ok {
-				cfg.TTS.MossNano.ModelDir = v
-			}
-			if v, ok := mossNano["prompt_speech"].(string); ok {
-				cfg.TTS.MossNano.PromptSpeech = v
-			}
-			if v, ok := mossNano["voice"].(string); ok {
-				cfg.TTS.MossNano.Voice = v
-			}
-			if v, ok := mossNano["backend"].(string); ok {
-				cfg.TTS.MossNano.Backend = v
-			}
-		}
-	}
-
-	if rag, ok := patch["rag"].(map[string]any); ok {
-		if v, ok := rag["base_url"].(string); ok {
-			cfg.RAG.BaseURL = v
-		}
-		if v, ok := rag["model"].(string); ok {
-			cfg.RAG.Model = v
-		}
-		if v, ok := rag["api_key"].(string); ok {
-			if strings.Contains(v, "***") {
-				return fmt.Errorf("rag.api_key must not contain '***' — please provide the full key value")
-			}
-			cfg.RAG.APIKey = v
-		}
-		if v, ok := rag["chunk_size"].(float64); ok {
-			cfg.RAG.ChunkSize = int(v)
-		}
-		if v, ok := rag["search_limit"].(float64); ok {
-			cfg.RAG.SearchLimit = int(v)
-		}
-		if v, ok := rag["search_pool_size"].(float64); ok {
-			cfg.RAG.SearchPoolSize = int(v)
-		}
-		if v, ok := rag["retention_days"].(float64); ok {
-			cfg.RAG.RetentionDays = int(v)
-		}
-	}
-
-	if pf, ok := patch["port_forward"].(map[string]any); ok {
-		if v, ok := pf["enabled"].(bool); ok {
-			cfg.PortForward.Enabled = v
-		}
-		if v, ok := pf["port"].(float64); ok {
-			cfg.PortForward.Port = int(v)
-		}
-	}
-
-	if push, ok := patch["push"].(map[string]any); ok {
-		if jpush, ok := push["jpush"].(map[string]any); ok {
-			if v, ok := jpush["enabled"].(bool); ok {
-				cfg.Push.JPush.Enabled = v
-			}
-			if v, ok := jpush["app_key"].(string); ok {
-				cfg.Push.JPush.AppKey = v
-			}
-			if v, ok := jpush["master_secret"].(string); ok {
-				cfg.Push.JPush.MasterSecret = v
-			}
-		}
-	}
-
-	if summarize, ok := patch["summarize"].(map[string]any); ok {
-		if v, ok := summarize["backend"].(string); ok {
-			cfg.Summarize.Backend = v
-		}
-		if v, ok := summarize["model"].(string); ok {
-			cfg.Summarize.Model = v
-		}
-		// Summarize API sub-config
-		if api, ok := summarize["api"].(map[string]any); ok {
-			if v, ok := api["base_url"].(string); ok {
-				cfg.Summarize.API.BaseURL = v
-			}
-			if v, ok := api["key"].(string); ok {
-				cfg.Summarize.API.Key = v
-			}
-			if v, ok := api["format"].(string); ok {
-				cfg.Summarize.API.Format = v
-			}
-		}
-	}
-
-	// Also update global variables for hot-reloadable fields
 	applyHotReloadGlobals()
 
 	return nil
+}
+
+func applyChatPatch(patch map[string]any) {
+	chat, ok := patch["chat"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := chat["collapsed_height"].(float64); ok {
+		cfg.Chat.CollapsedHeight = int(v)
+	}
+	if v, ok := chat["initial_messages"].(float64); ok {
+		cfg.Chat.InitialMessages = int(v)
+	}
+	if v, ok := chat["page_size"].(float64); ok {
+		cfg.Chat.PageSize = int(v)
+	}
+	if v, ok := chat["system_prompt_interval"].(float64); ok {
+		cfg.Chat.SystemPromptInterval = int(v)
+	}
+}
+
+func applySessionPatch(patch map[string]any) {
+	session, ok := patch["session"].(map[string]any)
+	if !ok {
+		return
+	}
+	if v, ok := session["max_count"].(float64); ok {
+		model.ConfigInstance.Session.MaxCount = int(v)
+	}
+}
+
+func applyRecentProjectsPatch(patch map[string]any) {
+	rp, ok := patch["recent_projects"].(map[string]any)
+	if !ok {
+		return
+	}
+	if v, ok := rp["max_count"].(float64); ok {
+		model.ConfigInstance.RecentProjects.MaxCount = int(v)
+	}
+}
+
+func applyUploadPatch(patch map[string]any) {
+	upload, ok := patch["upload"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := upload["max_size_mb"].(float64); ok {
+		cfg.Upload.MaxSizeMB = int(v)
+	}
+	if v, ok := upload["max_files"].(float64); ok {
+		cfg.Upload.MaxFiles = int(v)
+	}
+}
+
+func applyTerminalPatch(patch map[string]any) {
+	terminal, ok := patch["terminal"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := terminal["enabled"].(bool); ok {
+		cfg.Terminal.Enabled = v
+	}
+	if v, ok := terminal["idle_timeout"].(string); ok {
+		cfg.Terminal.IdleTimeout = v
+	}
+	if v, ok := terminal["max_sessions"].(float64); ok {
+		cfg.Terminal.MaxSessions = int(v)
+	}
+	if v, ok := terminal["buffer_lines"].(float64); ok {
+		cfg.Terminal.BufferLines = int(v)
+	}
+}
+
+func applyTTSPatch(patch map[string]any) {
+	tts, ok := patch["tts"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := tts["engine"].(string); ok {
+		cfg.TTS.Engine = v
+	}
+	if v, ok := tts["tts_model"].(string); ok {
+		cfg.TTS.TTSModel = v
+	}
+	if v, ok := tts["format"].(string); ok {
+		cfg.TTS.Format = v
+	}
+	if v, ok := tts["speed"].(float64); ok {
+		cfg.TTS.Speed = v
+	}
+	if v, ok := tts["voice"].(string); ok {
+		cfg.TTS.Voice = v
+	}
+	if v, ok := tts["max_cache_files"].(float64); ok {
+		cfg.TTS.MaxCacheFiles = int(v)
+	}
+	applyTTSPiperPatch(tts)
+	applyTTSKokoroPatch(tts)
+	applyTTSMossNanoPatch(tts)
+}
+
+func applyTTSPiperPatch(tts map[string]any) {
+	piper, ok := tts[jsonKeyPiper].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := piper["model_path"].(string); ok {
+		cfg.TTS.Piper.ModelPath = v
+	}
+	if v, ok := piper["noise_scale"].(float64); ok {
+		cfg.TTS.Piper.NoiseScale = v
+	}
+	if v, ok := piper["length_scale"].(float64); ok {
+		cfg.TTS.Piper.LengthScale = v
+	}
+	if v, ok := piper["sentence_silence"].(float64); ok {
+		cfg.TTS.Piper.SentenceSilence = v
+	}
+}
+
+func applyTTSKokoroPatch(tts map[string]any) {
+	kokoro, ok := tts["kokoro"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := kokoro["model_path"].(string); ok {
+		cfg.TTS.Kokoro.ModelPath = v
+	}
+	if v, ok := kokoro["voices_path"].(string); ok {
+		cfg.TTS.Kokoro.VoicesPath = v
+	}
+	if v, ok := kokoro["lang"].(string); ok {
+		cfg.TTS.Kokoro.Lang = v
+	}
+}
+
+func applyTTSMossNanoPatch(tts map[string]any) {
+	mossNano, ok := tts["moss_nano"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := mossNano["model_dir"].(string); ok {
+		cfg.TTS.MossNano.ModelDir = v
+	}
+	if v, ok := mossNano["prompt_speech"].(string); ok {
+		cfg.TTS.MossNano.PromptSpeech = v
+	}
+	if v, ok := mossNano["voice"].(string); ok {
+		cfg.TTS.MossNano.Voice = v
+	}
+	if v, ok := mossNano["backend"].(string); ok {
+		cfg.TTS.MossNano.Backend = v
+	}
+}
+
+func applyRAGPatch(patch map[string]any) error {
+	rag, ok := patch["rag"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := rag["base_url"].(string); ok {
+		cfg.RAG.BaseURL = v
+	}
+	if v, ok := rag["model"].(string); ok {
+		cfg.RAG.Model = v
+	}
+	if v, ok := rag["api_key"].(string); ok {
+		if strings.Contains(v, "***") {
+			return fmt.Errorf("rag.api_key must not contain '***' — please provide the full key value")
+		}
+		cfg.RAG.APIKey = v
+	}
+	if v, ok := rag["chunk_size"].(float64); ok {
+		cfg.RAG.ChunkSize = int(v)
+	}
+	if v, ok := rag["search_limit"].(float64); ok {
+		cfg.RAG.SearchLimit = int(v)
+	}
+	if v, ok := rag["search_pool_size"].(float64); ok {
+		cfg.RAG.SearchPoolSize = int(v)
+	}
+	if v, ok := rag["retention_days"].(float64); ok {
+		cfg.RAG.RetentionDays = int(v)
+	}
+	return nil
+}
+
+func applyPortForwardPatch(patch map[string]any) {
+	pf, ok := patch["port_forward"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := pf["enabled"].(bool); ok {
+		cfg.PortForward.Enabled = v
+	}
+	if v, ok := pf["port"].(float64); ok {
+		cfg.PortForward.Port = int(v)
+	}
+}
+
+func applyPushPatch(patch map[string]any) {
+	push, ok := patch["push"].(map[string]any)
+	if !ok {
+		return
+	}
+	jpush, ok := push["jpush"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, ok := jpush["enabled"].(bool); ok {
+		cfg.Push.JPush.Enabled = v
+	}
+	if v, ok := jpush["app_key"].(string); ok {
+		cfg.Push.JPush.AppKey = v
+	}
+	if v, ok := jpush["master_secret"].(string); ok {
+		cfg.Push.JPush.MasterSecret = v
+	}
+}
+
+func applySummarizePatch(patch map[string]any) {
+	summarize, ok := patch["summarize"].(map[string]any)
+	if !ok {
+		return
+	}
+	cfg := &model.ConfigInstance
+	if v, exists := summarize["backend"].(string); exists {
+		cfg.Summarize.Backend = v
+	}
+	if v, exists := summarize["model"].(string); exists {
+		cfg.Summarize.Model = v
+	}
+	api, ok := summarize[summarizeBackendAPI].(map[string]any)
+	if !ok {
+		return
+	}
+	if v, ok := api["base_url"].(string); ok {
+		cfg.Summarize.API.BaseURL = v
+	}
+	if v, ok := api["key"].(string); ok {
+		cfg.Summarize.API.Key = v
+	}
+	if v, ok := api["format"].(string); ok {
+		cfg.Summarize.API.Format = v
+	}
 }
 
 // applyHotReloadGlobals syncs the package-level "hot-reload" variables from
@@ -949,7 +1149,7 @@ func writeConfigYAML(patch map[string]any) error {
 	tmpPath := configPath + ".tmp"
 	bakPath := configPath + ".bak"
 
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0o755); err != nil { //nolint:gosec // intentionally permissive for user-accessible files/directories
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -962,7 +1162,7 @@ func writeConfigYAML(patch map[string]any) error {
 		}
 	} else {
 		// No existing file — marshal the full ConfigInstance as base
-		data, err := yaml.Marshal(&model.ConfigInstance)
+		data, err := yaml.Marshal(&model.ConfigInstance) //nolint:gosec // field name is for YAML config key, not a credential value
 		if err != nil {
 			return fmt.Errorf("failed to marshal initial config: %w", err)
 		}
@@ -986,12 +1186,12 @@ func writeConfigYAML(patch map[string]any) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil { //nolint:gosec // intentionally permissive for user-accessible files/directories
 		return fmt.Errorf("failed to write temp config: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, configPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename config file: %w", err)
 	}
 
@@ -1001,7 +1201,7 @@ func writeConfigYAML(patch map[string]any) error {
 // mergePatchIntoRaw merges the PATCH payload into the raw YAML map.
 // Only the leaf values present in the patch are updated; all other fields
 // in the raw map are preserved untouched.
-func mergePatchIntoRaw(raw map[string]any, patch map[string]any) {
+func mergePatchIntoRaw(raw, patch map[string]any) {
 	for key, value := range patch {
 		if nested, ok := value.(map[string]any); ok {
 			// Recursively merge nested maps
@@ -1049,8 +1249,8 @@ func ServeConfigPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "invalid_json",
-			"message": "failed to parse request body as JSON",
+			jsonKeyError:   "invalid_json",
+			jsonKeyMessage: "failed to parse request body as JSON",
 		})
 		return
 	}
@@ -1058,22 +1258,22 @@ func ServeConfigPassword(w http.ResponseWriter, r *http.Request) {
 	// Validate inputs
 	if req.CurrentPassword == "" || req.NewPassword == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "empty_password",
-			"message": "current_password and new_password are required",
+			jsonKeyError:   "empty_password",
+			jsonKeyMessage: "current_password and new_password are required",
 		})
 		return
 	}
 	if len(req.NewPassword) < 6 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "password_too_short",
-			"message": "new password must be at least 6 characters",
+			jsonKeyError:   "password_too_short",
+			jsonKeyMessage: "new password must be at least 6 characters",
 		})
 		return
 	}
 	if len(req.NewPassword) > 72 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "password_too_long",
-			"message": "new password must be at most 72 characters",
+			jsonKeyError:   "password_too_long",
+			jsonKeyMessage: "new password must be at most 72 characters",
 		})
 		return
 	}
@@ -1095,8 +1295,8 @@ func ServeConfigPassword(w http.ResponseWriter, r *http.Request) {
 	if !authenticated {
 		limiter.recordFailure(remoteIP)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
-			"error":   "wrong_password",
-			"message": "current password is incorrect",
+			jsonKeyError:   "wrong_password",
+			jsonKeyMessage: "current password is incorrect",
 		})
 		return
 	}
@@ -1124,15 +1324,15 @@ func ServeConfigPassword(w http.ResponseWriter, r *http.Request) {
 		model.ConfigInstance.Password = oldPassword
 		slog.Error("failed to write config.yaml after password change", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "write_failed",
-			"message": fmt.Sprintf("failed to write config.yaml: %v", err),
+			jsonKeyError:   "write_failed",
+			jsonKeyMessage: fmt.Sprintf("failed to write config.yaml: %v", err),
 		})
 		return
 	}
 
 	// Also remove the auto-password file (if any) since user has set an explicit password
 	autoPasswordFile := filepath.Join(model.BinDir, ".clawbench", "auto-password")
-	os.Remove(autoPasswordFile)
+	_ = os.Remove(autoPasswordFile)
 
 	// Update in-memory auth state so the change takes effect immediately
 	// (ISS-197 partial fix: password change should not require restart for auth)
@@ -1198,7 +1398,7 @@ func IsRunningUnderSupervisor() bool {
 }
 
 // joinArgs joins command-line args into a space-separated string with proper
-// shell quoting. Single quotes within args are escaped using the '\'' idiom.
+// shell quoting. Single quotes within args are escaped using the '\” idiom.
 func joinArgs(args []string) string {
 	var buf strings.Builder
 	for i, arg := range args {
@@ -1211,7 +1411,7 @@ func joinArgs(args []string) string {
 }
 
 // shellQuote wraps a string in single quotes, escaping any embedded single
-// quotes using the '\'' idiom safe for POSIX shells.
+// quotes using the '\” idiom safe for POSIX shells.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

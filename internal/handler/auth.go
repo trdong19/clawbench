@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
-
 	"clawbench/internal/middleware"
 	"clawbench/internal/model"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // --- HTTP login rate limiter (ISS-003c) ---
@@ -33,11 +33,11 @@ type loginLimiter struct {
 }
 
 const (
-	maxLoginFails    = 5
-	initialLoginBlock = 5 * time.Minute
-	maxLoginBlock     = 1 * time.Hour
+	maxLoginFails        = 5
+	initialLoginBlock    = 5 * time.Minute
+	maxLoginBlock        = 1 * time.Hour
 	loginCleanupInterval = 10 * time.Minute
-	loginRecordTTL    = 30 * time.Minute
+	loginRecordTTL       = 30 * time.Minute
 )
 
 var (
@@ -178,18 +178,19 @@ func ServeLogin(w http.ResponseWriter, r *http.Request) {
 
 		// Password verification (ISS-003a)
 		var authenticated bool
-		if model.SessionToken == "" {
+		switch {
+		case model.SessionToken == "":
 			// No password configured
 			authenticated = true
-		} else if model.PasswordIsSHA256 {
+		case model.PasswordIsSHA256:
 			// Password stored as SHA-256 hash — hash the submitted password and compare
 			hash := sha256.Sum256([]byte(body.Password + "clawbench-salt"))
 			candidate := hex.EncodeToString(hash[:])
 			authenticated = subtle.ConstantTimeCompare([]byte(candidate), []byte(model.SessionToken)) == 1
-		} else if model.PasswordHash != nil {
+		case model.PasswordHash != nil:
 			// bcrypt verification (plaintext password in config)
 			authenticated = bcrypt.CompareHashAndPassword(model.PasswordHash, []byte(body.Password)) == nil
-		} else {
+		default:
 			// No bcrypt hash available — bcrypt generation must have failed at startup.
 			// Reject the login rather than falling back to insecure comparison.
 			slog.Error("password hash not available, rejecting login", slog.String("remoteIP", remoteIP))
@@ -210,7 +211,7 @@ func ServeLogin(w http.ResponseWriter, r *http.Request) {
 				model.CookieToken = cookieToken
 				model.PersistCookieToken(cookieToken)
 			}
-			http.SetCookie(w, &http.Cookie{
+			http.SetCookie(w, &http.Cookie{ //nolint:gosec // local network only, no HTTPS; Secure flag would prevent functionality
 				Name:     model.SessionCookie,
 				Value:    cookieToken,
 				Path:     "/",
@@ -220,11 +221,11 @@ func ServeLogin(w http.ResponseWriter, r *http.Request) {
 				SameSite: http.SameSiteLaxMode,
 			})
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 		} else {
 			limiter.recordFailure(remoteIP)
 			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]bool{"ok": false})
+			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": false})
 		}
 		return
 	}

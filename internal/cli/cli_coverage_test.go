@@ -17,7 +17,7 @@ import (
 )
 
 // helper: start a test server and configure model.ConfigInstance.Port to match
-func setupTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+func setupTestServer(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -29,8 +29,6 @@ func setupTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	origCfg := model.ConfigInstance
 	t.Cleanup(func() { model.ConfigInstance = origCfg })
 	model.ConfigInstance = model.Config{Port: port}
-
-	return server
 }
 
 // captureStdout captures stdout during fn execution
@@ -55,8 +53,8 @@ func captureStdout(t *testing.T, fn func()) string {
 func TestFindConfigPath_BinDirConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, "config")
-	os.MkdirAll(configDir, 0755)
-	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("port: 12345"), 0644)
+	os.MkdirAll(configDir, 0o755)
+	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("port: 12345"), 0o644)
 
 	path := FindConfigPath(tmpDir)
 	assert.Equal(t, filepath.Join(tmpDir, "config", "config.yaml"), path)
@@ -123,7 +121,7 @@ func TestHTTPDo_PostWithBody(t *testing.T) {
 }
 
 func TestHTTPDo_NonJSONResp(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("not json"))
 	})
@@ -177,26 +175,26 @@ func TestRunList_ServerSuccess(t *testing.T) {
 	})
 
 	output := captureStdout(t, func() {
-		code := runList([]string{"--project", "/test"})
+		code := runList([]string{testFlagProject, "/test"})
 		assert.Equal(t, 0, code)
 	})
 	assert.Contains(t, output, "tasks")
 }
 
 func TestRunList_ServerError(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]any{"error": "internal"})
 	})
 
-	code := runList([]string{"--project", "/test"})
+	code := runList([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
 // ---------- runGet ----------
 
 func TestRunGet_MissingTaskID(t *testing.T) {
-	code := runGet([]string{"--project", "/test"})
+	code := runGet([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
@@ -213,7 +211,7 @@ func TestRunGet_ServerSuccess(t *testing.T) {
 	})
 
 	output := captureStdout(t, func() {
-		code := runGet([]string{"42", "--project", "/test"})
+		code := runGet([]string{"42", testFlagProject, "/test"})
 		assert.Equal(t, 0, code)
 	})
 	assert.Contains(t, output, "42")
@@ -222,7 +220,7 @@ func TestRunGet_ServerSuccess(t *testing.T) {
 // ---------- runListExec ----------
 
 func TestRunListExec_MissingTaskID(t *testing.T) {
-	code := runListExec([]string{"--project", "/test"})
+	code := runListExec([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
@@ -232,7 +230,7 @@ func TestRunListExec_MissingProject(t *testing.T) {
 }
 
 func TestRunListExec_InvalidLimit(t *testing.T) {
-	code := runListExec([]string{"1", "--project", "/test", "--limit", "0"})
+	code := runListExec([]string{"1", testFlagProject, "/test", "--limit", "0"})
 	assert.Equal(t, 1, code)
 }
 
@@ -244,7 +242,7 @@ func TestRunListExec_ServerSuccess(t *testing.T) {
 	})
 
 	output := captureStdout(t, func() {
-		code := runListExec([]string{"1", "--project", "/test", "--limit", "5"})
+		code := runListExec([]string{"1", testFlagProject, "/test", "--limit", "5"})
 		assert.Equal(t, 0, code)
 	})
 	assert.Contains(t, output, "executions")
@@ -253,12 +251,12 @@ func TestRunListExec_ServerSuccess(t *testing.T) {
 // ---------- runDeleteExec ----------
 
 func TestRunDeleteExec_MissingIDs(t *testing.T) {
-	code := runDeleteExec([]string{"--project", "/test"})
+	code := runDeleteExec([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
 func TestRunDeleteExec_MissingExecID(t *testing.T) {
-	code := runDeleteExec([]string{"1", "--project", "/test"})
+	code := runDeleteExec([]string{"1", testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
@@ -275,7 +273,7 @@ func TestRunDeleteExec_ServerSuccess(t *testing.T) {
 	})
 
 	output := captureStdout(t, func() {
-		code := runDeleteExec([]string{"1", "2", "--project", "/test"})
+		code := runDeleteExec([]string{"1", "2", testFlagProject, "/test"})
 		assert.Equal(t, 0, code)
 	})
 	assert.Contains(t, output, "ok")
@@ -302,7 +300,7 @@ func TestRunListAgents_ServerSuccess(t *testing.T) {
 }
 
 func TestRunListAgents_ServerError(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]any{"error": "fail"})
 	})
@@ -323,64 +321,64 @@ func TestRunListAgents_Unreachable(t *testing.T) {
 // ---------- runPause / runResume / runTrigger ----------
 
 func TestRunPause_MissingTaskID(t *testing.T) {
-	code := runPause([]string{"--project", "/test"})
+	code := runPause([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
 func TestRunResume_MissingTaskID(t *testing.T) {
-	code := runResume([]string{"--project", "/test"})
+	code := runResume([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
 func TestRunTrigger_MissingTaskID(t *testing.T) {
-	code := runTrigger([]string{"--project", "/test"})
+	code := runTrigger([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
 func TestRunPause_ServerSuccess(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
-	code := runPause([]string{"1", "--project", "/test"})
+	code := runPause([]string{"1", testFlagProject, "/test"})
 	assert.Equal(t, 0, code)
 }
 
 func TestRunResume_ServerSuccess(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
-	code := runResume([]string{"1", "--project", "/test"})
+	code := runResume([]string{"1", testFlagProject, "/test"})
 	assert.Equal(t, 0, code)
 }
 
 func TestRunTrigger_ServerSuccess(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
-	code := runTrigger([]string{"1", "--project", "/test"})
+	code := runTrigger([]string{"1", testFlagProject, "/test"})
 	assert.Equal(t, 0, code)
 }
 
 // ---------- runDelete ----------
 
 func TestRunDelete_MissingTaskID(t *testing.T) {
-	code := runDelete([]string{"--project", "/test"})
+	code := runDelete([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
 func TestRunDelete_ServerSuccess(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
-	code := runDelete([]string{"1", "--project", "/test"})
+	code := runDelete([]string{"1", testFlagProject, "/test"})
 	assert.Equal(t, 0, code)
 }
 
@@ -390,12 +388,12 @@ func TestRunUpdate_ScheduledBlock(t *testing.T) {
 	os.Setenv("CLAWBENCH_SCHEDULED", "1")
 	defer os.Unsetenv("CLAWBENCH_SCHEDULED")
 
-	code := runUpdate([]string{"1", "--project", "/test"})
+	code := runUpdate([]string{"1", testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
 func TestRunUpdate_MissingTaskID(t *testing.T) {
-	code := runUpdate([]string{"--project", "/test"})
+	code := runUpdate([]string{testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
@@ -414,27 +412,27 @@ func TestRunCreate_ServerSuccess(t *testing.T) {
 	})
 
 	code := runCreate([]string{
-		"--name", "Test",
-		"--cron", "0 9 * * *",
-		"--agent", "codebuddy",
-		"--prompt", "hello",
-		"--project", "/test",
+		testFlagName, "Test",
+		testFlagCron, "0 9 * * *",
+		testFlagAgent, "codebuddy",
+		testFlagPrompt, "hello",
+		testFlagProject, "/test",
 	})
 	assert.Equal(t, 0, code)
 }
 
 func TestRunCreate_ServerError(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{"error": "bad request"})
 	})
 
 	code := runCreate([]string{
-		"--name", "Test",
-		"--cron", "0 9 * * *",
-		"--agent", "codebuddy",
-		"--prompt", "hello",
-		"--project", "/test",
+		testFlagName, "Test",
+		testFlagCron, "0 9 * * *",
+		testFlagAgent, "codebuddy",
+		testFlagPrompt, "hello",
+		testFlagProject, "/test",
 	})
 	assert.Equal(t, 1, code)
 }
@@ -442,18 +440,18 @@ func TestRunCreate_ServerError(t *testing.T) {
 // ---------- runCreate with repeat limited + max-runs ----------
 
 func TestRunCreate_LimitedRepeatWithMaxRuns(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": 1})
 	})
 
 	code := runCreate([]string{
-		"--name", "Test",
-		"--cron", "0 9 * * *",
-		"--agent", "codebuddy",
-		"--prompt", "hello",
-		"--project", "/test",
-		"--repeat", "limited",
+		testFlagName, "Test",
+		testFlagCron, "0 9 * * *",
+		testFlagAgent, "codebuddy",
+		testFlagPrompt, "hello",
+		testFlagProject, "/test",
+		testFlagRepeat, "limited",
 		"--max-runs", "5",
 	})
 	assert.Equal(t, 0, code)
@@ -462,18 +460,18 @@ func TestRunCreate_LimitedRepeatWithMaxRuns(t *testing.T) {
 // ---------- runCreate with unlimited repeat ----------
 
 func TestRunCreate_UnlimitedRepeat(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": 1})
 	})
 
 	code := runCreate([]string{
-		"--name", "Test",
-		"--cron", "0 9 * * *",
-		"--agent", "codebuddy",
-		"--prompt", "hello",
-		"--project", "/test",
-		"--repeat", "unlimited",
+		testFlagName, "Test",
+		testFlagCron, "0 9 * * *",
+		testFlagAgent, "codebuddy",
+		testFlagPrompt, "hello",
+		testFlagProject, "/test",
+		testFlagRepeat, "unlimited",
 	})
 	assert.Equal(t, 0, code)
 }
@@ -481,25 +479,25 @@ func TestRunCreate_UnlimitedRepeat(t *testing.T) {
 // ---------- runCreate once (default) ----------
 
 func TestRunCreate_OnceRepeat(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": 1})
 	})
 
 	code := runCreate([]string{
-		"--name", "Test",
-		"--cron", "0 9 * * *",
-		"--agent", "codebuddy",
-		"--prompt", "hello",
-		"--project", "/test",
-		"--repeat", "once",
+		testFlagName, "Test",
+		testFlagCron, "0 9 * * *",
+		testFlagAgent, "codebuddy",
+		testFlagPrompt, "hello",
+		testFlagProject, "/test",
+		testFlagRepeat, "once",
 	})
 	assert.Equal(t, 0, code)
 }
 
 // ---------- fmt.Sprintf used ----------
 
-func TestCLIHelpers_FmtUsed(t *testing.T) {
+func TestCLIHelpers_FmtUsed(_ *testing.T) {
 	// Ensure fmt import is used
 	_ = fmt.Sprintf("test %d", 1)
 }
@@ -525,29 +523,29 @@ func TestRunUpdate_ServerSuccess(t *testing.T) {
 
 	code := runUpdate([]string{
 		"1",
-		"--name", "NewName",
-		"--cron", "0 * * * *",
-		"--agent", "claude",
-		"--prompt", "new prompt",
-		"--repeat", "limited",
+		testFlagName, "NewName",
+		testFlagCron, "0 * * * *",
+		testFlagAgent, "claude",
+		testFlagPrompt, "new prompt",
+		testFlagRepeat, "limited",
 		"--max-runs", "10",
-		"--project", "/test",
+		testFlagProject, "/test",
 	})
 	assert.Equal(t, 0, code)
 }
 
 func TestRunUpdate_InvalidRepeat(t *testing.T) {
-	code := runUpdate([]string{"1", "--repeat", "bad", "--project", "/test"})
+	code := runUpdate([]string{"1", testFlagRepeat, "bad", testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
 func TestRunUpdate_ServerError(t *testing.T) {
-	setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	setupTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]any{"error": "fail"})
 	})
 
-	code := runUpdate([]string{"1", "--name", "X", "--project", "/test"})
+	code := runUpdate([]string{"1", testFlagName, "X", testFlagProject, "/test"})
 	assert.Equal(t, 1, code)
 }
 
@@ -563,8 +561,8 @@ func TestLoadConfig_FromFile(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, "config")
-	os.MkdirAll(configDir, 0755)
-	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("port: 12345\nwatch_dir: /tmp"), 0644)
+	os.MkdirAll(configDir, 0o755)
+	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("port: 12345\nwatch_dir: /tmp"), 0o644)
 
 	// loadConfig() reads os.Args[0] to compute BinDir, then calls FindConfigPath.
 	// Since we can't easily control os.Args[0] in tests, just test that
@@ -584,10 +582,10 @@ func TestLoadConfig_FromFile(t *testing.T) {
 
 func TestRunCreate_NoCron(t *testing.T) {
 	code := runCreate([]string{
-		"--name", "Test",
-		"--agent", "codebuddy",
-		"--prompt", "hello",
-		"--project", "/test",
+		testFlagName, "Test",
+		testFlagAgent, "codebuddy",
+		testFlagPrompt, "hello",
+		testFlagProject, "/test",
 	})
 	assert.Equal(t, 1, code) // missing --cron
 }

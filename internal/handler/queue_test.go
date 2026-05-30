@@ -103,7 +103,7 @@ func TestQueueHandler_Enqueue_InvalidJSON(t *testing.T) {
 	defer teardown()
 
 	sessionID := "q-enqueue-badjson"
-	req := httptest.NewRequest(http.MethodPost, "/api/ai/queue?session_id="+sessionID, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/queue?session_id="+sessionID, http.NoBody)
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: "clawbench_project", Value: env.ProjectDir})
 	w := callHandler(QueueHandler, req)

@@ -17,6 +17,7 @@ clawbench-dev
 dev-clawbench
 coverage.out
 coverage/
+*.test
 
 # Runtime
 nohup.out

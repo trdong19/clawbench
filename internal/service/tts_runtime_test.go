@@ -95,20 +95,20 @@ func TestSendTTSEvent_Success(t *testing.T) {
 
 	job := RegisterTTSJob("tts-send", cancel)
 
-	event := TTSEvent{Type: "phase", Phase: "summarizing"}
+	event := TTSEvent{Type: TTSEventTypePhase, Phase: "summarizing"}
 	sent := SendTTSEvent("tts-send", event)
 	assert.True(t, sent)
 
 	// Verify the event was sent
 	received := <-job.StreamCh
-	assert.Equal(t, "phase", received.Type)
+	assert.Equal(t, TTSEventTypePhase, received.Type)
 	assert.Equal(t, "summarizing", received.Phase)
 }
 
 func TestSendTTSEvent_JobNotFound(t *testing.T) {
 	cleanupTTSJobs()
 
-	sent := SendTTSEvent("nonexistent", TTSEvent{Type: "phase"})
+	sent := SendTTSEvent("nonexistent", TTSEvent{Type: TTSEventTypePhase})
 	assert.False(t, sent)
 }
 
@@ -122,13 +122,13 @@ func TestSendTTSEvent_FullChannel(t *testing.T) {
 	RegisterTTSJob("tts-full", cancel)
 
 	// Fill the channel buffer (capacity is 16)
-	for i := 0; i < 16; i++ {
-		sent := SendTTSEvent("tts-full", TTSEvent{Type: "phase", Phase: "step"})
+	for range 16 {
+		sent := SendTTSEvent("tts-full", TTSEvent{Type: TTSEventTypePhase, Phase: "step"})
 		assert.True(t, sent)
 	}
 
 	// Next send should fail (non-blocking)
-	sent := SendTTSEvent("tts-full", TTSEvent{Type: "result"})
+	sent := SendTTSEvent("tts-full", TTSEvent{Type: TTSEventTypeResult})
 	assert.False(t, sent, "SendTTSEvent should return false when channel is full")
 }
 
@@ -221,7 +221,7 @@ func TestTTSJob_ResultEvent(t *testing.T) {
 	job := RegisterTTSJob("tts-result", cancel)
 
 	event := TTSEvent{
-		Type:             "result",
+		Type:             TTSEventTypeResult,
 		AudioPath:        "/tmp/audio.mp3",
 		Summary:          "AI response summary",
 		SynthesizeFailed: false,
@@ -230,7 +230,7 @@ func TestTTSJob_ResultEvent(t *testing.T) {
 	assert.True(t, sent)
 
 	received := <-job.StreamCh
-	assert.Equal(t, "result", received.Type)
+	assert.Equal(t, TTSEventTypeResult, received.Type)
 	assert.Equal(t, "/tmp/audio.mp3", received.AudioPath)
 	assert.Equal(t, "AI response summary", received.Summary)
 	assert.False(t, received.SynthesizeFailed)
@@ -246,7 +246,7 @@ func TestTTSJob_FailedResultEvent(t *testing.T) {
 	job := RegisterTTSJob("tts-fail", cancel)
 
 	event := TTSEvent{
-		Type:             "result",
+		Type:             TTSEventTypeResult,
 		SynthesizeFailed: true,
 		SynthesizeError:  "TTS engine unavailable",
 	}

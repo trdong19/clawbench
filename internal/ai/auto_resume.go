@@ -48,9 +48,9 @@ func (b *AutoResumeBackend) ExecuteStream(ctx context.Context, req ChatRequest) 
 // If no ExitPlanMode is detected, acts as a transparent proxy.
 // The "done" event is always forwarded to the outer channel so that
 // downstream handlers can detect stream completion explicitly.
-func (b *AutoResumeBackend) mergeStreams(
+func (b *AutoResumeBackend) mergeStreams( //nolint:gocyclo,gocognit // 复杂的 stream 解析逻辑
 	ctx context.Context,
-	innerCtx context.Context,
+	innerCtx context.Context, //nolint:unparam // kept for future use in resume logic
 	innerCancel context.CancelFunc,
 	origReq ChatRequest,
 	innerCh <-chan StreamEvent,
@@ -69,14 +69,14 @@ func (b *AutoResumeBackend) mergeStreams(
 				// No explicit "done" event was received (the CLIBackend may close
 				// the channel after metadata without emitting "done" in some cases).
 				// Emit "done" ourselves so the downstream handler can finalize.
-				forwardEvent(outerCh, StreamEvent{Type: "done"})
+				forwardEvent(outerCh, StreamEvent{Type: "done"}) //nolint:goconst // JSON 字段名/协议字符串
 				return
 			}
 
 			// Detect ExitPlanMode: CLI hangs in --print mode because
 			// ExitPlanMode requires user approval, but there is no interactive UI.
 			if !exitPlanModeDetected &&
-				event.Type == "tool_use" && event.Tool != nil &&
+				event.Type == "tool_use" && event.Tool != nil && //nolint:goconst // JSON 字段名/协议字符串
 				event.Tool.Name == "ExitPlanMode" && event.Tool.Done {
 				exitPlanModeDetected = true
 				slog.Info("ExitPlanMode detected, cancelling CLI to auto-resume",
@@ -93,7 +93,7 @@ func (b *AutoResumeBackend) mergeStreams(
 				// Drain remaining events from the first stream
 				// (captures raw_output, suppresses "done")
 				for drainEvent := range innerCh {
-					if drainEvent.Type == "raw_output" {
+					if drainEvent.Type == "raw_output" { //nolint:goconst // JSON 字段名/协议字符串
 						forwardEvent(outerCh, drainEvent)
 					}
 					// Suppress "done" and other events from the cancelled stream
@@ -177,7 +177,8 @@ func forwardEvent(ch chan<- StreamEvent, event StreamEvent) {
 	select {
 	case ch <- event:
 	default:
-		slog.Warn("auto_resume: event dropped — channel full",
+		slog.Warn(
+			"auto_resume: event dropped — channel full",
 			slog.String("type", event.Type),
 		)
 	}

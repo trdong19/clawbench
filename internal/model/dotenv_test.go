@@ -6,6 +6,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	testEnvKey        = "KEY"
+	testEnvHelloWorld = "hello world"
 )
 
 func TestParseEnvLine(t *testing.T) {
@@ -16,17 +22,17 @@ func TestParseEnvLine(t *testing.T) {
 		wantValue string
 		wantErr   bool
 	}{
-		{"simple", "KEY=value", "KEY", "value", false},
-		{"quoted double", `KEY="hello world"`, "KEY", "hello world", false},
-		{"quoted single", `KEY='hello world'`, "KEY", "hello world", false},
-		{"empty value", "KEY=", "KEY", "", false},
-		{"value with spaces", "KEY=hello world", "KEY", "hello world", false},
-		{"inline comment", "KEY=value # comment", "KEY", "value", false},
+		{"simple", testEnvKey + "=value", testEnvKey, "value", false},
+		{"quoted double", testEnvKey + `="hello world"`, testEnvKey, testEnvHelloWorld, false},
+		{"quoted single", testEnvKey + `='hello world'`, testEnvKey, testEnvHelloWorld, false},
+		{"empty value", testEnvKey + "=", testEnvKey, "", false},
+		{"value with spaces", testEnvKey + "=hello world", testEnvKey, testEnvHelloWorld, false},
+		{"inline comment", testEnvKey + "=value # comment", testEnvKey, "value", false},
 		{"no equals", "KEYVALUE", "", "", true},
 		{"equals at start", "=value", "", "", true},
 		{"underscores", "MY_KEY=my_value", "MY_KEY", "my_value", false},
-		{"quoted with equals", `KEY="a=b"`, "KEY", "a=b", false},
-		{"quoted empty", `KEY=""`, "KEY", "", false},
+		{"quoted with equals", testEnvKey + `="a=b"`, testEnvKey, "a=b", false},
+		{"quoted empty", testEnvKey + `=""`, testEnvKey, "", false},
 		{"number value", "PORT=3000", "PORT", "3000", false},
 	}
 
@@ -57,14 +63,14 @@ PORT=3000
 DB_URL="postgres://localhost:5432/mydb"
 EMPTY_VAR=
 `
-	err := os.WriteFile(envPath, []byte(content), 0644)
+	err := os.WriteFile(envPath, []byte(content), 0o600)
 	assert.NoError(t, err)
 
 	// Clear any existing values
-	os.Unsetenv("API_KEY")
-	os.Unsetenv("PORT")
-	os.Unsetenv("DB_URL")
-	os.Unsetenv("EMPTY_VAR")
+	require.NoError(t, os.Unsetenv("API_KEY"))
+	require.NoError(t, os.Unsetenv("PORT"))
+	require.NoError(t, os.Unsetenv("DB_URL"))
+	require.NoError(t, os.Unsetenv("EMPTY_VAR"))
 
 	err = LoadDotEnv(envPath)
 	assert.NoError(t, err)
@@ -84,7 +90,7 @@ func TestLoadDotEnvInvalidLine(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
 
-	err := os.WriteFile(envPath, []byte("INVALID_LINE_NO_EQUALS\n"), 0644)
+	err := os.WriteFile(envPath, []byte("INVALID_LINE_NO_EQUALS\n"), 0o600)
 	assert.NoError(t, err)
 
 	err = LoadDotEnv(envPath)
@@ -101,10 +107,10 @@ func TestLoadDotEnv_InheritableBySubprocess(t *testing.T) {
 	key := "CLAWBENCH_TEST_DOTENV_KEY"
 	value := "test-value-from-dotenv"
 
-	os.Unsetenv(key)
-	t.Cleanup(func() { os.Unsetenv(key) })
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() { require.NoError(t, os.Unsetenv(key)) })
 
-	err := os.WriteFile(envPath, []byte(key+"="+value+"\n"), 0644)
+	err := os.WriteFile(envPath, []byte(key+"="+value+"\n"), 0o600)
 	assert.NoError(t, err)
 
 	err = LoadDotEnv(envPath)
@@ -130,10 +136,10 @@ func TestLoadDotEnv_OverwritesExisting(t *testing.T) {
 	envPath := filepath.Join(dir, ".env")
 
 	key := "CLAWBENCH_TEST_OVERWRITE_KEY"
-	os.Setenv(key, "old-value")
-	t.Cleanup(func() { os.Unsetenv(key) })
+	require.NoError(t, os.Setenv(key, "old-value"))
+	t.Cleanup(func() { require.NoError(t, os.Unsetenv(key)) })
 
-	err := os.WriteFile(envPath, []byte(key+"=new-value\n"), 0644)
+	err := os.WriteFile(envPath, []byte(key+"=new-value\n"), 0o600)
 	assert.NoError(t, err)
 
 	err = LoadDotEnv(envPath)

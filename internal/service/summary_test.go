@@ -19,7 +19,7 @@ import (
 // --- AsyncSummarize tests ---
 
 // setupTestDBForAsyncSummary creates an in-memory DB with summaries table
-func setupTestDBForAsyncSummary(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForAsyncSummary(t *testing.T) (db *sql.DB, cleanup func()) {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -29,10 +29,10 @@ func setupTestDBForAsyncSummary(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS summaries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			target_type TEXT NOT NULL,
@@ -51,7 +51,7 @@ func setupTestDBForAsyncSummary(t *testing.T) (*sql.DB, func()) {
 	teardown := func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
 	return db, teardown
 }
@@ -64,7 +64,7 @@ type mockAsyncSummarizerBackend struct {
 
 func (m *mockAsyncSummarizerBackend) Name() string { return "mock-async" }
 
-func (m *mockAsyncSummarizerBackend) ExecuteStream(ctx context.Context, req ai.ChatRequest) (<-chan ai.StreamEvent, error) {
+func (m *mockAsyncSummarizerBackend) ExecuteStream(_ context.Context, _ ai.ChatRequest) (<-chan ai.StreamEvent, error) {
 	if m.executeErr != nil {
 		return nil, m.executeErr
 	}
@@ -80,13 +80,13 @@ func TestAsyncSummarize_ShortText(t *testing.T) {
 
 	// Create a TaskSummarizer with mock backend
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: StreamTypeDone}
 	close(ch)
 	mock := &mockAsyncSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
 
 	// Short text block — should save empty summary
-	blocks := []model.ContentBlock{{Type: "text", Text: "短"}}
+	blocks := []model.ContentBlock{{Type: BlockTypeText, Text: "短"}}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -112,15 +112,15 @@ func TestAsyncSummarize_NormalText(t *testing.T) {
 
 	// Create mock backend that returns a summary
 	ch := make(chan ai.StreamEvent, 3)
-	ch <- ai.StreamEvent{Type: "content", Content: "## 精简总结\n\n关键结论。"}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: StreamTypeContent, Content: "## 精简总结\n\n关键结论。"}
+	ch <- ai.StreamEvent{Type: StreamTypeDone}
 	close(ch)
 	mock := &mockAsyncSummarizerBackend{streamCh: ch}
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
 
 	// Long text block
 	longText := strings.Repeat("这是一段较长的AI回复内容。", 30)
-	blocks := []model.ContentBlock{{Type: "text", Text: longText}}
+	blocks := []model.ContentBlock{{Type: BlockTypeText, Text: longText}}
 
 	AsyncSummarize("chat_message", 2, blocks, "/test", "session-2")
 
@@ -142,7 +142,7 @@ func TestAsyncSummarize_NilSummarizer(t *testing.T) {
 	// nil summarizer — should return immediately, no goroutine
 	taskSummarizerInstance = nil
 
-	blocks := []model.ContentBlock{{Type: "text", Text: "some text"}}
+	blocks := []model.ContentBlock{{Type: BlockTypeText, Text: "some text"}}
 
 	// Should not panic or create goroutine
 	AsyncSummarize("chat_message", 3, blocks, "/test", "session-3")
@@ -166,7 +166,7 @@ func TestAsyncSummarize_BackendError(t *testing.T) {
 	taskSummarizerInstance = &summarize.TaskSummarizer{Backend: mock}
 
 	longText := strings.Repeat("这是一段较长的AI回复内容。", 30)
-	blocks := []model.ContentBlock{{Type: "text", Text: longText}}
+	blocks := []model.ContentBlock{{Type: BlockTypeText, Text: longText}}
 
 	AsyncSummarize("chat_message", 4, blocks, "/test", "session-4")
 

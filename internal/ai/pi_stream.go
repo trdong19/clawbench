@@ -16,52 +16,52 @@ type PiStreamMessage struct {
 
 	// message_update event
 	AssistantMessageEvent *PiAssistantMessageEvent `json:"assistantMessageEvent,omitempty"`
-	Message               *PiMessage                `json:"message,omitempty"`
+	Message               *PiMessage               `json:"message,omitempty"`
 
 	// tool_execution_start / tool_execution_end
-	ToolCallID string    `json:"toolCallId,omitempty"`
-	ToolName   string    `json:"toolName,omitempty"`
+	ToolCallID string          `json:"toolCallId,omitempty"`
+	ToolName   string          `json:"toolName,omitempty"`
 	Args       json.RawMessage `json:"args,omitempty"`
-	Result     *PiToolResult `json:"result,omitempty"`
-	IsError    bool      `json:"isError,omitempty"`
+	Result     *PiToolResult   `json:"result,omitempty"`
+	IsError    bool            `json:"isError,omitempty"`
 }
 
 // PiAssistantMessageEvent represents the assistantMessageEvent field
 // in a message_update event from Pi.
 type PiAssistantMessageEvent struct {
-	Type         string          `json:"type"`         // "thinking_start", "thinking_delta", "thinking_end", "text_start", "text_delta", "text_end", "toolcall_start", "toolcall_delta", "toolcall_end"
-	ContentIndex int             `json:"contentIndex"` // index into the message content array
-	Delta        string          `json:"delta"`        // incremental content for thinking_delta / text_delta / toolcall_delta
-	ToolCall     *PiToolCallEnd  `json:"toolCall"`     // populated on toolcall_end
+	Type         string         `json:"type"`         // "thinking_start", "thinking_delta", "thinking_end", "text_start", "text_delta", "text_end", "toolcall_start", "toolcall_delta", "toolcall_end"
+	ContentIndex int            `json:"contentIndex"` // index into the message content array
+	Delta        string         `json:"delta"`        // incremental content for thinking_delta / text_delta / toolcall_delta
+	ToolCall     *PiToolCallEnd `json:"toolCall"`     // populated on toolcall_end
 }
 
 // PiMessage represents the message field in Pi stream events.
 type PiMessage struct {
-	Role    string          `json:"role"`              // "assistant"
-	Content json.RawMessage `json:"content,omitempty"` // array of content items (for toolcall_start/delta)
-	Usage   *PiUsage        `json:"usage,omitempty"`
-	StopReason   string `json:"stopReason,omitempty"`
-	ErrorMessage string `json:"errorMessage,omitempty"`
-	ResponseID   string `json:"responseId,omitempty"`
+	Role         string          `json:"role"`              // "assistant"
+	Content      json.RawMessage `json:"content,omitempty"` // array of content items (for toolcall_start/delta)
+	Usage        *PiUsage        `json:"usage,omitempty"`
+	StopReason   string          `json:"stopReason,omitempty"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
+	ResponseID   string          `json:"responseId,omitempty"`
 }
 
 // PiUsage represents token usage and cost information.
 type PiUsage struct {
-	Input       int       `json:"input"`
-	Output      int       `json:"output"`
-	CacheRead   int       `json:"cacheRead"`
-	CacheWrite  int       `json:"cacheWrite"`
-	TotalTokens int       `json:"totalTokens"`
-	Cost        *PiCost   `json:"cost"`
+	Input       int     `json:"input"`
+	Output      int     `json:"output"`
+	CacheRead   int     `json:"cacheRead"`
+	CacheWrite  int     `json:"cacheWrite"`
+	TotalTokens int     `json:"totalTokens"`
+	Cost        *PiCost `json:"cost"`
 }
 
 // PiCost represents cost breakdown.
 type PiCost struct {
-	Input     float64 `json:"input"`
-	Output    float64 `json:"output"`
-	CacheRead float64 `json:"cacheRead"`
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cacheRead"`
 	CacheWrite float64 `json:"cacheWrite"`
-	Total     float64 `json:"total"`
+	Total      float64 `json:"total"`
 }
 
 // PiToolCallEnd represents the toolCall field in a toolcall_end event.
@@ -125,7 +125,7 @@ func (p *PiStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 		p.parseToolExecutionEnd(&msg, ch)
 
 	case "agent_end":
-		ch <- StreamEvent{Type: "done"}
+		ch <- StreamEvent{Type: "done"} //nolint:goconst // JSON 字段名/协议字符串
 
 	default:
 		slog.Debug("pi stream: skipping unknown message type", "type", msg.Type)
@@ -143,12 +143,12 @@ func (p *PiStreamParser) parseMessageUpdate(msg *PiStreamMessage, ch chan<- Stre
 	switch evt.Type {
 	case "thinking_delta":
 		if evt.Delta != "" {
-			ch <- StreamEvent{Type: "thinking", Content: evt.Delta}
+			ch <- StreamEvent{Type: "thinking", Content: evt.Delta} //nolint:goconst // JSON 字段名/协议字符串
 		}
 
 	case "text_delta":
 		if evt.Delta != "" {
-			ch <- StreamEvent{Type: "content", Content: evt.Delta}
+			ch <- StreamEvent{Type: "content", Content: evt.Delta} //nolint:goconst // JSON 字段名/协议字符串
 		}
 
 	case "toolcall_start", "toolcall_delta":
@@ -159,7 +159,7 @@ func (p *PiStreamParser) parseMessageUpdate(msg *PiStreamMessage, ch chan<- Stre
 	case "toolcall_end":
 		if evt.ToolCall != nil {
 			normalizedInput := normalizePiInput(evt.ToolCall.Name, evt.ToolCall.Arguments)
-			ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{
+			ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{ //nolint:goconst // JSON 字段名/协议字符串
 				Name:  normalizeToolName(evt.ToolCall.Name),
 				ID:    evt.ToolCall.ID,
 				Input: normalizedInput,
@@ -186,7 +186,7 @@ func (p *PiStreamParser) parseMessageEnd(msg *PiStreamMessage, ch chan<- StreamE
 		if m.Usage.Cost != nil {
 			costUSD = m.Usage.Cost.Total
 		}
-		ch <- StreamEvent{Type: "metadata", Meta: &Metadata{
+		ch <- StreamEvent{Type: "metadata", Meta: &Metadata{ //nolint:goconst // JSON 字段名/协议字符串
 			InputTokens:  m.Usage.Input,
 			OutputTokens: m.Usage.Output,
 			CostUSD:      costUSD,
@@ -195,7 +195,7 @@ func (p *PiStreamParser) parseMessageEnd(msg *PiStreamMessage, ch chan<- StreamE
 	}
 
 	// Emit error if stopReason is "error"
-	if m.StopReason == "error" {
+	if m.StopReason == "error" { //nolint:goconst // JSON 字段名/协议字符串
 		errMsg := m.ErrorMessage
 		if errMsg == "" {
 			errMsg = "unknown error"
@@ -215,7 +215,7 @@ func (p *PiStreamParser) parseToolExecutionEnd(msg *PiStreamMessage, ch chan<- S
 	if msg.Result != nil {
 		var parts []string
 		for _, c := range msg.Result.Content {
-			if c.Type == "text" && c.Text != "" {
+			if c.Type == "text" && c.Text != "" { //nolint:goconst // JSON 字段名/协议字符串
 				parts = append(parts, c.Text)
 			}
 		}
@@ -224,12 +224,12 @@ func (p *PiStreamParser) parseToolExecutionEnd(msg *PiStreamMessage, ch chan<- S
 		}
 	}
 
-	status := "success"
+	status := "success" //nolint:goconst // JSON 字段名/协议字符串
 	if msg.IsError {
 		status = "error"
 	}
 
-	ch <- StreamEvent{Type: "tool_result", Tool: &ToolCall{
+	ch <- StreamEvent{Type: "tool_result", Tool: &ToolCall{ //nolint:goconst // JSON 字段名/协议字符串
 		ID:     msg.ToolCallID,
 		Output: truncateToolOutput(outputText),
 		Status: status,
@@ -253,7 +253,7 @@ func normalizePiInput(toolName string, rawInput json.RawMessage) string {
 
 	switch toolName {
 	case "read", "write":
-		remaps["path"] = "file_path"
+		remaps["path"] = "file_path" //nolint:goconst // JSON 字段名/协议字符串
 	case "edit":
 		remaps["path"] = "file_path"
 		// Handle edits array: remap oldText→old_string, newText→new_string

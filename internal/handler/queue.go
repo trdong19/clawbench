@@ -70,8 +70,8 @@ func handleQueueEnqueue(w http.ResponseWriter, r *http.Request) {
 
 	queue := service.EnqueueMessage(sessionID, qMsg)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":    true,
-		"queue": queue,
+		"ok":         true,
+		jsonKeyQueue: queue,
 	})
 }
 
@@ -99,7 +99,7 @@ func handleQueueGet(w http.ResponseWriter, r *http.Request) {
 		queue = []model.QueuedMessage{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"queue": queue,
+		jsonKeyQueue: queue,
 	})
 }
 
@@ -142,7 +142,7 @@ func handleQueueDelete(w http.ResponseWriter, r *http.Request) {
 		queue = []model.QueuedMessage{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":    true,
-		"queue": queue,
+		"ok":         true,
+		jsonKeyQueue: queue,
 	})
 }

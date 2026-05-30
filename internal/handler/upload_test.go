@@ -217,7 +217,7 @@ func TestUploadFile_CustomDir(t *testing.T) {
 
 		// Create a subdirectory to upload into
 		subDir := filepath.Join(env.ProjectDir, "subdir")
-		os.MkdirAll(subDir, 0755)
+		os.MkdirAll(subDir, 0o755)
 
 		req := createMultipartUploadRequest(t, "test.txt", "custom dir content", "subdir")
 		withProjectCookie(req, env.ProjectDir)
@@ -282,7 +282,7 @@ func TestUploadFile_CustomDir(t *testing.T) {
 		defer teardown()
 
 		subDir := filepath.Join(env.ProjectDir, "mydir")
-		os.MkdirAll(subDir, 0755)
+		os.MkdirAll(subDir, 0o755)
 
 		// First upload
 		req1 := createMultipartUploadRequest(t, "dup.txt", "first", "mydir")
@@ -308,7 +308,7 @@ func TestUploadFile_CustomDir(t *testing.T) {
 
 		// Create nested directory
 		nestedDir := filepath.Join(env.ProjectDir, "a", "b", "c")
-		os.MkdirAll(nestedDir, 0755)
+		os.MkdirAll(nestedDir, 0o755)
 
 		req := createMultipartUploadRequest(t, "deep.txt", "deep content", "a/b/c")
 		withProjectCookie(req, env.ProjectDir)
@@ -328,7 +328,7 @@ func TestUploadFile_CustomDir(t *testing.T) {
 
 		// Create a subdirectory
 		subDir := filepath.Join(env.ProjectDir, "absdir")
-		os.MkdirAll(subDir, 0755)
+		os.MkdirAll(subDir, 0o755)
 
 		// Use absolute path for dir
 		req := createMultipartUploadRequest(t, "abs.txt", "absolute path", subDir)
@@ -365,7 +365,7 @@ func TestUploadFile_CustomDir(t *testing.T) {
 		defer teardown()
 
 		subDir := filepath.Join(env.ProjectDir, "relpathdir")
-		os.MkdirAll(subDir, 0755)
+		os.MkdirAll(subDir, 0o755)
 
 		req := createMultipartUploadRequest(t, "rel.txt", "relative", "relpathdir")
 		withProjectCookie(req, env.ProjectDir)
@@ -392,9 +392,9 @@ func TestUploadFile_CustomDir(t *testing.T) {
 
 		// Create a read-only directory
 		readOnlyDir := filepath.Join(env.ProjectDir, "readonly")
-		os.MkdirAll(readOnlyDir, 0555)
+		os.MkdirAll(readOnlyDir, 0o555)
 		// Ensure we can restore permissions after test
-		defer os.Chmod(readOnlyDir, 0755)
+		defer os.Chmod(readOnlyDir, 0o755)
 
 		req := createMultipartUploadRequest(t, "test.txt", "content", "readonly")
 		withProjectCookie(req, env.ProjectDir)
@@ -414,8 +414,8 @@ func TestUploadFile_CustomDir(t *testing.T) {
 		defer teardown()
 
 		// Make the project directory read-only so MkdirAll for .clawbench/uploads/ fails
-		os.Chmod(env.ProjectDir, 0555)
-		defer os.Chmod(env.ProjectDir, 0755)
+		os.Chmod(env.ProjectDir, 0o555)
+		defer os.Chmod(env.ProjectDir, 0o755)
 
 		req := createMultipartUploadRequest(t, "test.txt", "content", "")
 		withProjectCookie(req, env.ProjectDir)
@@ -436,7 +436,7 @@ func TestUploadFile_CustomDir(t *testing.T) {
 
 		// Create a real directory OUTSIDE WatchDir
 		outsideDir := filepath.Join(os.TempDir(), "clawbench_outside")
-		os.MkdirAll(outsideDir, 0755)
+		os.MkdirAll(outsideDir, 0o755)
 		defer os.RemoveAll(outsideDir)
 
 		// Create a symlink INSIDE the project that points OUTSIDE
@@ -459,7 +459,7 @@ func TestUploadFile_CustomDir(t *testing.T) {
 
 		// Create a subdirectory to upload into using absolute path
 		subDir := filepath.Join(env.ProjectDir, "customdir")
-		os.MkdirAll(subDir, 0755)
+		os.MkdirAll(subDir, 0o755)
 
 		req := createMultipartUploadRequest(t, "dstcheck.txt", "dst path under root", subDir)
 		withProjectCookie(req, env.ProjectDir)

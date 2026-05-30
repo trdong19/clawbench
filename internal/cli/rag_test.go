@@ -44,7 +44,7 @@ func TestRAGMessage_MissingID(t *testing.T) {
 }
 
 func TestRAGMessage_InvalidID(t *testing.T) {
-	exitCode := RunRAGCommand([]string{"message", "--id", "abc"})
+	exitCode := RunRAGCommand([]string{"message", testFlagID, "abc"})
 	assert.Equal(t, 1, exitCode)
 }
 

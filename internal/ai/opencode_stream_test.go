@@ -408,7 +408,7 @@ func TestNormalizeOpenCodeInput_FieldRemapping(t *testing.T) {
 	}
 	result1 := string(norm1)
 	var parsed1 map[string]any
-	if err := json.Unmarshal([]byte(result1), &parsed1); err != nil {
+	if err := json.Unmarshal([]byte(result1), &parsed1); err != nil { //nolint:govet // err shadows outer err
 		t.Fatalf("failed to parse result: %v", err)
 	}
 	if _, exists := parsed1["filePath"]; exists {
@@ -426,7 +426,7 @@ func TestNormalizeOpenCodeInput_FieldRemapping(t *testing.T) {
 	}
 	result2 := string(norm2)
 	var parsed2 map[string]any
-	if err := json.Unmarshal([]byte(result2), &parsed2); err != nil {
+	if err := json.Unmarshal([]byte(result2), &parsed2); err != nil { //nolint:govet // err shadows outer err
 		t.Fatalf("failed to parse result: %v", err)
 	}
 	if _, exists := parsed2["oldString"]; exists {

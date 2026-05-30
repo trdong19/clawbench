@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testBasePrompt = "Base"
+
 // --- languageName ---
 
 func TestLanguageName_CommonCodes(t *testing.T) {
@@ -15,17 +17,17 @@ func TestLanguageName_CommonCodes(t *testing.T) {
 		code     string
 		expected string
 	}{
-		{"zh", "Chinese"},
-		{"en", "English"},
-		{"ja", "Japanese"},
-		{"ko", "Korean"},
-		{"fr", "French"},
-		{"de", "German"},
-		{"es", "Spanish"},
-		{"pt", "Portuguese"},
-		{"ru", "Russian"},
-		{"ar", "Arabic"},
-		{"it", "Italian"},
+		{"zh", langChinese},
+		{"en", langEnglish},
+		{"ja", langJapanese},
+		{"ko", langKorean},
+		{"fr", langFrench},
+		{"de", langGerman},
+		{"es", langSpanish},
+		{"pt", langPortuguese},
+		{"ru", langRussian},
+		{"ar", langArabic},
+		{"it", langItalian},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.expected, languageName(tc.code))
@@ -37,21 +39,21 @@ func TestLanguageName_Aliases(t *testing.T) {
 		code     string
 		expected string
 	}{
-		{"cmn", "Chinese"},
-		{"chinese", "Chinese"},
-		{"eng", "English"},
-		{"english", "English"},
-		{"jpn", "Japanese"},
-		{"japanese", "Japanese"},
-		{"kor", "Korean"},
-		{"korean", "Korean"},
-		{"fra", "French"},
-		{"deu", "German"},
-		{"spa", "Spanish"},
-		{"por", "Portuguese"},
-		{"rus", "Russian"},
-		{"ara", "Arabic"},
-		{"ita", "Italian"},
+		{"cmn", langChinese},
+		{"chinese", langChinese},
+		{"eng", langEnglish},
+		{"english", langEnglish},
+		{"jpn", langJapanese},
+		{"japanese", langJapanese},
+		{"kor", langKorean},
+		{"korean", langKorean},
+		{"fra", langFrench},
+		{"deu", langGerman},
+		{"spa", langSpanish},
+		{"por", langPortuguese},
+		{"rus", langRussian},
+		{"ara", langArabic},
+		{"ita", langItalian},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.expected, languageName(tc.code))
@@ -79,12 +81,12 @@ func TestLanguageName_Empty(t *testing.T) {
 
 func TestTTSPipeline_ShortText_SkipsLLM(t *testing.T) {
 	var passCalled bool
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, _ string, _ int) (string, error) {
 		passCalled = true
 		return "", nil
 	}
 
-	s := ttsPipeline{
+	s := Pipeline{
 		passFn:     passFn,
 		basePrompt: "base prompt",
 	}
@@ -98,12 +100,12 @@ func TestTTSPipeline_ShortText_SkipsLLM(t *testing.T) {
 
 func TestTTSPipeline_LongText_ConstructsLanguageAwarePrompt(t *testing.T) {
 	var capturedPrompt string
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, systemPrompt string, _ int) (string, error) {
 		capturedPrompt = systemPrompt
 		return "summarized result", nil
 	}
 
-	s := ttsPipeline{
+	s := Pipeline{
 		passFn:     passFn,
 		basePrompt: "Base prompt for summarization",
 	}
@@ -120,14 +122,14 @@ func TestTTSPipeline_LongText_ConstructsLanguageAwarePrompt(t *testing.T) {
 
 func TestTTSPipeline_LanguageDirective_VariesByLanguage(t *testing.T) {
 	var capturedPrompt string
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, systemPrompt string, _ int) (string, error) {
 		capturedPrompt = systemPrompt
 		return "result", nil
 	}
 
-	s := ttsPipeline{
+	s := Pipeline{
 		passFn:     passFn,
-		basePrompt: "Base",
+		basePrompt: testBasePrompt,
 	}
 
 	longText := strings.Repeat("This is a long AI response with detailed analysis and conclusions. ", 20)
@@ -148,7 +150,7 @@ func TestTTSPipeline_LanguageDirective_VariesByLanguage(t *testing.T) {
 func TestTTSPipeline_ReSummarization_UsesSamePrompt(t *testing.T) {
 	callCount := 0
 	var prompts []string
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, systemPrompt string, pass int) (string, error) {
 		callCount++
 		prompts = append(prompts, systemPrompt)
 		// Return a long result on first pass to trigger re-summarization
@@ -158,9 +160,9 @@ func TestTTSPipeline_ReSummarization_UsesSamePrompt(t *testing.T) {
 		return "condensed", nil
 	}
 
-	s := ttsPipeline{
+	s := Pipeline{
 		passFn:     passFn,
-		basePrompt: "Base",
+		basePrompt: testBasePrompt,
 	}
 
 	longText := strings.Repeat("Long text that needs summarization. ", 30)
@@ -174,7 +176,7 @@ func TestTTSPipeline_ReSummarization_UsesSamePrompt(t *testing.T) {
 
 func TestTTSPipeline_SecondPassFailure_FallsBackToFirstPass(t *testing.T) {
 	callCount := 0
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, _ string, pass int) (string, error) {
 		callCount++
 		if pass == 1 {
 			return strings.Repeat("first pass result ", reSummarizeThreshold/10), nil
@@ -182,9 +184,9 @@ func TestTTSPipeline_SecondPassFailure_FallsBackToFirstPass(t *testing.T) {
 		return "", context.DeadlineExceeded
 	}
 
-	s := ttsPipeline{
+	s := Pipeline{
 		passFn:     passFn,
-		basePrompt: "Base",
+		basePrompt: testBasePrompt,
 	}
 
 	longText := strings.Repeat("Long text that needs summarization. ", 30)
@@ -195,13 +197,13 @@ func TestTTSPipeline_SecondPassFailure_FallsBackToFirstPass(t *testing.T) {
 }
 
 func TestTTSPipeline_PassFnError(t *testing.T) {
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, _ string, _ int) (string, error) {
 		return "", context.DeadlineExceeded
 	}
 
-	s := ttsPipeline{
+	s := Pipeline{
 		passFn:     passFn,
-		basePrompt: "Base",
+		basePrompt: testBasePrompt,
 	}
 
 	longText := strings.Repeat("这是一段较长的AI回复内容。", 30)
@@ -212,9 +214,9 @@ func TestTTSPipeline_PassFnError(t *testing.T) {
 // --- ttsPipeline with PreserveMarkdown ---
 
 func TestTTSPipeline_PreserveMarkdown_ShortText(t *testing.T) {
-	s := ttsPipeline{
-		passFn:     func(ctx context.Context, text, systemPrompt string, pass int) (string, error) { return "", nil },
-		basePrompt: "Base",
+	s := Pipeline{
+		passFn:     func(_ context.Context, _, _ string, _ int) (string, error) { return "", nil },
+		basePrompt: testBasePrompt,
 		opts:       SummarizeOption{PreserveMarkdown: true},
 	}
 
@@ -226,13 +228,13 @@ func TestTTSPipeline_PreserveMarkdown_ShortText(t *testing.T) {
 }
 
 func TestTTSPipeline_PreserveMarkdown_LongText_NoStripOnOutput(t *testing.T) {
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, _ string, _ int) (string, error) {
 		return "**总结结果** 包含markdown格式", nil
 	}
 
-	s := ttsPipeline{
+	s := Pipeline{
 		passFn:     passFn,
-		basePrompt: "Base",
+		basePrompt: testBasePrompt,
 		opts:       SummarizeOption{PreserveMarkdown: true},
 	}
 
@@ -244,13 +246,13 @@ func TestTTSPipeline_PreserveMarkdown_LongText_NoStripOnOutput(t *testing.T) {
 }
 
 func TestTTSPipeline_NoPreserveMarkdown_StripsOnOutput(t *testing.T) {
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, _ string, _ int) (string, error) {
 		return "**总结结果** 包含markdown格式", nil
 	}
 
-	s := ttsPipeline{
+	s := Pipeline{
 		passFn:     passFn,
-		basePrompt: "Base",
+		basePrompt: testBasePrompt,
 		opts:       SummarizeOption{PreserveMarkdown: false},
 	}
 
@@ -316,7 +318,7 @@ func TestNeedsReSummarization(t *testing.T) {
 // --- NewTTSPipeline ---
 
 func TestNewTTSPipeline(t *testing.T) {
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, _ string, _ int) (string, error) {
 		return "", nil
 	}
 
@@ -328,7 +330,7 @@ func TestNewTTSPipeline(t *testing.T) {
 // --- NewPipelineWithOpts ---
 
 func TestNewPipelineWithOpts(t *testing.T) {
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, _ string, _ int) (string, error) {
 		return "", nil
 	}
 
@@ -338,7 +340,7 @@ func TestNewPipelineWithOpts(t *testing.T) {
 }
 
 func TestNewPipelineWithOpts_DefaultPrompt(t *testing.T) {
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, _ string, _ int) (string, error) {
 		return "", nil
 	}
 

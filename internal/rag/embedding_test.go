@@ -15,7 +15,7 @@ import (
 
 // newMockEmbeddingServer creates a mock OpenAI-compatible HTTP server and an EmbeddingClient
 // pointed at it. Returns (client, cleanup).
-func newMockEmbeddingServer(t *testing.T, handler http.HandlerFunc) (*EmbeddingClient, func()) {
+func newMockEmbeddingServer(t *testing.T, handler http.HandlerFunc) (_ *EmbeddingClient, cleanup func()) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	client := NewEmbeddingClient(server.URL, "bge-m3", "")
@@ -54,7 +54,7 @@ func TestEmbed_Success(t *testing.T) {
 				{Embedding: makeTestEmbedding(1024), Index: 0},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
@@ -64,76 +64,76 @@ func TestEmbed_Success(t *testing.T) {
 }
 
 func TestEmbed_Non200Status(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("internal error"))
+		_, _ = w.Write([]byte("internal error"))
 	})
 	defer cleanup()
 
-	_, err := client.Embed(context.Background(), "hello")
+	_, err := client.Embed(context.Background(), testEmbeddingTextHello)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
 }
 
 func TestEmbed_EmptyEmbedding(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		resp := openaiEmbedResponse{
 			Data: []openaiEmbeddingData{
 				{Embedding: []float64{}, Index: 0},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
-	_, err := client.Embed(context.Background(), "hello")
+	_, err := client.Embed(context.Background(), testEmbeddingTextHello)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "empty embedding")
 }
 
 func TestEmbed_InvalidJSON(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not json"))
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
 	})
 	defer cleanup()
 
-	_, err := client.Embed(context.Background(), "hello")
+	_, err := client.Embed(context.Background(), testEmbeddingTextHello)
 	assert.Error(t, err)
 }
 
 // ---------- EmbedBatch ----------
 
 func TestEmbedBatch_Success(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		resp := openaiEmbedResponse{
 			Data: []openaiEmbeddingData{
 				{Embedding: makeTestEmbedding(1024), Index: 0},
 				{Embedding: makeTestEmbedding(1024), Index: 1},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
-	texts := []string{"hello", "world"}
+	texts := []string{testEmbeddingTextHello, "world"}
 	embeddings, err := client.EmbedBatch(context.Background(), texts)
 	assert.NoError(t, err)
 	assert.Len(t, embeddings, 2)
 }
 
 func TestEmbedBatch_ErrorResponse(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	defer cleanup()
 
-	texts := []string{"hello", "world"}
+	texts := []string{testEmbeddingTextHello, "world"}
 	_, err := client.EmbedBatch(context.Background(), texts)
 	assert.Error(t, err)
 }
 
 func TestEmbedBatch_Empty(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("should not call server for empty batch")
 	})
 	defer cleanup()
@@ -152,11 +152,11 @@ func TestIsHealthy_ReachableModelAvailable(t *testing.T) {
 
 		resp := openaiModelsResponse{
 			Data: []openaiModelInfo{
-				{ID: "bge-m3:latest"},
+				{ID: testModelBgeM3Latest},
 				{ID: "llama3:latest"},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
@@ -167,13 +167,13 @@ func TestIsHealthy_ReachableModelAvailable(t *testing.T) {
 }
 
 func TestIsHealthy_ReachableModelWithPrefix(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		resp := openaiModelsResponse{
 			Data: []openaiModelInfo{
-				{ID: "bge-m3:latest"}, // matches with HasPrefix "bge-m3:"
+				{ID: testModelBgeM3Latest}, // matches with HasPrefix "bge-m3:"
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
@@ -184,13 +184,13 @@ func TestIsHealthy_ReachableModelWithPrefix(t *testing.T) {
 }
 
 func TestIsHealthy_ReachableModelNotAvailable(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		resp := openaiModelsResponse{
 			Data: []openaiModelInfo{
 				{ID: "llama3:latest"},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
@@ -211,7 +211,7 @@ func TestIsHealthy_NotReachable(t *testing.T) {
 }
 
 func TestIsHealthy_Non200Status(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	defer cleanup()
@@ -222,7 +222,7 @@ func TestIsHealthy_Non200Status(t *testing.T) {
 }
 
 func TestIsHealthy_404AssumesHealthy(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	defer cleanup()
@@ -234,8 +234,8 @@ func TestIsHealthy_404AssumesHealthy(t *testing.T) {
 }
 
 func TestIsHealthy_InvalidJSON(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not json"))
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
 	})
 	defer cleanup()
 
@@ -247,30 +247,30 @@ func TestIsHealthy_InvalidJSON(t *testing.T) {
 // ---------- Dim ----------
 
 func TestEmbed_NoResultsFromBatch(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		// Return empty data array
 		resp := openaiEmbedResponse{Data: []openaiEmbeddingData{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
-	_, err := client.Embed(context.Background(), "hello")
+	_, err := client.Embed(context.Background(), testEmbeddingTextHello)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "empty data")
 }
 
 func TestEmbedBatch_OutOfRangeIndex(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		resp := openaiEmbedResponse{
 			Data: []openaiEmbeddingData{
 				{Embedding: makeTestEmbedding(4), Index: 99}, // out of range
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
-	_, err := client.EmbedBatch(context.Background(), []string{"hello"})
+	_, err := client.EmbedBatch(context.Background(), []string{testEmbeddingTextHello})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "out-of-range index")
 }
@@ -283,20 +283,20 @@ func TestEmbedBatch_WithAPIKey(t *testing.T) {
 				{Embedding: makeTestEmbedding(4), Index: 0},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 	client.APIKey = "test-key"
 
-	_, err := client.EmbedBatch(context.Background(), []string{"hello"})
+	_, err := client.EmbedBatch(context.Background(), []string{testEmbeddingTextHello})
 	assert.NoError(t, err)
 }
 
 func TestIsHealthy_WithAPIKey(t *testing.T) {
 	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
-		resp := openaiModelsResponse{Data: []openaiModelInfo{{ID: "bge-m3:latest"}}}
-		json.NewEncoder(w).Encode(resp)
+		resp := openaiModelsResponse{Data: []openaiModelInfo{{ID: testModelBgeM3Latest}}}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 	client.APIKey = "test-key"
@@ -315,7 +315,7 @@ func TestIsHealthy_RequestCreationError(t *testing.T) {
 	cancel()
 
 	reachable, modelAvailable, err := client.IsHealthy(ctx)
-	// Cancelled context causes Do() error, which returns (false, false, nil)
+	// Canceled context causes Do() error, which returns (false, false, nil)
 	assert.NoError(t, err)
 	assert.False(t, reachable)
 	assert.False(t, modelAvailable)
@@ -327,29 +327,29 @@ func TestDim_Initial(t *testing.T) {
 }
 
 func TestEmbedBatch_EmptyEmbeddingAtIndex(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		resp := openaiEmbedResponse{
 			Data: []openaiEmbeddingData{
 				{Embedding: []float64{}, Index: 0}, // empty embedding at valid index
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
-	_, err := client.EmbedBatch(context.Background(), []string{"hello"})
+	_, err := client.EmbedBatch(context.Background(), []string{testEmbeddingTextHello})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "empty embedding at index")
 }
 
 func TestEmbedBatch_EmptyData(t *testing.T) {
-	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, cleanup := newMockEmbeddingServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		resp := openaiEmbedResponse{Data: []openaiEmbeddingData{}}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer cleanup()
 
-	_, err := client.EmbedBatch(context.Background(), []string{"hello"})
+	_, err := client.EmbedBatch(context.Background(), []string{testEmbeddingTextHello})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "empty data")
 }

@@ -50,7 +50,7 @@ func NewMossNanoProvider() *MossNanoProvider {
 		BinaryName: "moss-tts-nano",
 		TextSource: TextViaTempFile,
 		LogName:    "moss-nano",
-		ExtraArgs: func(cliPath string, text string, outputPath string, _ string) []string {
+		ExtraArgs: func(_ string, text string, outputPath string, _ string) []string {
 			args := []string{
 				"generate",
 				"--backend", p.Backend,

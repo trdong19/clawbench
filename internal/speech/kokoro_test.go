@@ -23,8 +23,8 @@ func TestNewKokoroProvider_Defaults(t *testing.T) {
 
 func TestResolveKokoroPaths_Defaults(t *testing.T) {
 	model, voices := ResolveKokoroPaths("", "")
-	assert.Equal(t, filepath.Join(".clawbench/kokoro-models", "kokoro-v1.1-zh.onnx"), model)
-	assert.Equal(t, filepath.Join(".clawbench/kokoro-models", "voices-v1.1-zh.bin"), voices)
+	assert.Equal(t, filepath.Join(".clawbench", "kokoro-models", "kokoro-v1.1-zh.onnx"), model)
+	assert.Equal(t, filepath.Join(".clawbench", "kokoro-models", "voices-v1.1-zh.bin"), voices)
 }
 
 func TestResolveKokoroPaths_Explicit(t *testing.T) {

@@ -11,6 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	testBlockTypeText     = "text"
+	testBlockTypeThinking = "thinking"
+)
+
 // --- TaskSummarizer short text ---
 
 func TestTaskSummarizer_ShortText(t *testing.T) {
@@ -27,15 +32,15 @@ func TestTaskSummarizer_ShortText(t *testing.T) {
 // --- TaskSummarizer long text via backend ---
 
 type mockTaskBackend struct {
-	streamCh     chan ai.StreamEvent
-	executeErr   error
+	streamCh      chan ai.StreamEvent
+	executeErr    error
 	executeCalled bool
-	capturedReq  ai.ChatRequest
+	capturedReq   ai.ChatRequest
 }
 
 func (m *mockTaskBackend) Name() string { return "mock-task-backend" }
 
-func (m *mockTaskBackend) ExecuteStream(ctx context.Context, req ai.ChatRequest) (<-chan ai.StreamEvent, error) {
+func (m *mockTaskBackend) ExecuteStream(_ context.Context, req ai.ChatRequest) (<-chan ai.StreamEvent, error) {
 	m.executeCalled = true
 	m.capturedReq = req
 	if m.executeErr != nil {
@@ -46,9 +51,9 @@ func (m *mockTaskBackend) ExecuteStream(ctx context.Context, req ai.ChatRequest)
 
 func TestTaskSummarizer_LongText_ViaBackend(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 3)
-	ch <- ai.StreamEvent{Type: "content", Content: "## 总结\n\n这是**精简**总结。"}
-	ch <- ai.StreamEvent{Type: "content", Content: "\n\n```go\nfmt.Println()```"}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "## 总结\n\n这是**精简**总结。"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "\n\n```go\nfmt.Println()```"}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
 	mock := &mockTaskBackend{streamCh: ch}
@@ -63,7 +68,7 @@ func TestTaskSummarizer_LongText_ViaBackend(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, result, "总结")
 	assert.Contains(t, result, "**精简**") // Markdown preserved
-	assert.Contains(t, result, "```go")     // Code block preserved
+	assert.Contains(t, result, "```go")  // Code block preserved
 	assert.True(t, mock.executeCalled)
 	assert.Equal(t, "test-model", mock.capturedReq.Model)
 	assert.Equal(t, taskSummarizePrompt, mock.capturedReq.SystemPrompt)
@@ -85,7 +90,7 @@ func TestTaskSummarizer_BackendError(t *testing.T) {
 
 func TestTaskSummarizer_StreamError(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "error", Error: "out of tokens"}
+	ch <- ai.StreamEvent{Type: testTypeError, Error: "out of tokens"}
 	close(ch)
 
 	mock := &mockTaskBackend{streamCh: ch}
@@ -101,7 +106,7 @@ func TestTaskSummarizer_StreamError(t *testing.T) {
 
 func TestTaskSummarizer_EmptyOutput(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
 	mock := &mockTaskBackend{streamCh: ch}
@@ -121,8 +126,8 @@ func TestTaskSummarizer_Truncation(t *testing.T) {
 	defer func() { MaxSummarizeRunes = origMax }()
 
 	ch := make(chan ai.StreamEvent, 2)
-	ch <- ai.StreamEvent{Type: "content", Content: "总结结果"}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "总结结果"}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
 	mock := &mockTaskBackend{streamCh: ch}
@@ -143,7 +148,7 @@ func TestTaskSummarizer_Truncation(t *testing.T) {
 func TestTaskSummarizer_ViaPipeline(t *testing.T) {
 	// Create a pipeline with PreserveMarkdown=true and task prompt
 	var capturedPrompt string
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, _, systemPrompt string, _ int) (string, error) {
 		capturedPrompt = systemPrompt
 		return "## 保留格式的总结", nil
 	}
@@ -160,7 +165,7 @@ func TestTaskSummarizer_ViaPipeline(t *testing.T) {
 }
 
 func TestTaskSummarizer_ViaPipeline_ShortText(t *testing.T) {
-	passFn := func(ctx context.Context, text, systemPrompt string, pass int) (string, error) {
+	passFn := func(_ context.Context, text, systemPrompt string, pass int) (string, error) {
 		return "should not be called", nil
 	}
 
@@ -185,7 +190,7 @@ func TestNewTaskSummarizer_UnsupportedBackend(t *testing.T) {
 
 func TestExtractTextFromBlocks_TextOnly(t *testing.T) {
 	blocks := []model.ContentBlock{
-		{Type: "text", Text: "Hello world"},
+		{Type: testBlockTypeText, Text: "Hello world"},
 		{Type: "text", Text: "Second paragraph"},
 	}
 	result := ExtractTextFromBlocks(blocks)
@@ -194,12 +199,12 @@ func TestExtractTextFromBlocks_TextOnly(t *testing.T) {
 
 func TestExtractTextFromBlocks_SkipsNonText(t *testing.T) {
 	blocks := []model.ContentBlock{
-		{Type: "text", Text: "Important content"},
-		{Type: "thinking", Text: "internal reasoning"},
+		{Type: testBlockTypeText, Text: "Important content"},
+		{Type: testBlockTypeThinking, Text: "internal reasoning"},
 		{Type: "tool_use", Name: "Bash", ID: "1"},
 		{Type: "warning", Text: "some warning"},
 		{Type: "error", Text: "some error"},
-		{Type: "text", Text: "More content"},
+		{Type: testBlockTypeText, Text: "More content"},
 	}
 	result := ExtractTextFromBlocks(blocks)
 	assert.Equal(t, "Important content\n\nMore content", result)
@@ -214,7 +219,7 @@ func TestExtractTextFromBlocks_Empty(t *testing.T) {
 func TestExtractTextFromBlocks_NoTextBlocks(t *testing.T) {
 	blocks := []model.ContentBlock{
 		{Type: "tool_use", Name: "Read", ID: "1"},
-		{Type: "thinking", Text: "hmm"},
+		{Type: testBlockTypeThinking, Text: "hmm"},
 	}
 	result := ExtractTextFromBlocks(blocks)
 	assert.Equal(t, "", result)
@@ -222,9 +227,9 @@ func TestExtractTextFromBlocks_NoTextBlocks(t *testing.T) {
 
 func TestExtractTextFromBlocks_EmptyTextSkipped(t *testing.T) {
 	blocks := []model.ContentBlock{
-		{Type: "text", Text: "Content"},
-		{Type: "text", Text: ""}, // empty text should be skipped
-		{Type: "text", Text: "More"},
+		{Type: testBlockTypeText, Text: "Content"},
+		{Type: testBlockTypeText, Text: ""}, // empty text should be skipped
+		{Type: testBlockTypeText, Text: "More"},
 	}
 	result := ExtractTextFromBlocks(blocks)
 	assert.Equal(t, "Content\n\nMore", result)

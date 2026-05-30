@@ -8,18 +8,30 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	testFileMainGo     = "main.go"
+	testFileSongMP3    = "song.mp3"
+	testFileDataBin    = "data.bin"
+	testFileEmptyStr   = "empty string"
+	testFileNotesTxt   = "notes.txt"
+	testFileProgramExe = "program.exe"
+	testFileImagePng   = "image.png"
+	testFileVideoMp4   = "video.mp4"
+	testFileGoFile     = "go file"
+)
+
 func TestIsSupportedFile(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  bool
 	}{
-		{"text file", "main.go", true},
+		{"text file", testFileMainGo, true},
 		{"image file", "photo.png", true},
-		{"audio file", "song.mp3", true},
+		{"audio file", testFileSongMP3, true},
 		{"video file", "movie.mp4", true},
-		{"unsupported file", "data.bin", false},
-		{"empty string", "", false},
+		{"unsupported file", testFileDataBin, false},
+		{testFileEmptyStr, "", false},
 	}
 
 	for _, tt := range tests {
@@ -32,7 +44,7 @@ func TestIsSupportedFile(t *testing.T) {
 
 func TestIsTextFile(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		input string
 		want  bool
 	}{
@@ -63,7 +75,7 @@ func TestIsTextFile(t *testing.T) {
 		{"cfg", "app.cfg", true},
 
 		// Go
-		{"go", "main.go", true},
+		{"go", testFileMainGo, true},
 		{"mod", "go.mod", true},
 		{"sum", "go.sum", true},
 
@@ -189,7 +201,7 @@ func TestIsTextFile(t *testing.T) {
 		{"ignore", ".ignore", true},
 
 		// Text
-		{"txt", "notes.txt", true},
+		{"txt", testFileNotesTxt, true},
 		{"text", "notes.text", true},
 
 		// Log
@@ -234,9 +246,9 @@ func TestIsTextFile(t *testing.T) {
 		{"just extension .md", ".md", true},
 
 		// Negative cases
-		{"binary .bin", "data.bin", false},
+		{"binary .bin", testFileDataBin, false},
 		{"data .dat", "file.dat", false},
-		{"exe", "program.exe", false},
+		{"exe", testFileProgramExe, false},
 		{"iso", "disk.iso", false},
 		{"zip", "archive.zip", false},
 		{"tar", "backup.tar", false},
@@ -252,12 +264,12 @@ func TestIsTextFile(t *testing.T) {
 		{"woff2", "font.woff2", false},
 		{"ttf", "font.ttf", false},
 		{"eot", "font.eot", false},
-		{"mp3 not text", "song.mp3", false},
-		{"png not text", "image.png", false},
-		{"mp4 not text", "video.mp4", false},
+		{"mp3 not text", testFileSongMP3, false},
+		{"png not text", testFileImagePng, false},
+		{"mp4 not text", testFileVideoMp4, false},
 
 		// Empty string
-		{"empty string", "", false},
+		{testFileEmptyStr, "", false},
 
 		// No extension
 		{"no extension", "Makefile", false},
@@ -315,15 +327,15 @@ func TestIsImageFile(t *testing.T) {
 
 		// Negative cases
 		{"text file", "readme.txt", false},
-		{"go file", "main.go", false},
-		{"mp3 file", "song.mp3", false},
-		{"mp4 file", "video.mp4", false},
-		{"binary .bin", "data.bin", false},
-		{"exe", "program.exe", false},
+		{testFileGoFile, testFileMainGo, false},
+		{"mp3 file", testFileSongMP3, false},
+		{"mp4 file", testFileVideoMp4, false},
+		{"binary .bin", testFileDataBin, false},
+		{"exe", testFileProgramExe, false},
 		{"zip", "archive.zip", false},
 
 		// Empty string
-		{"empty string", "", false},
+		{testFileEmptyStr, "", false},
 	}
 
 	for _, tt := range tests {
@@ -366,15 +378,15 @@ func TestIsAudioFile(t *testing.T) {
 		{"just extension .wav", ".wav", true},
 
 		// Negative cases
-		{"mp4 not audio", "video.mp4", false},
-		{"png not audio", "image.png", false},
-		{"go file", "main.go", false},
-		{"txt file", "notes.txt", false},
-		{"bin file", "data.bin", false},
-		{"exe file", "program.exe", false},
+		{"mp4 not audio", testFileVideoMp4, false},
+		{"png not audio", testFileImagePng, false},
+		{testFileGoFile, testFileMainGo, false},
+		{"txt file", testFileNotesTxt, false},
+		{"bin file", testFileDataBin, false},
+		{"exe file", testFileProgramExe, false},
 
 		// Empty string
-		{"empty string", "", false},
+		{testFileEmptyStr, "", false},
 	}
 
 	for _, tt := range tests {
@@ -421,15 +433,15 @@ func TestIsVideoFile(t *testing.T) {
 
 		// Negative cases - .ts is TypeScript, not video
 		{"ts is text not video", "app.ts", false},
-		{"mp3 not video", "song.mp3", false},
-		{"png not video", "image.png", false},
-		{"go file", "main.go", false},
-		{"txt file", "notes.txt", false},
-		{"bin file", "data.bin", false},
-		{"exe file", "program.exe", false},
+		{"mp3 not video", testFileSongMP3, false},
+		{"png not video", testFileImagePng, false},
+		{testFileGoFile, testFileMainGo, false},
+		{"txt file", testFileNotesTxt, false},
+		{"bin file", testFileDataBin, false},
+		{"exe file", testFileProgramExe, false},
 
 		// Empty string
-		{"empty string", "", false},
+		{testFileEmptyStr, "", false},
 	}
 
 	for _, tt := range tests {

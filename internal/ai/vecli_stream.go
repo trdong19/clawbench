@@ -13,7 +13,7 @@ type VeCLIStreamParser struct{}
 // ParseLine emits a content event for each line of VeCLI output.
 // Every line is treated as plain text content.
 func (p *VeCLIStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
-	ch <- StreamEvent{Type: "content", Content: line + "\n"}
+	ch <- StreamEvent{Type: "content", Content: line + "\n"} //nolint:goconst // JSON 字段名/协议字符串
 }
 
 // GetCapturedSessionID returns empty string — VeCLI has no session resume support.
@@ -54,7 +54,7 @@ func buildVeCLIArgs(req ChatRequest) []string {
 type VeCLISessionSummary struct {
 	SessionMetrics struct {
 		Models map[string]struct {
-			API    struct {
+			API struct {
 				TotalRequests  int `json:"totalRequests"`
 				TotalErrors    int `json:"totalErrors"`
 				TotalLatencyMs int `json:"totalLatencyMs"`
@@ -69,9 +69,9 @@ type VeCLISessionSummary struct {
 			} `json:"tokens"`
 		} `json:"models"`
 		Tools struct {
-			TotalCalls    int `json:"totalCalls"`
-			TotalSuccess  int `json:"totalSuccess"`
-			TotalFail     int `json:"totalFail"`
+			TotalCalls      int `json:"totalCalls"`
+			TotalSuccess    int `json:"totalSuccess"`
+			TotalFail       int `json:"totalFail"`
 			TotalDurationMs int `json:"totalDurationMs"`
 		} `json:"tools"`
 		Files struct {
@@ -87,11 +87,11 @@ type VeCLISessionSummary struct {
 // If no model entries exist, it falls back to the request model name.
 func (s *VeCLISessionSummary) extractMetadata(reqModel string) *Metadata {
 	meta := &Metadata{
-		StopReason: "stop",
+		StopReason: "stop", //nolint:goconst // JSON 字段名/协议字符串
 	}
 	// Prefer the model matching reqModel, then fall back to first entry
 	for name, m := range s.SessionMetrics.Models {
-		if name == reqModel || meta.Model == "" {
+		if name == reqModel || meta.Model == "" { //nolint:gocritic // nestingReduce: inverting would break early-break logic
 			meta.Model = name
 			meta.InputTokens = m.Tokens.Prompt
 			meta.OutputTokens = m.Tokens.Candidates

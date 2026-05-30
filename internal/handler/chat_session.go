@@ -19,118 +19,123 @@ func ServeSessions(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		// Parse optional pagination parameters
-		limit := 0
-		if l := r.URL.Query().Get("limit"); l != "" {
-			if v, err := strconv.Atoi(l); err == nil && v > 0 {
-				limit = v
-			}
-		}
-		cursor := r.URL.Query().Get("cursor")
-		cursorID := r.URL.Query().Get("cursor_id")
-		// Normalize cursor timestamp: frontend sends ISO 8601 (2026-05-16T15:25:50Z)
-		// but SQLite stores as "2026-05-16 15:25:50". Convert T→space and strip Z/+00:00.
-		if cursor != "" {
-			cursor = strings.ReplaceAll(cursor, "T", " ")
-			cursor = strings.TrimSuffix(cursor, "Z")
-			cursor = strings.TrimSuffix(cursor, "+00:00")
-		}
-
-		var sessions []model.ChatSession
-		var hasMore bool
-		var err error
-
-		if limit > 0 {
-			sessions, hasMore, err = service.GetSessionsPaged(projectPath, "", limit, cursor, cursorID)
-		} else {
-			sessions, err = service.GetSessions(projectPath, "")
-			hasMore = false
-		}
-		if err != nil {
-			model.WriteError(w, model.Internal(fmt.Errorf("failed to load sessions")))
-			return
-		}
-		// Batch-check running state: single mutex acquisition instead of N
-		runningIDs := service.GetRunningSessionIDs()
-		runningSet := make(map[string]bool, len(runningIDs))
-		for _, id := range runningIDs {
-			runningSet[id] = true
-		}
-		for i := range sessions {
-			sessions[i].Running = runningSet[sessions[i].ID]
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"sessions": sessions,
-			"hasMore":  hasMore,
-		})
-
+		serveSessionsGet(w, r, projectPath)
 	case http.MethodPost:
-		// Check session count limit before creating (0 = unlimited)
-		if model.SessionMaxCount > 0 {
-			if count, cerr := service.GetSessionCount(projectPath); cerr == nil && count >= model.SessionMaxCount {
-				writeLocalizedErrorf(w, r, http.StatusConflict, "SessionLimitReached", map[string]any{"MaxCount": model.SessionMaxCount})
-				return
-			}
-		}
-
-		var req struct {
-			Title   string `json:"title"`
-			Backend string `json:"backend"`
-			AgentID string `json:"agentId"`
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxChatBodySize)
-		if !decodeJSON(w, r, &req) {
-			return
-		}
-		backend := req.Backend
-		agentID := req.AgentID
-		resolvedAgentID := agentID
-		agentSource := "default"
-		backend2, _, _, _, ok := resolveAgentConfig(agentID)
-		if !ok {
-		writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "NoAgentsAvailable")
-			return
-		}
-		if backend2 != "" {
-			backend = backend2
-		}
-		// Don't pre-fill agent default model into session — leave model empty so
-		// the frontend falls back to the global localStorage preference, making the
-		// user's model choice persist across projects. The model will be persisted
-		// to the session only when the user explicitly sends a message with a modelId.
-		agentModel := ""
-		if resolvedAgentID == "" {
-			resolvedAgentID = model.GetDefaultAgentID()
-		}
-		// If user explicitly specified an agent, mark source as "user"
-		if agentID != "" {
-			agentSource = "user"
-		}
-		if backend == "" {
-			backend = "codebuddy"
-		}
-		title := req.Title
-		if title == "" {
-			existingSessions, err := service.GetSessions(projectPath, backend)
-			if err == nil {
-				title = T(r, "NewSessionN", map[string]any{"N": len(existingSessions) + 1})
-			} else {
-				title = T(r, "NewSession")
-			}
-		}
-		sessionID, err := service.CreateSession(projectPath, backend, title, resolvedAgentID, agentModel, agentSource, "chat")
-		if err != nil {
-			model.WriteError(w, model.Internal(fmt.Errorf("failed to create session")))
-			return
-		}
-		setSessionID(w, sessionID)
-		// Return session count for UI indicator
-		sessionCount, _ := service.GetSessionCount(projectPath)
-		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "sessionId": sessionID, "backend": backend, "agentId": resolvedAgentID, "sessionCount": sessionCount, "title": title})
-
+		serveSessionsPost(w, r, projectPath)
 	default:
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 	}
+}
+
+func serveSessionsGet(w http.ResponseWriter, r *http.Request, projectPath string) {
+	limit, cursor, cursorID := parseSessionPagination(r)
+
+	var sessions []model.ChatSession
+	var hasMore bool
+	var err error
+
+	if limit > 0 {
+		sessions, hasMore, err = service.GetSessionsPaged(projectPath, "", limit, cursor, cursorID)
+	} else {
+		sessions, err = service.GetSessions(projectPath, "")
+	}
+	if err != nil {
+		model.WriteError(w, model.Internal(fmt.Errorf("failed to load sessions")))
+		return
+	}
+
+	runningIDs := service.GetRunningSessionIDs()
+	runningSet := make(map[string]bool, len(runningIDs))
+	for _, id := range runningIDs {
+		runningSet[id] = true
+	}
+	for i := range sessions {
+		sessions[i].Running = runningSet[sessions[i].ID]
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"sessions":     sessions,
+		jsonKeyHasMore: hasMore,
+	})
+}
+
+func parseSessionPagination(r *http.Request) (limit int, cursor, cursorID string) {
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	cursor = r.URL.Query().Get("cursor")
+	cursorID = r.URL.Query().Get("cursor_id")
+	if cursor != "" {
+		cursor = strings.ReplaceAll(cursor, "T", " ")
+		cursor = strings.TrimSuffix(cursor, "Z")
+		cursor = strings.TrimSuffix(cursor, "+00:00")
+	}
+	return
+}
+
+func serveSessionsPost(w http.ResponseWriter, r *http.Request, projectPath string) {
+	if model.SessionMaxCount > 0 {
+		if count, cerr := service.GetSessionCount(projectPath); cerr == nil && count >= model.SessionMaxCount {
+			writeLocalizedErrorf(w, r, http.StatusConflict, "SessionLimitReached", map[string]any{"MaxCount": model.SessionMaxCount})
+			return
+		}
+	}
+
+	var req struct {
+		Title   string `json:"title"`
+		Backend string `json:"backend"`
+		AgentID string `json:"agentId"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatBodySize)
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	resolvedAgentID, backend, agentSource := resolveSessionAgent(req.AgentID, req.Backend)
+	title := resolveSessionTitle(r, projectPath, req.Title, backend)
+
+	sessionID, err := service.CreateSession(projectPath, backend, title, resolvedAgentID, "", agentSource, "chat")
+	if err != nil {
+		model.WriteError(w, model.Internal(fmt.Errorf("failed to create session")))
+		return
+	}
+	setSessionID(w, sessionID)
+	sessionCount, _ := service.GetSessionCount(projectPath)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, jsonKeySessionID: sessionID, jsonKeyBackend: backend, jsonKeyAgentID: resolvedAgentID, "sessionCount": sessionCount, "title": title})
+}
+
+func resolveSessionAgent(agentID, reqBackend string) (resolvedAgentID, backend, agentSource string) {
+	resolvedAgentID = agentID
+	agentSource = "default"
+	backend2, _, _, _, ok := resolveAgentConfig(agentID)
+	if !ok {
+		return "", "", ""
+	}
+	if backend2 != "" {
+		reqBackend = backend2
+	}
+	if resolvedAgentID == "" {
+		resolvedAgentID = model.GetDefaultAgentID()
+	}
+	if agentID != "" {
+		agentSource = jsonKeyUser
+	}
+	if reqBackend == "" {
+		reqBackend = jsonKeyCodebuddy
+	}
+	return resolvedAgentID, reqBackend, agentSource
+}
+
+func resolveSessionTitle(r *http.Request, projectPath, reqTitle, backend string) string {
+	if reqTitle != "" {
+		return reqTitle
+	}
+	existingSessions, err := service.GetSessions(projectPath, backend)
+	if err == nil {
+		return T(r, "NewSessionN", map[string]any{"N": len(existingSessions) + 1})
+	}
+	return T(r, "NewSession")
 }
 
 // DeleteSession handles DELETE for a single session.
@@ -178,8 +183,7 @@ func getSessionID(r *http.Request) string {
 // setSessionID sets session ID in cookie.
 // HttpOnly: true prevents JavaScript access, mitigating XSS-based session hijack (ISS-123).
 func setSessionID(w http.ResponseWriter, sessionID string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "chat_session_id",
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // local network only, no HTTPS; Secure flag would prevent functionality
 		Value:    sessionID,
 		Path:     "/",
 		MaxAge:   86400 * 30, // 30 days

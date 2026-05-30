@@ -31,7 +31,7 @@ func TestServeConfigPassword_Success(t *testing.T) {
 	model.PasswordHash = bcryptHash
 	model.ConfigInstance = model.Config{}
 	model.BinDir = t.TempDir()
-	os.MkdirAll(filepath.Join(model.BinDir, "config"), 0755)
+	os.MkdirAll(filepath.Join(model.BinDir, "config"), 0o755)
 
 	req := newRequest(t, http.MethodPost, "/api/config/password", map[string]string{
 		"current_password": password,
@@ -141,7 +141,7 @@ func TestServeConfigPassword_SHA256StoredPassword(t *testing.T) {
 	model.PasswordHash = nil // No bcrypt when stored as SHA-256
 	model.ConfigInstance = model.Config{}
 	model.BinDir = t.TempDir()
-	os.MkdirAll(filepath.Join(model.BinDir, "config"), 0755)
+	os.MkdirAll(filepath.Join(model.BinDir, "config"), 0o755)
 
 	req := newRequest(t, http.MethodPost, "/api/config/password", map[string]string{
 		"current_password": password,
@@ -188,7 +188,7 @@ func TestServeConfigPassword_MethodNotAllowed(t *testing.T) {
 	_, teardown := setupTestEnv(t)
 	defer teardown()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/config/password", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/config/password", http.NoBody)
 	withAuthCookie(req, "sometoken")
 	w := callHandler(ServeConfigPassword, req)
 
@@ -200,7 +200,7 @@ func TestServeConfigPassword_InvalidJSON(t *testing.T) {
 	defer teardown()
 
 	model.SessionToken = "sometoken"
-	req := httptest.NewRequest(http.MethodPost, "/api/config/password", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/config/password", http.NoBody)
 	req.Header.Set("Content-Type", "application/json")
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeConfigPassword, req)
@@ -223,7 +223,7 @@ func TestServeConfigPassword_RateLimited(t *testing.T) {
 	// Make failed requests to trigger rate limiting
 	// The global login limiter persists across tests, so count from current state
 	blocked := false
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		req := newRequest(t, http.MethodPost, "/api/config/password", map[string]string{
 			"current_password": "wrong-password",
 			"new_password":     "new-password-123",
@@ -283,7 +283,7 @@ func TestServeConfigPassword_TooLong(t *testing.T) {
 	model.ConfigInstance = model.Config{}
 
 	longPassword := ""
-	for i := 0; i < 73; i++ {
+	for range 73 {
 		longPassword += "a"
 	}
 
@@ -351,11 +351,11 @@ func TestServeConfigPassword_WriteFailure(t *testing.T) {
 	origBinDir := model.BinDir
 	failDir := t.TempDir()
 	configDir := filepath.Join(failDir, "config")
-	os.MkdirAll(configDir, 0755)
-	os.Chmod(configDir, 0555)
+	os.MkdirAll(configDir, 0o755)
+	os.Chmod(configDir, 0o555)
 	model.BinDir = failDir
 	defer func() {
-		os.Chmod(configDir, 0755) // restore for cleanup
+		os.Chmod(configDir, 0o755) // restore for cleanup
 		model.BinDir = origBinDir
 	}()
 

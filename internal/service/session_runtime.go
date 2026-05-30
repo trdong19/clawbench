@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"unicode/utf8"
 
 	"clawbench/internal/ai"
@@ -16,15 +15,17 @@ import (
 // Active session tracking - keyed by sessionID
 var (
 	activeSessions = make(map[string]bool)
-	activeMu      sync.Mutex
+	activeMu       sync.Mutex
 )
 
 // Session stream channel management for SSE streaming
 var sessionStreams sync.Map // map[string]chan ai.StreamEvent
 
 // Session cancel functions for aborting AI responses
-var sessionCancels sync.Map         // map[string]context.CancelFunc
-var sessionCancelReasons sync.Map   // map[string]string — "user", "disconnect"
+var (
+	sessionCancels       sync.Map // map[string]context.CancelFunc
+	sessionCancelReasons sync.Map // map[string]string — "user", "disconnect"
+)
 
 // responsePreviewMaxRunes is an alias for model.ResponsePreviewMaxRunes for local use.
 const responsePreviewMaxRunes = model.ResponsePreviewMaxRunes
@@ -43,7 +44,7 @@ func EmitSessionEvent(sessionID, status string, hasNewMessages bool) {
 	}
 
 	// On completion, include session title for push notification
-	if status == "completed" || status == "cancelled" {
+	if status == StatusCompleted || status == StatusCancelled {
 		if title, err := GetSessionTitle(sessionID); err == nil && title != "" {
 			data.SessionTitle = title
 		}
@@ -56,7 +57,7 @@ func EmitSessionEvent(sessionID, status string, hasNewMessages bool) {
 	data.ProjectPath = GetSessionProjectPath(sessionID)
 
 	mgr.BroadcastEvent(ws.ServerMessage{
-		Type:  "event",
+		Type:  EventType,
 		ID:    ws.GenerateEventID(),
 		Event: "session_update",
 		Data:  data,
@@ -75,7 +76,7 @@ func getSessionResponsePreview(sessionID string) string {
 	}
 	// Walk backwards to find the last assistant message
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "assistant" {
+		if messages[i].Role != RoleAssistant {
 			continue
 		}
 		var content struct {
@@ -87,14 +88,14 @@ func getSessionResponsePreview(sessionID string) string {
 		// Find the last tool_use block index to skip intermediate text
 		lastToolIdx := -1
 		for j, b := range content.Blocks {
-			if b.Type == "tool_use" {
+			if b.Type == BlockTypeToolUse {
 				lastToolIdx = j
 			}
 		}
 		// Extract text from blocks after the last tool_use
 		for j := lastToolIdx + 1; j < len(content.Blocks); j++ {
 			b := content.Blocks[j]
-			if b.Type == "text" && b.Text != "" {
+			if b.Type == BlockTypeText && b.Text != "" {
 				if utf8.RuneCountInString(b.Text) > responsePreviewMaxRunes {
 					return string([]rune(b.Text)[:responsePreviewMaxRunes]) + "…"
 				}
@@ -183,7 +184,7 @@ func UnregisterSessionCancel(sessionID string) {
 // SetCancelReason records the cancellation reason for a session without cancelling it.
 // Used by the SSE handler when a client disconnects — the AI session continues running
 // but the reason is stored for the session finalizer to read later.
-func SetCancelReason(sessionID string, reason string) {
+func SetCancelReason(sessionID, reason string) {
 	sessionCancelReasons.Store(sessionID, reason)
 }
 
@@ -225,13 +226,13 @@ func CancelSession(sessionID string) bool {
 	sessionCancelReasons.Store(sessionID, "user")
 	ClearQueue(sessionID)
 	cancel()
-	EmitSessionEvent(sessionID, "cancelled", false)
+	EmitSessionEvent(sessionID, StatusCancelled, false)
 
 	// Send cancelled event to SSE stream after cancelling context (non-blocking)
 	if streamVal, ok := sessionStreams.Load(sessionID); ok {
 		if ch, ok := streamVal.(chan ai.StreamEvent); ok {
 			select {
-			case ch <- ai.StreamEvent{Type: "cancelled"}:
+			case ch <- ai.StreamEvent{Type: StatusCancelled}:
 			default:
 				// Channel full — SSE handler will detect session not running via checkSSE loop
 			}
@@ -305,7 +306,8 @@ func SendSessionEvent(sessionID string, event ai.StreamEvent) bool {
 			case ch <- event:
 				return true
 			default:
-				slog.Warn("session stream channel full, dropping event",
+				slog.Warn(
+					"session stream channel full, dropping event",
 					slog.String("session_id", sessionID),
 					slog.String("event_type", event.Type),
 				)
@@ -316,24 +318,19 @@ func SendSessionEvent(sessionID string, event ai.StreamEvent) bool {
 }
 
 // chatSummaryEnabled controls whether chat message auto-summarization is active.
-// Set during server startup based on config. Uses atomic.Bool for safe concurrent
-// access from HTTP handlers (write) and session completion goroutines (read).
-var chatSummaryEnabled atomic.Bool
-
-func init() {
-	chatSummaryEnabled.Store(true) // default enabled
-}
+// Set during server startup based on config.
+var chatSummaryEnabled = true
 
 // SetChatSummaryEnabled configures whether chat messages are auto-summarized on completion.
 func SetChatSummaryEnabled(enabled bool) {
-	chatSummaryEnabled.Store(enabled)
+	chatSummaryEnabled = enabled
 }
 
 // triggerChatSummarization triggers async summarization for the last assistant
 // message(s) in a session when it completes normally.
 // Skipped for cancelled/disconnected sessions (those use skipEvent=true in SetSessionRunning).
 func triggerChatSummarization(sessionID string) {
-	if !chatSummaryEnabled.Load() || taskSummarizerInstance == nil {
+	if !chatSummaryEnabled || taskSummarizerInstance == nil {
 		return
 	}
 
@@ -346,7 +343,7 @@ func triggerChatSummarization(sessionID string) {
 	// Find the last assistant message
 	var lastAssistant *model.ChatMessage
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "assistant" {
+		if messages[i].Role == RoleAssistant {
 			lastAssistant = &messages[i]
 			break
 		}

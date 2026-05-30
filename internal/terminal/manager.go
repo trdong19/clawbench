@@ -30,7 +30,7 @@ var GlobalManager *Manager
 
 // TerminalConfig holds the terminal configuration.
 // We define a local copy to avoid circular imports with the model package.
-type TerminalConfig struct {
+type TerminalConfig struct { //nolint:revive // stutter ok: terminal.TerminalConfig is the established API name
 	Enabled      bool
 	IdleTimeout  string
 	BufferLines  int
@@ -117,7 +117,7 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, projec
 			})
 			if err == nil {
 				sendWSError(conn, ErrCodeSessionLimit, fmt.Sprintf("max sessions (%d) reached", m.maxSessions))
-				conn.Close(websocket.StatusPolicyViolation, "session limit")
+				_ = conn.Close(websocket.StatusPolicyViolation, "session limit")
 			}
 			return nil
 		}
@@ -167,7 +167,7 @@ func (m *Manager) HandleWebSocket(w http.ResponseWriter, r *http.Request, projec
 	// Connect to the session (will kick any zombie client from reconnect race)
 	if err := session.Connect(conn); err != nil {
 		sendWSError(conn, ErrCodeShellFailed, err.Error())
-		conn.Close(websocket.StatusInternalError, "connect failed")
+		_ = conn.Close(websocket.StatusInternalError, "connect failed")
 		return nil
 	}
 
@@ -198,7 +198,7 @@ func (m *Manager) handleClientMessages(session *Session, conn *websocket.Conn) {
 		}
 
 		switch msg.Type {
-		case "input":
+		case msgTypeInput:
 			if err := session.HandleInput(msg.Data); err != nil {
 				slog.Debug("terminal: input error", slog.String("error", err.Error()))
 			}
@@ -306,5 +306,5 @@ func sendWSError(conn *websocket.Conn, code, message string) {
 	data, _ := json.Marshal(msg)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn.Write(ctx, websocket.MessageText, data)
+	_ = conn.Write(ctx, websocket.MessageText, data)
 }

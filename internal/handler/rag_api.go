@@ -155,8 +155,8 @@ func ServeRAGSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id": sessionID,
-		"messages":   messages,
-		"total":      len(messages),
+		"session_id":    sessionID,
+		jsonKeyMessages: messages,
+		jsonKeyTotal:    len(messages),
 	})
 }

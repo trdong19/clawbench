@@ -21,6 +21,12 @@ import (
 // interpreted as a git flag. (ISS-132)
 var validGitSHA = regexp.MustCompile(`^[0-9a-f]{6,40}$`)
 
+// gitCommand creates an exec.Command with context for running git commands.
+// Uses the provided context for cancellation support.
+func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "git", args...) //nolint:gosec // git commands use validated parameters, not user input
+}
+
 // isValidGitRefName checks that a git ref name (branch/tag) is safe to pass
 // as a CLI argument. Only allows characters valid in git ref names:
 // alphanumeric, dot, slash, underscore, hyphen (not leading).
@@ -28,10 +34,17 @@ var validGitSHA = regexp.MustCompile(`^[0-9a-f]{6,40}$`)
 // like `\`, `;`, `|`, `$`, backticks, `!` from passing validation. (ISS-179)
 var validGitRefName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./_-]*$`)
 
+const gitHead = "HEAD"
+
+const (
+	jsonKeyBranch   = "branch"
+	gitSubCmdBranch = "branch"
+)
+
 // isValidGitSHA returns true if s looks like a valid hex commit SHA.
 // Also accepts "HEAD" which is a safe git ref used for working tree diffs.
 func isValidGitSHA(s string) bool {
-	if s == "HEAD" {
+	if s == gitHead {
 		return true
 	}
 	return validGitSHA.MatchString(s)
@@ -114,7 +127,7 @@ func parseDecorateRefs(s string) []string {
 		}
 		// Skip "HEAD -> " prefix, keep the branch name it points to
 		if strings.HasPrefix(part, "HEAD -> ") {
-			refs = append(refs, "HEAD")
+			refs = append(refs, gitHead)
 			part = strings.TrimPrefix(part, "HEAD -> ")
 		}
 		// Remote-tracking refs are already excluded by --decorate-refs-exclude,
@@ -131,7 +144,7 @@ func parseDecorateRefs(s string) []string {
 
 // isGitRepo checks if the given path is inside a git repository.
 func isGitRepo(projectPath string) bool {
-	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	cmd := gitCommand(context.Background(), "rev-parse", "--is-inside-work-tree")
 	cmd.Dir = projectPath
 	_, err := cmd.Output()
 	return err == nil
@@ -150,16 +163,16 @@ func ServeGitProjectHistory(w http.ResponseWriter, r *http.Request) {
 
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"isGit":   false,
-			"commits": []interface{}{},
-			"hasMore": false,
+			jsonKeyIsGit:   false,
+			jsonKeyCommits: []interface{}{},
+			jsonKeyHasMore: false,
 		})
 		return
 	}
 
 	skip := 0
 	if s := r.URL.Query().Get("skip"); s != "" {
-		fmt.Sscanf(s, "%d", &skip)
+		_, _ = fmt.Sscanf(s, "%d", &skip)
 	}
 
 	// git log for entire project, with optional skip
@@ -170,16 +183,16 @@ func ServeGitProjectHistory(w http.ResponseWriter, r *http.Request) {
 	if skip > 0 {
 		logArgs = append(logArgs, "--skip", fmt.Sprintf("%d", skip))
 	}
-	cmd := exec.Command("git", logArgs...)
+	cmd := gitCommand(context.Background(), logArgs...)
 	cmd.Dir = projectPath
 	output, _ := cmd.CombinedOutput()
 
 	commits := parseGitLog(string(output))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"isGit":   true,
-		"commits": commits,
-		"hasMore": len(commits) == 30,
+		jsonKeyIsGit:   true,
+		jsonKeyCommits: commits,
+		jsonKeyHasMore: len(commits) == 30,
 	})
 }
 
@@ -200,15 +213,15 @@ func ServeGitBranch(w http.ResponseWriter, r *http.Request) {
 
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"isGit":  false,
-			"branch": "",
-			"head":   "",
-			"dirty":  false,
+			jsonKeyIsGit:  false,
+			jsonKeyBranch: "",
+			"head":        "",
+			"dirty":       false,
 		})
 		return
 	}
 
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd := gitCommand(context.Background(), "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = projectPath
 	output, err := cmd.Output()
 	branch := ""
@@ -217,24 +230,24 @@ func ServeGitBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	headSHA := ""
-	shaOutput, shaErr := exec.Command("git", "rev-parse", "HEAD").Output()
+	shaOutput, shaErr := gitCommand(context.Background(), "rev-parse", "HEAD").Output()
 	if shaErr == nil {
 		headSHA = strings.TrimSpace(string(shaOutput))
 	}
 
 	// git diff --quiet HEAD exits 0 if clean, 1 if dirty, 128 if no commits yet
 	dirty := false
-	diffCmd := exec.Command("git", "diff", "--quiet", "HEAD")
+	diffCmd := gitCommand(context.Background(), "diff", "--quiet", "HEAD")
 	diffCmd.Dir = projectPath
 	if err := diffCmd.Run(); err != nil {
 		dirty = true
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"isGit":  true,
-		"branch": branch,
-		"head":   headSHA,
-		"dirty":  dirty,
+		jsonKeyIsGit:  true,
+		jsonKeyBranch: branch,
+		"head":        headSHA,
+		"dirty":       dirty,
 	})
 }
 
@@ -254,7 +267,7 @@ func ServeGitInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// git init
-	cmd := exec.Command("git", "init")
+	cmd := gitCommand(context.Background(), "init")
 	cmd.Dir = projectPath
 	_, err := cmd.CombinedOutput()
 	if err != nil {
@@ -262,21 +275,21 @@ func ServeGitInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	writeJSON(w, http.StatusOK, map[string]bool{jsonKeySuccess: true})
 }
 
 // gitDiff returns the diff for a file at a specific commit (or HEAD for working tree).
 // For working tree diffs, it combines both staged and unstaged changes so that
 // users see the complete picture of uncommitted modifications.
 func gitDiff(projectPath, relPath, commit string) ([]byte, error) {
-	if commit == "" || commit == "HEAD" {
+	if commit == "" || commit == gitHead {
 		// Staged changes (diff between HEAD and index)
-		cmdCached := exec.Command("git", "diff", "--cached", "--", relPath)
+		cmdCached := gitCommand(context.Background(), "diff", "--cached", "--", relPath)
 		cmdCached.Dir = projectPath
 		cached, cachedErr := cmdCached.CombinedOutput()
 
 		// Unstaged changes (diff between index and working tree)
-		cmdUnstaged := exec.Command("git", "diff", "--", relPath)
+		cmdUnstaged := gitCommand(context.Background(), "diff", "--", relPath)
 		cmdUnstaged.Dir = projectPath
 		unstaged, unstagedErr := cmdUnstaged.CombinedOutput()
 
@@ -297,7 +310,7 @@ func gitDiff(projectPath, relPath, commit string) ([]byte, error) {
 		return combined, nil
 	}
 
-	cmd := exec.Command("git", "show", commit, "--", relPath)
+	cmd := gitCommand(context.Background(), "show", commit, "--", relPath)
 	cmd.Dir = projectPath
 	return cmd.CombinedOutput()
 }
@@ -310,7 +323,7 @@ func writeDiffResponse(w http.ResponseWriter, output []byte, cmdErr error) {
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"diff":  string(output),
-		"empty": len(strings.TrimSpace(string(output))) == 0,
+		"empty": strings.TrimSpace(string(output)) == "",
 	})
 }
 
@@ -389,7 +402,7 @@ func ServeGitCommitFiles(w http.ResponseWriter, r *http.Request) {
 
 	// Regular commit (or orphan): use diff-tree as before
 	// -m splits merge commits so their diffs are shown (otherwise empty)
-	cmd := exec.Command("git", "diff-tree", "-m", "--no-commit-id", "--name-status", "-r", sha)
+	cmd := gitCommand(context.Background(), "diff-tree", "-m", "--no-commit-id", "--name-status", "-r", sha)
 	cmd.Dir = projectPath
 	output, err := cmd.CombinedOutput()
 
@@ -416,7 +429,7 @@ func ServeGitCommitFiles(w http.ResponseWriter, r *http.Request) {
 
 // getCommitParents returns the parent SHAs of a commit.
 func getCommitParents(projectPath, sha string) []string {
-	cmd := exec.Command("git", "cat-file", "-p", sha)
+	cmd := gitCommand(context.Background(), "cat-file", "-p", sha)
 	cmd.Dir = projectPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -447,9 +460,11 @@ type mergeFileInfo struct {
 
 // buildMergeFileGroups computes per-parent file groups for a merge commit.
 // Files changed by both parents are assigned to parent1 (the current branch).
+//
+//nolint:gocognit // TODO: refactor to reduce complexity
 func buildMergeFileGroups(projectPath, sha string, parents []string) map[string]interface{} {
 	// Get merge-base between first two parents
-	cmd := exec.Command("git", "merge-base", parents[0], parents[1])
+	cmd := gitCommand(context.Background(), "merge-base", parents[0], parents[1])
 	cmd.Dir = projectPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -465,15 +480,15 @@ func buildMergeFileGroups(projectPath, sha string, parents []string) map[string]
 	groups := make([]mergeFileGroup, 0, len(parents))
 
 	for i, parent := range parents {
-		cmd := exec.Command("git", "diff", "--name-status", mergeBase, parent)
-		cmd.Dir = projectPath
-		output, err := cmd.Output()
-		if err != nil {
+		diffCmd := gitCommand(context.Background(), "diff", "--name-status", mergeBase, parent)
+		diffCmd.Dir = projectPath
+		diffOutput, diffErr := diffCmd.Output()
+		if diffErr != nil {
 			continue
 		}
 
 		var files []mergeFileInfo
-		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		for _, line := range strings.Split(strings.TrimSpace(string(diffOutput)), "\n") {
 			if line == "" {
 				continue
 			}
@@ -504,7 +519,7 @@ func buildMergeFileGroups(projectPath, sha string, parents []string) map[string]
 	}
 
 	// Also include files only in the merge result (conflict resolutions)
-	cmd = exec.Command("git", "diff", "--name-status", mergeBase, sha)
+	cmd = gitCommand(context.Background(), "diff", "--name-status", mergeBase, sha)
 	cmd.Dir = projectPath
 	output, err = cmd.Output()
 	if err == nil {
@@ -545,10 +560,55 @@ func buildMergeFileGroups(projectPath, sha string, parents []string) map[string]
 // For "Merge branch 'X' into Y", returns [Y, X].
 // For "Merge branch 'X'" (no into), returns ["", X].
 // Falls back to short SHA if parsing fails.
+//
+// parseMergeBranchMsg tries "Merge branch 'src' into dst" format.
+func parseMergeBranchMsg(msg string, labels []string) {
+	idx := strings.Index(msg, "Merge branch '")
+	if idx == -1 {
+		return
+	}
+	rest := msg[idx+len("Merge branch '"):]
+	endSrc := strings.Index(rest, "'")
+	if endSrc == -1 {
+		return
+	}
+	src := rest[:endSrc]
+	afterSrc := rest[endSrc+1:]
+	if strings.HasPrefix(afterSrc, " into ") {
+		dst := strings.TrimPrefix(afterSrc, " into ")
+		if len(labels) >= 1 {
+			labels[0] = dst
+		}
+		if len(labels) >= 2 {
+			labels[1] = src
+		}
+	} else if len(labels) >= 2 {
+		labels[1] = src
+	}
+}
+
+// parseMergePRMsg tries "Merge pull request #N from user/branch" format.
+func parseMergePRMsg(msg string, labels []string) {
+	if labels[1] != "" || !strings.HasPrefix(msg, "Merge pull request") {
+		return
+	}
+	idx := strings.LastIndex(msg, "from ")
+	if idx == -1 {
+		return
+	}
+	src := msg[idx+5:]
+	if slashIdx := strings.LastIndex(src, "/"); slashIdx != -1 {
+		src = src[slashIdx+1:]
+	}
+	if len(labels) >= 2 {
+		labels[1] = src
+	}
+}
+
 func extractMergeLabels(projectPath, sha string, parents []string) []string {
 	labels := make([]string, len(parents))
 
-	cmd := exec.Command("git", "log", "--format=%s", "-1", sha)
+	cmd := gitCommand(context.Background(), "log", "--format=%s", "-1", sha)
 	cmd.Dir = projectPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -556,49 +616,13 @@ func extractMergeLabels(projectPath, sha string, parents []string) []string {
 	}
 	msg := strings.TrimSpace(string(output))
 
-	// Try "Merge branch 'src' into dst" format
-	// e.g. "Merge branch 'main' into fix/android-coverage-gate"
-	if idx := strings.Index(msg, "Merge branch '"); idx != -1 {
-		rest := msg[idx+len("Merge branch '"):]
-		endSrc := strings.Index(rest, "'")
-		if endSrc != -1 {
-			src := rest[:endSrc]
-			// afterSrc starts after the closing quote, e.g. " into fix/..."
-			afterSrc := rest[endSrc+1:]
-			if strings.HasPrefix(afterSrc, " into ") {
-				dst := strings.TrimPrefix(afterSrc, " into ")
-				if len(labels) >= 1 {
-					labels[0] = dst
-				}
-				if len(labels) >= 2 {
-					labels[1] = src
-				}
-			} else {
-				// "Merge branch 'X'" without into
-				if len(labels) >= 2 {
-					labels[1] = src
-				}
-			}
-		}
-	}
-
-	// Try "Merge pull request #N from user/branch" format
-	if labels[1] == "" && strings.HasPrefix(msg, "Merge pull request") {
-		if idx := strings.LastIndex(msg, "from "); idx != -1 {
-			src := msg[idx+5:]
-			if slashIdx := strings.LastIndex(src, "/"); slashIdx != -1 {
-				src = src[slashIdx+1:]
-			}
-			if len(labels) >= 2 {
-				labels[1] = src
-			}
-		}
-	}
+	parseMergeBranchMsg(msg, labels)
+	parseMergePRMsg(msg, labels)
 
 	// Fallback: short SHA for unlabeled parents
 	for i, label := range labels {
 		if label == "" && i < len(parents) {
-			cmd := exec.Command("git", "rev-parse", "--short", parents[i])
+			cmd := gitCommand(context.Background(), "rev-parse", "--short", parents[i])
 			cmd.Dir = projectPath
 			output, err := cmd.Output()
 			if err == nil {
@@ -612,7 +636,7 @@ func extractMergeLabels(projectPath, sha string, parents []string) []string {
 
 // fallbackMergeFiles uses diff-tree -m with dedup when merge-base fails.
 func fallbackMergeFiles(projectPath, sha string) map[string]interface{} {
-	cmd := exec.Command("git", "diff-tree", "-m", "--no-commit-id", "--name-status", "-r", sha)
+	cmd := gitCommand(context.Background(), "diff-tree", "-m", "--no-commit-id", "--name-status", "-r", sha)
 	cmd.Dir = projectPath
 	output, err := cmd.CombinedOutput()
 
@@ -644,7 +668,7 @@ func fallbackMergeFiles(projectPath, sha string) map[string]interface{} {
 
 	mergeFiles := make([]mergeFileInfo, len(files))
 	for i, f := range files {
-		mergeFiles[i] = mergeFileInfo{Path: f.Path, Type: f.Type}
+		mergeFiles[i] = mergeFileInfo(f)
 	}
 
 	return map[string]interface{}{
@@ -666,9 +690,9 @@ func ServeGitHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"isGit":     false,
-			"commits":   []interface{}{},
-			"untracked": false,
+			jsonKeyIsGit:   false,
+			jsonKeyCommits: []interface{}{},
+			"untracked":    false,
 		})
 		return
 	}
@@ -686,19 +710,19 @@ func ServeGitHistory(w http.ResponseWriter, r *http.Request) {
 	// Check if the file is tracked by Git (in the index or any commit).
 	// git ls-files --error-unmatch exits with code 0 and produces no output
 	// only when the file is tracked. Otherwise it exits with code 128.
-	lsCmd := exec.Command("git", "ls-files", "--error-unmatch", relPath)
+	lsCmd := gitCommand(context.Background(), "ls-files", "--error-unmatch", relPath)
 	lsCmd.Dir = projectPath
 	lsOut, lsErr := lsCmd.CombinedOutput()
 	untracked := lsErr != nil || len(lsOut) == 0
 
 	// git log --format="%H|%P|%s|%ad|%an%d" --date=iso-strict --topo-order -- <path>
-	cmd := exec.Command("git", "log", "--format=%H|%P|%s|%ad|%an%d", "--date=iso-strict", "--topo-order", "--decorate-refs-exclude=refs/remotes", "--", relPath)
+	cmd := gitCommand(context.Background(), "log", "--format=%H|%P|%s|%ad|%an%d", "--date=iso-strict", "--topo-order", "--decorate-refs-exclude=refs/remotes", "--", relPath)
 	cmd.Dir = projectPath
 	output, _ := cmd.CombinedOutput()
 
 	commits := parseGitLog(string(output))
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"isGit": true, "commits": commits, "untracked": untracked})
+	writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyIsGit: true, jsonKeyCommits: commits, "untracked": untracked})
 }
 
 // ServeGitDiff returns the diff for a specific commit or the working tree diff.
@@ -744,7 +768,7 @@ func ServeGitStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isGitRepo(projectPath) {
-	writeJSON(w, http.StatusOK, map[string]bool{"isGit": false, "hasUncommitted": false})
+		writeJSON(w, http.StatusOK, map[string]bool{jsonKeyIsGit: false, jsonKeyHasUncommitted: false})
 		return
 	}
 
@@ -758,12 +782,12 @@ func ServeGitStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd := exec.Command("git", "diff", "--stat", "HEAD", "--", relPath)
+	cmd := gitCommand(context.Background(), "diff", "--stat", "HEAD", "--", relPath)
 	cmd.Dir = projectPath
 	output, err := cmd.CombinedOutput()
 
-	hasUncommitted := err == nil && len(strings.TrimSpace(string(output))) > 0
-	writeJSON(w, http.StatusOK, map[string]interface{}{"isGit": true, "hasUncommitted": hasUncommitted})
+	hasUncommitted := err == nil && strings.TrimSpace(string(output)) != ""
+	writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyIsGit: true, jsonKeyHasUncommitted: hasUncommitted})
 }
 
 // wtFileInfo extends commitInfo with a staged flag for working tree files.
@@ -816,9 +840,52 @@ func parseGitStatusPorcelain(output string) []wtFileInfo {
 	return files
 }
 
+// buildSHARequestMap builds a prefix→original map from requested SHAs for O(1) matching.
+func buildSHARequestMap(shas []string) map[string]string {
+	reqSHAMap := make(map[string]string, len(shas))
+	for _, sha := range shas {
+		prefixLen := len(sha)
+		if prefixLen > 40 {
+			prefixLen = 40
+		}
+		reqSHAMap[sha[:prefixLen]] = sha
+	}
+	return reqSHAMap
+}
+
+// mapFullToRequestedSHA finds which requested SHA matches a full SHA by prefix lookup.
+func mapFullToRequestedSHA(sha string, reqSHAMap map[string]string) string {
+	for prefixLen := 7; prefixLen <= len(sha); prefixLen++ {
+		if reqSHA, ok := reqSHAMap[sha[:prefixLen]]; ok {
+			return reqSHA
+		}
+	}
+	return ""
+}
+
+// rekeyVerifyResults re-keys results under the original requested SHAs and marks unmatched as nil.
+func rekeyVerifyResults(results map[string]interface{}, shas []string, fullToRequested map[string]string) {
+	for _, sha := range shas {
+		matched := false
+		for fullSHA, reqSHA := range fullToRequested {
+			if reqSHA == sha {
+				if fullSHA != sha {
+					results[sha] = results[fullSHA]
+					delete(results, fullSHA)
+				}
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			results[sha] = nil
+		}
+	}
+}
+
 // ServeGitVerifyCommits checks which SHAs are valid git commit objects.
 // Accepts POST with JSON body {"shas": ["abc1234", ...]}.
-// Returns {"results": {"abc1234": {"sha":"...","msg":"...","date":"...","author":"..."}, "def5678": null}}
+// Returns {jsonKeyResults: {"abc1234": {"sha":"...","msg":"...","date":"...","author":"..."}, "def5678": null}}
 // where null means the SHA is not a valid commit.
 // For valid commits, the full commit info is returned for breadcrumb display.
 func ServeGitVerifyCommits(w http.ResponseWriter, r *http.Request) {
@@ -830,7 +897,7 @@ func ServeGitVerifyCommits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isGitRepo(projectPath) {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"results": map[string]interface{}{}})
+		writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyResults: map[string]interface{}{}})
 		return
 	}
 
@@ -838,7 +905,7 @@ func ServeGitVerifyCommits(w http.ResponseWriter, r *http.Request) {
 		SHAs []string `json:"shas"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.SHAs) == 0 {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"results": map[string]interface{}{}})
+		writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyResults: map[string]interface{}{}})
 		return
 	}
 
@@ -861,65 +928,36 @@ func ServeGitVerifyCommits(w http.ResponseWriter, r *http.Request) {
 
 	// Batch: use git log --no-walk=sorted to fetch all commit info in one command
 	// --ignore-missing skips invalid SHAs instead of erroring out
-	logArgs := []string{
+	logArgs := make([]string, 0, 5+len(body.SHAs))
+	logArgs = append(
+		logArgs,
 		"log", "--no-walk=sorted", "--ignore-missing",
 		"--format=%H|%P|%s|%ad|%an%d",
 		"--date=iso-strict",
-	}
+	)
 	logArgs = append(logArgs, body.SHAs...)
 
-	logCmd := exec.Command("git", logArgs...)
+	logCmd := gitCommand(context.Background(), logArgs...)
 	logCmd.Dir = projectPath
 	logOutput, _ := logCmd.Output()
 
 	// Parse git log output — only valid commits appear
-	// Map full SHA → requested SHA for key normalization (frontend may send abbreviated SHAs)
-	// Build a prefix lookup map from requested SHAs for O(1) matching instead of O(N×M) scan.
-	reqSHAMap := make(map[string]string, len(body.SHAs)) // prefix→original
-	for _, sha := range body.SHAs {
-		// Index by the minimum unique prefix length (at least 7 chars for abbreviated SHAs)
-		prefixLen := len(sha)
-		if prefixLen > 40 {
-			prefixLen = 40
-		}
-		reqSHAMap[sha[:prefixLen]] = sha
-	}
-
+	reqSHAMap := buildSHARequestMap(body.SHAs)
 	fullToRequested := map[string]string{}
 	if len(logOutput) > 0 {
 		commits := parseGitLog(string(logOutput))
 		for _, c := range commits {
-			// Find which requested SHA matches this full SHA (by prefix lookup)
-			for prefixLen := 7; prefixLen <= len(c.SHA); prefixLen++ {
-				if reqSHA, ok := reqSHAMap[c.SHA[:prefixLen]]; ok {
-					fullToRequested[c.SHA] = reqSHA
-					break
-				}
+			reqSHA := mapFullToRequestedSHA(c.SHA, reqSHAMap)
+			if reqSHA != "" {
+				fullToRequested[c.SHA] = reqSHA
 			}
-			// Store under both full SHA and (if matched) requested SHA
 			results[c.SHA] = c
 		}
 	}
 
-	// Re-key results under the original requested SHAs and mark unmatched as nil
-	for _, sha := range body.SHAs {
-		matched := false
-		for fullSHA, reqSHA := range fullToRequested {
-			if reqSHA == sha {
-				if fullSHA != sha {
-					results[sha] = results[fullSHA]
-					delete(results, fullSHA)
-				}
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			results[sha] = nil
-		}
-	}
+	rekeyVerifyResults(results, body.SHAs, fullToRequested)
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"results": results})
+	writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyResults: results})
 }
 
 // ServeGitWorkingTreeFiles returns uncommitted file changes for the project or a specific file.
@@ -932,7 +970,7 @@ func ServeGitWorkingTreeFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isGitRepo(projectPath) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{"isGit": false, "hasUncommitted": false, "files": []interface{}{}})
+		writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyIsGit: false, jsonKeyHasUncommitted: false, jsonKeyFiles: []interface{}{}})
 		return
 	}
 
@@ -943,31 +981,31 @@ func ServeGitWorkingTreeFiles(w http.ResponseWriter, r *http.Request) {
 		if _, ok := validateAndResolvePath(w, r, projectPath, relPath); !ok {
 			return
 		}
-		cmd := exec.Command("git", "diff", "--name-status", "HEAD", "--", relPath)
+		cmd := gitCommand(context.Background(), "diff", "--name-status", "HEAD", "--", relPath)
 		cmd.Dir = projectPath
 		output, err := cmd.CombinedOutput()
-		hasUncommitted := err == nil && len(strings.TrimSpace(string(output))) > 0
+		hasUncommitted := err == nil && strings.TrimSpace(string(output)) != ""
 		// Also check untracked
 		if !hasUncommitted {
-			lsCmd := exec.Command("git", "ls-files", "--error-unmatch", relPath)
+			lsCmd := gitCommand(context.Background(), "ls-files", "--error-unmatch", relPath)
 			lsCmd.Dir = projectPath
 			_, lsErr := lsCmd.CombinedOutput()
 			hasUncommitted = lsErr != nil // not tracked = untracked file
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"isGit": true, "hasUncommitted": hasUncommitted, "files": []interface{}{}})
+		writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyIsGit: true, jsonKeyHasUncommitted: hasUncommitted, jsonKeyFiles: []interface{}{}})
 		return
 	}
 
 	// For project: return all uncommitted files using git status --porcelain
-	cmd := exec.Command("git", "status", "--porcelain")
+	cmd := gitCommand(context.Background(), "status", "--porcelain")
 	cmd.Dir = projectPath
 	output, _ := cmd.CombinedOutput()
 	allFiles := parseGitStatusPorcelain(string(output))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"isGit":          true,
-		"hasUncommitted": len(allFiles) > 0,
-		"files":          allFiles,
+		jsonKeyIsGit:          true,
+		jsonKeyHasUncommitted: len(allFiles) > 0,
+		jsonKeyFiles:          allFiles,
 	})
 }
 
@@ -1032,11 +1070,12 @@ func parseWorktreePorcelain(output, projectPath string) []worktreeInfo {
 			continue
 		}
 		// Compute DisplayPath
-		if strings.HasPrefix(info.Path, projectPath+"/") {
+		switch {
+		case strings.HasPrefix(info.Path, projectPath+"/"):
 			info.DisplayPath = "." + info.Path[len(projectPath):]
-		} else if info.Path == projectPath {
+		case info.Path == projectPath:
 			info.DisplayPath = "."
-		} else {
+		default:
 			info.DisplayPath = info.Path
 		}
 		info.IsCurrent = info.Path == projectPath
@@ -1065,9 +1104,9 @@ func parseTrackInfo(s string) (ahead, behind int) {
 	for _, part := range strings.Split(s, ", ") {
 		part = strings.TrimSpace(part)
 		if strings.HasPrefix(part, "ahead ") {
-			fmt.Sscanf(part, "ahead %d", &ahead)
+			_, _ = fmt.Sscanf(part, "ahead %d", &ahead)
 		} else if strings.HasPrefix(part, "behind ") {
-			fmt.Sscanf(part, "behind %d", &behind)
+			_, _ = fmt.Sscanf(part, "behind %d", &behind)
 		}
 	}
 	return ahead, behind
@@ -1106,7 +1145,7 @@ func parseBranchForEachRef(output string) []branchInfo {
 // 4. Empty string if none found
 func detectDefaultBranch(projectPath string) string {
 	// Try symbolic-ref for origin/HEAD
-	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	cmd := gitCommand(context.Background(), "symbolic-ref", "refs/remotes/origin/HEAD")
 	cmd.Dir = projectPath
 	out, err := cmd.Output()
 	if err == nil {
@@ -1121,14 +1160,14 @@ func detectDefaultBranch(projectPath string) string {
 	}
 
 	// Fallback: check if "main" exists
-	cmd = exec.Command("git", "rev-parse", "--verify", "main")
+	cmd = gitCommand(context.Background(), "rev-parse", "--verify", "main")
 	cmd.Dir = projectPath
 	if err := cmd.Run(); err == nil {
 		return "main"
 	}
 
 	// Fallback: check if "master" exists
-	cmd = exec.Command("git", "rev-parse", "--verify", "master")
+	cmd = gitCommand(context.Background(), "rev-parse", "--verify", "master")
 	cmd.Dir = projectPath
 	if err := cmd.Run(); err == nil {
 		return "master"
@@ -1149,8 +1188,8 @@ func ServeGitBranches(w http.ResponseWriter, r *http.Request) {
 
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"isGit":        false,
-			"branches":     []interface{}{},
+			jsonKeyIsGit:    false,
+			"branches":      []interface{}{},
 			"defaultBranch": "",
 			"currentBranch": "",
 		})
@@ -1158,13 +1197,13 @@ func ServeGitBranches(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get all branches with tracking info
-	cmd := exec.Command("git", "for-each-ref", "--format=%(refname:short)|%(upstream:short)|%(upstream:track)", "refs/heads/")
+	cmd := gitCommand(context.Background(), "for-each-ref", "--format=%(refname:short)|%(upstream:short)|%(upstream:track)", "refs/heads/")
 	cmd.Dir = projectPath
 	output, _ := cmd.CombinedOutput()
 	branches := parseBranchForEachRef(string(output))
 
 	// Get current branch
-	cmd = exec.Command("git", "symbolic-ref", "--short", "HEAD")
+	cmd = gitCommand(context.Background(), "symbolic-ref", "--short", "HEAD")
 	cmd.Dir = projectPath
 	curOut, curErr := cmd.Output()
 	currentBranch := ""
@@ -1183,7 +1222,7 @@ func ServeGitBranches(w http.ResponseWriter, r *http.Request) {
 
 	// Get stash count
 	stashCount := 0
-	stashListCmd := exec.Command("git", "stash", "list")
+	stashListCmd := gitCommand(context.Background(), "stash", "list")
 	stashListCmd.Dir = projectPath
 	stashListOut, _ := stashListCmd.Output()
 	for _, ch := range string(stashListOut) {
@@ -1191,7 +1230,7 @@ func ServeGitBranches(w http.ResponseWriter, r *http.Request) {
 			stashCount++
 		}
 	}
-	if len(strings.TrimSpace(string(stashListOut))) > 0 {
+	if strings.TrimSpace(string(stashListOut)) != "" {
 		stashCount++ // last entry has no trailing newline
 	}
 
@@ -1199,9 +1238,9 @@ func ServeGitBranches(w http.ResponseWriter, r *http.Request) {
 		branches = []branchInfo{}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"isGit":         true,
+		jsonKeyIsGit:    true,
 		"branches":      branches,
-		"defaultBranch":  defaultBranch,
+		"defaultBranch": defaultBranch,
 		"currentBranch": currentBranch,
 		"stashCount":    stashCount,
 	})
@@ -1209,7 +1248,7 @@ func ServeGitBranches(w http.ResponseWriter, r *http.Request) {
 
 // ServeGitVerifyWorktrees checks which paths are valid git worktree directories.
 // Accepts POST with JSON body {"paths": ["/abs/path/1", "/abs/path/2"]}.
-// Returns {"results": {"/abs/path/1": {"branch":"feature-x","displayPath":"./.worktrees/feature-x","isCurrent":false,"path":"/abs/path/1"}, "/abs/path/2": null}}
+// Returns {jsonKeyResults: {"/abs/path/1": {jsonKeyBranch:"feature-x","displayPath":"./.worktrees/feature-x","isCurrent":false,"path":"/abs/path/1"}, "/abs/path/2": null}}
 // where null means the path is not a valid worktree.
 func ServeGitVerifyWorktrees(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
@@ -1220,7 +1259,7 @@ func ServeGitVerifyWorktrees(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isGitRepo(projectPath) {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"results": map[string]interface{}{}})
+		writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyResults: map[string]interface{}{}})
 		return
 	}
 
@@ -1228,7 +1267,7 @@ func ServeGitVerifyWorktrees(w http.ResponseWriter, r *http.Request) {
 		Paths []string `json:"paths"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Paths) == 0 {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"results": map[string]interface{}{}})
+		writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyResults: map[string]interface{}{}})
 		return
 	}
 
@@ -1239,7 +1278,7 @@ func ServeGitVerifyWorktrees(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Run git worktree list --porcelain once to get all worktrees
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd := gitCommand(context.Background(), "worktree", "list", "--porcelain")
 	cmd.Dir = projectPath
 	output, _ := cmd.CombinedOutput()
 	trees := parseWorktreePorcelain(string(output), projectPath)
@@ -1268,7 +1307,7 @@ func ServeGitVerifyWorktrees(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"results": results})
+	writeJSON(w, http.StatusOK, map[string]interface{}{jsonKeyResults: results})
 }
 
 // ServeGitWorktrees returns all git worktrees for the project.
@@ -1288,13 +1327,13 @@ func ServeGitWorktrees(w http.ResponseWriter, r *http.Request) {
 
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"isGit":    false,
-			"worktrees": []interface{}{},
+			jsonKeyIsGit: false,
+			"worktrees":  []interface{}{},
 		})
 		return
 	}
 
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd := gitCommand(context.Background(), "worktree", "list", "--porcelain")
 	cmd.Dir = projectPath
 	output, _ := cmd.CombinedOutput()
 
@@ -1309,9 +1348,9 @@ func ServeGitWorktrees(w http.ResponseWriter, r *http.Request) {
 
 	// Check dirty status for each worktree in parallel
 	type dirtyResult struct {
-		Index         int
-		Dirty         bool
-		ChangeCount   int
+		Index        int
+		Dirty        bool
+		ChangeCount  int
 		UntrackedCnt int
 	}
 	results := make(chan dirtyResult, len(trees))
@@ -1351,16 +1390,77 @@ func ServeGitWorktrees(w http.ResponseWriter, r *http.Request) {
 		trees = []worktreeInfo{}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"isGit":    true,
-		"worktrees": trees,
+		jsonKeyIsGit: true,
+		"worktrees":  trees,
 	})
 }
 
 // checkoutMu serializes git checkout operations to prevent concurrent branch switches.
 var checkoutMu sync.Mutex
 
+// getDirtyLineCount returns the number of dirty lines in the working tree.
+func getDirtyLineCount(projectPath string) int {
+	statusCmd := gitCommand(context.Background(), "status", "--porcelain")
+	statusCmd.Dir = projectPath
+	statusOut, _ := statusCmd.CombinedOutput()
+	dirtyLines := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(statusOut)), "\n") {
+		if len(line) >= 2 {
+			dirtyLines++
+		}
+	}
+	return dirtyLines
+}
+
+// checkoutStash stashes dirty changes if needed. Returns (stashed, ok).
+func checkoutStash(w http.ResponseWriter, projectPath string, isDirty, shouldStash bool) (stashed, ok bool) {
+	if !shouldStash || !isDirty {
+		return false, true
+	}
+	stashCmd := gitCommand(context.Background(), "stash")
+	stashCmd.Dir = projectPath
+	stashOut, stashErr := stashCmd.CombinedOutput()
+	if stashErr != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			jsonKeySuccess: false,
+			jsonKeyError:   "stash_failed",
+		})
+		return false, false
+	}
+	_ = stashOut
+	return true, true
+}
+
+// classifyCheckoutError maps git switch error output to an error code.
+func classifyCheckoutError(errMsg string) string {
+	switch {
+	case strings.Contains(errMsg, "conflict"):
+		return "checkout_conflict"
+	case strings.Contains(errMsg, "hook"):
+		return "hook_rejected"
+	case strings.Contains(errMsg, "did not match") || strings.Contains(errMsg, "not found"):
+		return "branch_not_found"
+	default:
+		return "checkout_failed"
+	}
+}
+
+// getStashCount returns the number of stash entries.
+func getStashCount(projectPath string) int {
+	stashListCmd := gitCommand(context.Background(), "stash", "list")
+	stashListCmd.Dir = projectPath
+	stashListOut, _ := stashListCmd.Output()
+	stashCount := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(stashListOut)), "\n") {
+		if line != "" {
+			stashCount++
+		}
+	}
+	return stashCount
+}
+
 // ServeGitCheckout switches the current branch. Supports stash and force options.
-// POST /api/git/checkout  { "branch": string, "stash": bool, "force": bool }
+// POST /api/git/checkout  { jsonKeyBranch: string, "stash": bool, "force": bool }
 func ServeGitCheckout(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -1397,49 +1497,28 @@ func ServeGitCheckout(w http.ResponseWriter, r *http.Request) {
 	// Acquire checkout mutex (non-blocking)
 	if !checkoutMu.TryLock() {
 		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"success": false,
-			"error":   "checkout_in_progress",
+			jsonKeySuccess: false,
+			jsonKeyError:   "checkout_in_progress",
 		})
 		return
 	}
 	defer checkoutMu.Unlock()
 
-	// Check dirty status
-	statusCmd := exec.Command("git", "status", "--porcelain")
-	statusCmd.Dir = projectPath
-	statusOut, _ := statusCmd.CombinedOutput()
-	dirtyLines := 0
-	for _, line := range strings.Split(strings.TrimSpace(string(statusOut)), "\n") {
-		if len(line) >= 2 {
-			dirtyLines++
-		}
-	}
+	dirtyLines := getDirtyLineCount(projectPath)
 	isDirty := dirtyLines > 0
 
 	if isDirty && !body.Stash && !body.Force {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success":        false,
-			"error":          "dirty_worktree",
+			jsonKeySuccess:   false,
+			jsonKeyError:     "dirty_worktree",
 			"untrackedCount": dirtyLines,
 		})
 		return
 	}
 
-	// Stash if requested and dirty
-	stashed := false
-	if body.Stash && isDirty {
-		stashCmd := exec.Command("git", "stash")
-		stashCmd.Dir = projectPath
-		stashOut, stashErr := stashCmd.CombinedOutput()
-		if stashErr != nil {
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"success": false,
-				"error":   "stash_failed",
-			})
-			return
-		}
-		_ = stashOut
-		stashed = true
+	stashed, ok := checkoutStash(w, projectPath, isDirty, body.Stash)
+	if !ok {
+		return
 	}
 
 	// Switch branch — use "--" separator to prevent branch name from being
@@ -1449,44 +1528,28 @@ func ServeGitCheckout(w http.ResponseWriter, r *http.Request) {
 		switchArgs = append(switchArgs, "-f")
 	}
 	switchArgs = append(switchArgs, "--", body.Branch)
-	switchCmd := exec.Command("git", switchArgs...)
+	switchCmd := gitCommand(context.Background(), switchArgs...)
 	switchCmd.Dir = projectPath
 	switchOut, switchErr := switchCmd.CombinedOutput()
 
 	if switchErr != nil {
 		errMsg := strings.TrimSpace(string(switchOut))
-		errorCode := "checkout_failed"
-		if strings.Contains(errMsg, "conflict") {
-			errorCode = "checkout_conflict"
-		} else if strings.Contains(errMsg, "hook") {
-			errorCode = "hook_rejected"
-		} else if strings.Contains(errMsg, "did not match") || strings.Contains(errMsg, "not found") {
-			errorCode = "branch_not_found"
-		}
+		errorCode := classifyCheckoutError(errMsg)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success":     false,
-			"error":       errorCode,
-			"errorDetail": errMsg,
+			jsonKeySuccess:     false,
+			jsonKeyError:       errorCode,
+			jsonKeyErrorDetail: errMsg,
 		})
 		return
 	}
 
-	// Get stash count
-	stashListCmd := exec.Command("git", "stash", "list")
-	stashListCmd.Dir = projectPath
-	stashListOut, _ := stashListCmd.Output()
-	stashCount := 0
-	for _, line := range strings.Split(strings.TrimSpace(string(stashListOut)), "\n") {
-		if line != "" {
-			stashCount++
-		}
-	}
+	stashCount := getStashCount(projectPath)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":   true,
-		"branch":    body.Branch,
-		"stashed":   stashed,
-		"stashCount": stashCount,
+		jsonKeySuccess: true,
+		jsonKeyBranch:  body.Branch,
+		"stashed":      stashed,
+		"stashCount":   stashCount,
 	})
 }
 
@@ -1516,15 +1579,15 @@ func ServeGitTags(w http.ResponseWriter, r *http.Request) {
 
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"isGit": false,
-			"tags":  []interface{}{},
+			jsonKeyIsGit: false,
+			"tags":       []interface{}{},
 		})
 		return
 	}
 
 	// List tags with commit metadata using for-each-ref
 	// Format: tagname|objectname|creatordate|creator
-	cmd := exec.Command("git", "for-each-ref",
+	cmd := gitCommand(context.Background(), "for-each-ref",
 		"--format=%(refname:short)|%(objectname)|%(creatordate:iso)|%(creator)",
 		"refs/tags/")
 	cmd.Dir = projectPath
@@ -1557,7 +1620,7 @@ func ServeGitTags(w http.ResponseWriter, r *http.Request) {
 
 		// Get tag message (annotated tags have messages, lightweight tags don't)
 		msg := ""
-		msgCmd := exec.Command("git", "tag", "-n1", name)
+		msgCmd := gitCommand(context.Background(), "tag", "-n1", name)
 		msgCmd.Dir = projectPath
 		msgOut, _ := msgCmd.Output()
 		if len(msgOut) > 0 {
@@ -1582,8 +1645,8 @@ func ServeGitTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"isGit": true,
-		"tags":  tags,
+		jsonKeyIsGit: true,
+		"tags":       tags,
 	})
 }
 
@@ -1596,8 +1659,8 @@ func serveGitDeleteBranch(w http.ResponseWriter, r *http.Request) {
 
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "not_git_repo",
+			jsonKeySuccess: false,
+			jsonKeyError:   jsonKeyNotGitRepo,
 		})
 		return
 	}
@@ -1607,29 +1670,29 @@ func serveGitDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "invalid_request",
+			jsonKeySuccess: false,
+			jsonKeyError:   jsonKeyInvalidRequest,
 		})
 		return
 	}
 	// Validate branch name to prevent argument injection (ISS-151)
 	if !isValidGitRefName(body.Name) {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "invalid_branch_name",
+			jsonKeySuccess: false,
+			jsonKeyError:   "invalid_branch_name",
 		})
 		return
 	}
 
 	// Check if it's the current branch
-	cmd := exec.Command("git", "symbolic-ref", "--short", "HEAD")
+	cmd := gitCommand(context.Background(), "symbolic-ref", "--short", "HEAD")
 	cmd.Dir = projectPath
 	curOut, _ := cmd.Output()
 	currentBranch := strings.TrimSpace(string(curOut))
 	if currentBranch == body.Name {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"error":   "cannot_delete_current",
+			jsonKeySuccess: false,
+			jsonKeyError:   "cannot_delete_current",
 		})
 		return
 	}
@@ -1638,41 +1701,41 @@ func serveGitDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	defaultBranch := detectDefaultBranch(projectPath)
 	if defaultBranch == body.Name {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"error":   "cannot_delete_default",
+			jsonKeySuccess: false,
+			jsonKeyError:   "cannot_delete_default",
 		})
 		return
 	}
 
 	// Try safe delete first (-d), fall back to force (-D)
 	// Use "--" separator to prevent branch name from being interpreted as a flag (ISS-151)
-	cmd = exec.Command("git", "branch", "-d", "--", body.Name)
+	cmd = gitCommand(context.Background(), gitSubCmdBranch, "-d", "--", body.Name)
 	cmd.Dir = projectPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		errMsg := strings.TrimSpace(string(out))
 		if strings.Contains(errMsg, "not fully merged") || strings.Contains(errMsg, "not merged") {
-			cmd = exec.Command("git", "branch", "-D", "--", body.Name)
+			cmd = gitCommand(context.Background(), gitSubCmdBranch, "-D", "--", body.Name)
 			cmd.Dir = projectPath
 			out, err = cmd.CombinedOutput()
 		}
 		if err != nil {
 			errMsg = strings.TrimSpace(string(out))
-			errorCode := "delete_failed"
+			errorCode := jsonKeyDeleteFailed
 			if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "did not match") {
 				errorCode = "branch_not_found"
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"success":     false,
-				"error":       errorCode,
-				"errorDetail": errMsg,
+				jsonKeySuccess:     false,
+				jsonKeyError:       errorCode,
+				jsonKeyErrorDetail: errMsg,
 			})
 			return
 		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
+		jsonKeySuccess: true,
 	})
 }
 
@@ -1685,8 +1748,8 @@ func serveGitDeleteWorktree(w http.ResponseWriter, r *http.Request) {
 
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "not_git_repo",
+			jsonKeySuccess: false,
+			jsonKeyError:   jsonKeyNotGitRepo,
 		})
 		return
 	}
@@ -1696,8 +1759,8 @@ func serveGitDeleteWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Path) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "invalid_request",
+			jsonKeySuccess: false,
+			jsonKeyError:   jsonKeyInvalidRequest,
 		})
 		return
 	}
@@ -1712,7 +1775,7 @@ func serveGitDeleteWorktree(w http.ResponseWriter, r *http.Request) {
 	// ISS-208: List worktrees and verify deletePath matches a known worktree.
 	// This prevents passing arbitrary paths to "git worktree remove" — only
 	// paths that git itself reports as worktrees can be deleted.
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd := gitCommand(context.Background(), "worktree", "list", "--porcelain")
 	cmd.Dir = projectPath
 	output, _ := cmd.CombinedOutput()
 	trees := parseWorktreePorcelain(string(output), projectPath)
@@ -1722,8 +1785,8 @@ func serveGitDeleteWorktree(w http.ResponseWriter, r *http.Request) {
 		if wt.Path == deletePath {
 			if wt.IsCurrent {
 				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"success": false,
-					"error":   "cannot_delete_current",
+					jsonKeySuccess: false,
+					jsonKeyError:   "cannot_delete_current",
 				})
 				return
 			}
@@ -1733,37 +1796,37 @@ func serveGitDeleteWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 	if !matchedWorktree {
 		writeJSON(w, http.StatusForbidden, map[string]interface{}{
-			"success": false,
-			"error":   "path_not_allowed",
+			jsonKeySuccess: false,
+			jsonKeyError:   "path_not_allowed",
 		})
 		return
 	}
 
 	// Remove worktree — use resolved deletePath instead of raw body.Path
 	// to prevent command injection via path traversal (ISS-208).
-	cmd = exec.Command("git", "worktree", "remove", deletePath)
+	cmd = gitCommand(context.Background(), "worktree", "remove", deletePath)
 	cmd.Dir = projectPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		errMsg := strings.TrimSpace(string(out))
 		if strings.Contains(errMsg, "dirty") || strings.Contains(errMsg, "modified") || strings.Contains(errMsg, "uncommitted") {
-			cmd = exec.Command("git", "worktree", "remove", "--force", deletePath)
+			cmd = gitCommand(context.Background(), "worktree", "remove", "--force", deletePath)
 			cmd.Dir = projectPath
 			out, err = cmd.CombinedOutput()
 		}
 		if err != nil {
 			errMsg = strings.TrimSpace(string(out))
 			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"success":     false,
-				"error":       "delete_failed",
-				"errorDetail": errMsg,
+				jsonKeySuccess:     false,
+				jsonKeyError:       jsonKeyDeleteFailed,
+				jsonKeyErrorDetail: errMsg,
 			})
 			return
 		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
+		jsonKeySuccess: true,
 	})
 }
 
@@ -1776,8 +1839,8 @@ func serveGitDeleteTag(w http.ResponseWriter, r *http.Request) {
 
 	if !isGitRepo(projectPath) {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "not_git_repo",
+			jsonKeySuccess: false,
+			jsonKeyError:   jsonKeyNotGitRepo,
 		})
 		return
 	}
@@ -1787,34 +1850,34 @@ func serveGitDeleteTag(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "invalid_request",
+			jsonKeySuccess: false,
+			jsonKeyError:   jsonKeyInvalidRequest,
 		})
 		return
 	}
 	// Validate tag name to prevent argument injection (ISS-152)
 	if !isValidGitRefName(body.Name) {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "invalid_tag_name",
+			jsonKeySuccess: false,
+			jsonKeyError:   "invalid_tag_name",
 		})
 		return
 	}
 
 	// Use "--" separator to prevent tag name from being interpreted as a flag (ISS-152)
-	cmd := exec.Command("git", "tag", "-d", "--", body.Name)
+	cmd := gitCommand(context.Background(), "tag", "-d", "--", body.Name)
 	cmd.Dir = projectPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success":     false,
-			"error":       "delete_failed",
-			"errorDetail": strings.TrimSpace(string(out)),
+			jsonKeySuccess:     false,
+			jsonKeyError:       jsonKeyDeleteFailed,
+			jsonKeyErrorDetail: strings.TrimSpace(string(out)),
 		})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
+		jsonKeySuccess: true,
 	})
 }

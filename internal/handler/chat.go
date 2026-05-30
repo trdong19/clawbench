@@ -26,6 +26,58 @@ import (
 
 const maxChatBodySize = 10 << 20 // 10MB
 
+const (
+	toolNameAskUserQuestion = "AskUserQuestion"
+	jsonKeyAgentID          = "agentId"
+	jsonKeyBackend          = "backend"
+	jsonKeyBlocks           = "blocks"
+	jsonKeyMessages         = "messages"
+	jsonKeyDeleted          = "deleted"
+	jsonKeyError            = "error"
+	jsonKeyDone             = "done"
+	jsonKeyMetadata         = "metadata"
+	jsonKeyQueue            = "queue"
+	jsonKeyQueueUpdate      = "queue_update"
+	jsonKeyCodebuddy        = "codebuddy"
+	jsonKeyCodex            = "codex"
+	jsonKeyDeepSeek         = "deepseek"
+	jsonKeyHasMore          = "hasMore"
+	jsonKeyHasUncommitted   = "hasUncommitted"
+	jsonKeyIsGit            = "isGit"
+	jsonKeyCommits          = "commits"
+	jsonKeyFiles            = "files"
+	jsonKeyErrorDetail      = "errorDetail"
+	jsonKeyNotGitRepo       = "not_git_repo"
+	jsonKeyInvalidRequest   = "invalid_request"
+	jsonKeyDeleteFailed     = "delete_failed"
+	jsonKeyMessage          = "message"
+	jsonKeyEnabled          = "enabled"
+	jsonKeyCommand          = "command"
+	jsonKeyPath             = "path"
+	jsonKeyReorder          = "reorder"
+	jsonKeyFile             = "file"
+	jsonKeyImage            = "image"
+	jsonKeyDir              = "dir"
+	jsonKeyNone             = "none"
+	jsonKeyKokoro           = "kokoro"
+	jsonKeyRunning          = "running"
+	jsonKeyText             = "text"
+	jsonKeyUser             = "user"
+	jsonKeyOpenCode         = "opencode"
+	jsonKeyWarning          = "warning"
+	jsonKeyToolUse          = "tool_use"
+	jsonKeySessionID        = "sessionId"
+	jsonKeySuccess          = "success"
+	jsonKeyResults          = "results"
+	jsonKeyStatus           = "status"
+	jsonKeyTotal            = "total"
+	jsonKeyMossNano         = "moss-nano"
+	jsonKeyResult           = "result"
+	jsonKeyPiper            = "piper"
+	timeoutMsg30Min         = "AI response timed out (30 min)"
+	roleAssistant           = "assistant"
+)
+
 // ServeAISession handles DELETE for Claude CLI internal session files.
 func ServeAISession(w http.ResponseWriter, r *http.Request) {
 	projectPath, ok := requireProject(w, r)
@@ -44,7 +96,7 @@ func ServeAISession(w http.ResponseWriter, r *http.Request) {
 	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
 		// Session dir doesn't exist — nothing to delete, treat as success
-		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "deleted": 0})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, jsonKeyDeleted: 0})
 		return
 	}
 
@@ -57,7 +109,7 @@ func ServeAISession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "deleted": deleted})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, jsonKeyDeleted: deleted})
 }
 
 // AIChat handles GET (status/history) and POST (send message) for AI chat.
@@ -67,117 +119,8 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET: return full chat history + running status
 	if r.Method == http.MethodGet {
-		// Check if a specific session is requested
-		requestedSessionID := r.URL.Query().Get("session_id")
-
-		var sessionID string
-		var sessionBackend string
-
-		if requestedSessionID != "" {
-			// Use the requested session
-			sessionID = requestedSessionID
-			sessionBackend = service.GetSessionBackend(sessionID)
-			if sessionBackend == "" {
-				writeLocalizedErrorf(w, r, http.StatusNotFound, "SessionNotFound")
-				return
-			}
-			// Verify the session belongs to the requesting project (ISS-180)
-			// Skip ownership check if session doesn't exist in DB (session auto-created below)
-			if sessionProject := service.GetSessionProjectPath(sessionID); sessionProject != "" && sessionProject != projectPath {
-				writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
-				return
-			}
-	} else {
-		// No specific session requested — use lightweight query to find the most recent session
-		latestID, latestBackend, err := service.GetLatestSessionID(projectPath)
-		if err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				model.WriteError(w, model.Internal(fmt.Errorf("failed to find latest session")))
-				return
-			}
-			// No sessions exist, create a new one with default agent.
-			// Don't pre-fill agent default model — leave empty so frontend
-			// falls back to global localStorage preference (cross-project).
-			agentID := model.GetDefaultAgentID()
-			sessionBackend2, _, _, _, ok := resolveAgentConfig(agentID)
-			if !ok {
-				writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "NoAgentsAvailable")
-				return
-			}
-			sessionID, err = service.CreateSession(projectPath, sessionBackend2, T(r, "NewSession"), agentID, "", "default", "chat")
-			if err != nil {
-				model.WriteError(w, model.Internal(fmt.Errorf("failed to create session")))
-				return
-			}
-		} else {
-			sessionID = latestID
-			sessionBackend = latestBackend
-		}
-	}
-
-		// Always update cookie with current session ID
-		setSessionID(w, sessionID)
-		// Mark session as read
-		service.UpdateLastRead(sessionID)
-
-		// Parse pagination params
-		// Supports both before_id (preferred, integer cursor) and before (legacy, timestamp cursor).
-		// before_id takes priority when both are provided.
-		limit := 0
-		beforeID := 0
-		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-			if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-				limit = l
-			}
-		}
-		if bid := r.URL.Query().Get("before_id"); bid != "" {
-			if id, err := strconv.Atoi(bid); err == nil && id > 0 {
-				beforeID = id
-			}
-		}
-		// Legacy: accept "before" (timestamp) for backward compatibility with older clients.
-		// When before_id is absent and before is present, fall back to timestamp-based lookup.
-		if beforeID == 0 {
-			if bt := r.URL.Query().Get("before"); bt != "" {
-				if id, err := service.GetMessageIDBeforeTime(projectPath, sessionBackend, sessionID, bt); err == nil && id > 0 {
-					beforeID = id
-				}
-			}
-		}
-
-		// If limit not specified, use config default
-		if limit == 0 {
-			limit = model.ChatInitialMessages
-		}
-		// Cap limit to prevent abuse
-		if limit > 100 {
-			limit = 100
-		}
-
-		totalCount := service.GetChatMessageCount(sessionID)
-		messages, err := service.GetChatHistoryPaged(projectPath, sessionBackend, sessionID, limit, beforeID)
-		// Get session metadata in a single query
-		sessionInfo, _ := service.GetSessionInfo(sessionID)
-		var sessionTitle, sessionAgentID, sessionModelID, sessionThinkingEffort string
-		var sessionInfoBackend string
-		if sessionInfo != nil {
-			sessionTitle = sessionInfo.Title
-			sessionInfoBackend = sessionInfo.Backend
-			sessionAgentID = sessionInfo.AgentID
-			sessionModelID = sessionInfo.Model
-			sessionThinkingEffort = sessionInfo.ThinkingEffort
-		}
-		if sessionInfoBackend != "" {
-			sessionBackend = sessionInfoBackend
-		}
-		running := service.IsSessionRunning(sessionID)
-		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "total": totalCount})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": messages, "running": running, "sessionId": sessionID, "sessionTitle": sessionTitle, "backend": sessionBackend, "agentId": sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "total": totalCount})
+		aiChatGet(w, r, projectPath)
 		return
 	}
 
@@ -186,89 +129,258 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get backend from session, not from global state
-	sessionID := getSessionID(r)
-	if sessionID == "" {
-		// No session yet — auto-create one (same logic as GET)
-		// Check session count limit before auto-creating (0 = unlimited)
-		if model.SessionMaxCount > 0 {
-			if count, cerr := service.GetSessionCount(projectPath); cerr == nil && count >= model.SessionMaxCount {
-				writeLocalizedErrorf(w, r, http.StatusConflict, "SessionLimitReached", map[string]any{"MaxCount": model.SessionMaxCount})
-				return
-			}
-		}
-		agentID2 := model.GetDefaultAgentID()
-		sessionBackend2, _, _, _, ok := resolveAgentConfig(agentID2)
-		if !ok {
-			writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "NoAgentsAvailable")
+	aiChatPost(w, r, projectPath)
+}
+
+// aiChatGet handles the GET path for AIChat: returns chat history and running status.
+func aiChatGet(w http.ResponseWriter, r *http.Request, projectPath string) {
+	// Check if a specific session is requested
+	requestedSessionID := r.URL.Query().Get("session_id")
+
+	var sessionID string
+	var sessionBackend string
+	var ok bool
+
+	if requestedSessionID != "" {
+		sessionID = requestedSessionID
+		sessionBackend = service.GetSessionBackend(sessionID)
+		if sessionBackend == "" {
+			writeLocalizedErrorf(w, r, http.StatusNotFound, "SessionNotFound")
 			return
 		}
-		var err error
-		// Don't pre-fill agent default model — leave empty so frontend
-		// falls back to global localStorage preference (cross-project).
-		sessionID, err = service.CreateSession(projectPath, sessionBackend2, T(r, "NewSession"), agentID2, "", "default", "chat")
+		if sessionProject := service.GetSessionProjectPath(sessionID); sessionProject != "" && sessionProject != projectPath {
+			writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
+			return
+		}
+	} else {
+		sessionID, sessionBackend, ok = resolveOrCreateSession(projectPath, r, w)
+		if !ok {
+			return
+		}
+	}
+
+	setSessionID(w, sessionID)
+	service.UpdateLastRead(sessionID)
+
+	limit, beforeID := parsePaginationParams(r, projectPath, sessionBackend, sessionID)
+
+	totalCount := service.GetChatMessageCount(sessionID)
+	messages, err := service.GetChatHistoryPaged(projectPath, sessionBackend, sessionID, limit, beforeID)
+	sessionInfo, _ := service.GetSessionInfo(sessionID)
+	sessionTitle, sessionInfoBackend, sessionAgentID, sessionModelID, sessionThinkingEffort := extractSessionInfo(sessionInfo)
+	if sessionInfoBackend != "" {
+		sessionBackend = sessionInfoBackend
+	}
+	running := service.IsSessionRunning(sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{jsonKeyMessages: []any{}, jsonKeyRunning: running, jsonKeySessionID: sessionID, "sessionTitle": sessionTitle, jsonKeyBackend: sessionBackend, jsonKeyAgentID: sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "total": totalCount})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{jsonKeyMessages: messages, jsonKeyRunning: running, jsonKeySessionID: sessionID, "sessionTitle": sessionTitle, jsonKeyBackend: sessionBackend, jsonKeyAgentID: sessionAgentID, "modelId": sessionModelID, "thinkingEffort": sessionThinkingEffort, "total": totalCount})
+}
+
+// resolveOrCreateSession finds the latest session or creates a new one.
+func resolveOrCreateSession(projectPath string, r *http.Request, w http.ResponseWriter) (sessionID, sessionBackend string, ok bool) {
+	latestID, latestBackend, err := service.GetLatestSessionID(projectPath)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			model.WriteError(w, model.Internal(fmt.Errorf("failed to find latest session")))
+			return "", "", false
+		}
+		agentID := model.GetDefaultAgentID()
+		sessionBackend2, _, _, _, agentOk := resolveAgentConfig(agentID)
+		if !agentOk {
+			writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "NoAgentsAvailable")
+			return "", "", false
+		}
+		sessionID, err = service.CreateSession(projectPath, sessionBackend2, T(r, "NewSession"), agentID, "", "default", "chat")
 		if err != nil {
 			model.WriteError(w, model.Internal(fmt.Errorf("failed to create session")))
-			return
+			return "", "", false
 		}
-		setSessionID(w, sessionID)
+		return sessionID, sessionBackend2, true
 	}
-	backendName := service.GetSessionBackend(sessionID)
+	return latestID, latestBackend, true
+}
+
+// parsePaginationParams parses limit and before_id/before pagination params from the request.
+func parsePaginationParams(r *http.Request, projectPath, sessionBackend, sessionID string) (limit, beforeID int) {
+	limit = 0
+	beforeID = 0
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	if bid := r.URL.Query().Get("before_id"); bid != "" {
+		if id, err := strconv.Atoi(bid); err == nil && id > 0 {
+			beforeID = id
+		}
+	}
+	if beforeID == 0 {
+		if bt := r.URL.Query().Get("before"); bt != "" {
+			if id, err := service.GetMessageIDBeforeTime(projectPath, sessionBackend, sessionID, bt); err == nil && id > 0 {
+				beforeID = id
+			}
+		}
+	}
+	if limit == 0 {
+		limit = model.ChatInitialMessages
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	return limit, beforeID
+}
+
+// extractSessionInfo returns session metadata fields from a SessionInfo struct.
+func extractSessionInfo(sessionInfo *service.SessionInfo) (title, backend, agentID, modelID, thinkingEffort string) {
+	if sessionInfo != nil {
+		return sessionInfo.Title, sessionInfo.Backend, sessionInfo.AgentID, sessionInfo.Model, sessionInfo.ThinkingEffort
+	}
+	return "", "", "", "", ""
+}
+
+// aiChatPost handles the POST path for AIChat: sends a message to the AI.
+func aiChatPost(w http.ResponseWriter, r *http.Request, projectPath string) {
+	sessionID, backendName, ok := resolveChatSession(w, r, projectPath)
+	if !ok {
+		return
+	}
+
+	req, ok := decodeChatRequest(w, r)
+	if !ok {
+		return
+	}
+
+	basePath, _ := filepath.Abs(projectPath)
+	fileDir := basePath
+
+	validatedFilePaths, validatedDirPaths, ok := validateFilePaths(w, r, basePath, req.FilePaths)
+	if !ok {
+		return
+	}
+	fileAbsPaths, ok := validateFileList(w, r, basePath, req.Files)
+	if !ok {
+		return
+	}
+
+	prompt := buildPrompt(req.Message, validatedFilePaths, validatedDirPaths, fileAbsPaths)
+	effectiveAgentID := req.AgentID
+	if effectiveAgentID == "" {
+		effectiveAgentID = model.GetDefaultAgentID()
+	}
+	persistSessionPrefs(sessionID, req.ModelID, req.ThinkingEffort)
+
+	if !service.TrySetSessionRunning(sessionID) {
+		handleEnqueueMessage(w, r, projectPath, backendName, sessionID, req.Message, req.Files)
+		return
+	}
+
+	if _, err := service.AddChatMessage(projectPath, backendName, sessionID, "user", req.Message, req.Files, false, T(r, "FileMessage")); err != nil {
+		service.SetSessionRunning(sessionID, false)
+		model.WriteError(w, model.Internal(fmt.Errorf("failed to save message")))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"started": true, jsonKeySessionID: sessionID})
+
+	streamCh := service.RegisterSessionStream(sessionID)
+	startAIGoroutine(r, streamCh, projectPath, sessionID, backendName, effectiveAgentID, prompt, req.ModelID, req.ThinkingEffort, fileDir)
+}
+
+// resolveChatSession resolves or creates a session and returns its ID and backend name.
+func resolveChatSession(w http.ResponseWriter, r *http.Request, projectPath string) (sessionID, backendName string, ok bool) {
+	sessionID = getSessionID(r)
+	if sessionID == "" {
+		sessionID, ok = autoCreateSession(w, r, projectPath)
+		if !ok {
+			return "", "", false
+		}
+	}
+	backendName = service.GetSessionBackend(sessionID)
 	if backendName == "" {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "SessionBackendNotFound")
-		return
+		return "", "", false
 	}
-
-	// Verify the session belongs to the requesting project (ISS-180)
-	// For POST, sessionID is always from a DB-backed session (auto-created above or from cookie),
-	// so an empty sessionProject means the session doesn't exist — will fail at backendName check.
 	if sessionProject := service.GetSessionProjectPath(sessionID); sessionProject != "" && sessionProject != projectPath {
 		writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
-		return
+		return "", "", false
 	}
+	return sessionID, backendName, true
+}
 
-	// Decode request body BEFORE the running check so we can enqueue when busy
-	var req struct {
-		Message        string   `json:"message"`
-		FilePaths      []string `json:"filePaths"`
-		Files          []string `json:"files"`
-		AgentID        string   `json:"agentId"`
-		ModelID        string   `json:"modelId"`
-		ThinkingEffort string   `json:"thinkingEffort"`
-	}
+// chatPostRequest is the request body for POST /api/ai/chat.
+type chatPostRequest struct {
+	Message        string   `json:"message"`
+	FilePaths      []string `json:"filePaths"`
+	Files          []string `json:"files"`
+	AgentID        string   `json:"agentId"`
+	ModelID        string   `json:"modelId"`
+	ThinkingEffort string   `json:"thinkingEffort"`
+}
+
+// decodeChatRequest decodes and validates the chat POST request body.
+func decodeChatRequest(w http.ResponseWriter, r *http.Request) (*chatPostRequest, bool) {
+	var req chatPostRequest
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatBodySize)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequest")
-		return
+		return nil, false
 	}
-
-	// Allow empty message if files are provided
 	if req.Message == "" && len(req.Files) == 0 && len(req.FilePaths) == 0 {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "MessageOrFilesRequired")
-		return
+		return nil, false
 	}
+	return &req, true
+}
 
-	// Validate file paths
-	allFilePaths := req.FilePaths
+// persistSessionPrefs saves model and thinking effort preferences to the session.
+func persistSessionPrefs(sessionID, modelID, thinkingEffort string) {
+	if modelID != "" {
+		_ = service.UpdateSessionModel(sessionID, modelID)
+	}
+	if thinkingEffort != "" {
+		_ = service.UpdateSessionThinkingEffort(sessionID, thinkingEffort)
+	}
+}
 
-	basePath, _ := filepath.Abs(projectPath)
-	// Always use project root as workDir for CLI backends. Using filepath.Dir(attachment)
-	// breaks --resume because Claude/Codebuddy CLI looks up session files by cwd — a different
-	// cwd means it can't find the existing session, producing "No conversation found" errors.
-	fileDir := basePath
+// autoCreateSession creates a new session when none exists, returning the session ID.
+func autoCreateSession(w http.ResponseWriter, r *http.Request, projectPath string) (string, bool) {
+	if model.SessionMaxCount > 0 {
+		if count, cerr := service.GetSessionCount(projectPath); cerr == nil && count >= model.SessionMaxCount {
+			writeLocalizedErrorf(w, r, http.StatusConflict, "SessionLimitReached", map[string]any{"MaxCount": model.SessionMaxCount})
+			return "", false
+		}
+	}
+	agentID := model.GetDefaultAgentID()
+	sessionBackend, _, _, _, ok := resolveAgentConfig(agentID)
+	if !ok {
+		writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "NoAgentsAvailable")
+		return "", false
+	}
+	sessionID, err := service.CreateSession(projectPath, sessionBackend, T(r, "NewSession"), agentID, "", "default", "chat")
+	if err != nil {
+		model.WriteError(w, model.Internal(fmt.Errorf("failed to create session")))
+		return "", false
+	}
+	setSessionID(w, sessionID)
+	return sessionID, true
+}
 
-	// Validate all attached file paths are within project
-	validatedFilePaths := make([]string, 0, len(allFilePaths))
-	validatedDirPaths := make([]string, 0, len(allFilePaths))
-	for _, fp := range allFilePaths {
+// validateFilePaths validates and resolves file path attachments.
+func validateFilePaths(w http.ResponseWriter, r *http.Request, basePath string, filePaths []string) (validatedFiles, validatedDirs []string, ok bool) {
+	validatedFilePaths := make([]string, 0, len(filePaths))
+	validatedDirPaths := make([]string, 0, len(filePaths))
+	for _, fp := range filePaths {
 		fAbsPath, ok := validateAndResolvePath(w, r, basePath, fp)
 		if !ok {
-			return
+			return nil, nil, false
 		}
 		info, err := os.Stat(fAbsPath)
 		if err != nil {
 			writeLocalizedErrorf(w, r, http.StatusNotFound, "FileNotFound", map[string]any{"Path": fp})
-			return
+			return nil, nil, false
 		}
 		if info.IsDir() {
 			validatedDirPaths = append(validatedDirPaths, fAbsPath)
@@ -276,195 +388,148 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 			validatedFilePaths = append(validatedFilePaths, fAbsPath)
 		}
 	}
+	return validatedFilePaths, validatedDirPaths, true
+}
 
-	// Validate file paths are within project and collect absolute paths
-	fileAbsPaths := make([]string, 0, len(req.Files))
-	for _, fPath := range req.Files {
+// validateFileList validates and resolves a list of file paths.
+func validateFileList(w http.ResponseWriter, r *http.Request, basePath string, files []string) ([]string, bool) {
+	fileAbsPaths := make([]string, 0, len(files))
+	for _, fPath := range files {
 		fAbsPath, ok := validateAndResolvePath(w, r, basePath, fPath)
 		if !ok {
-			return
+			return nil, false
 		}
 		if _, err := os.Stat(fAbsPath); err != nil {
 			writeLocalizedErrorf(w, r, http.StatusNotFound, "FileNotFound", map[string]any{"Path": fPath})
-			return
+			return nil, false
 		}
 		fileAbsPaths = append(fileAbsPaths, fAbsPath)
 	}
+	return fileAbsPaths, true
+}
 
-	prompt := req.Message
-	if len(validatedFilePaths) > 0 {
-		prompt = fmt.Sprintf("[Current file: %s]\n%s", strings.Join(validatedFilePaths, ", "), req.Message)
+// buildPrompt assembles the prompt from message and file/directory paths.
+func buildPrompt(message string, filePaths, dirPaths, fileAbsPaths []string) string {
+	prompt := message
+	if len(filePaths) > 0 {
+		prompt = fmt.Sprintf("[Current file: %s]\n%s", strings.Join(filePaths, ", "), message)
 	}
-	if len(validatedDirPaths) > 0 {
-		prompt = fmt.Sprintf("[Current directory: %s]\n%s", strings.Join(validatedDirPaths, ", "), prompt)
+	if len(dirPaths) > 0 {
+		prompt = fmt.Sprintf("[Current directory: %s]\n%s", strings.Join(dirPaths, ", "), prompt)
 	}
 	if len(fileAbsPaths) > 0 {
 		prompt = fmt.Sprintf("[User uploaded %d file(s): %s]\n%s", len(fileAbsPaths), strings.Join(fileAbsPaths, ", "), prompt)
 	}
+	return prompt
+}
 
-	// allFiles already includes filePaths (frontend merges them before sending)
-	allFiles := req.Files
-
-	// Resolve agent config early (needed for both enqueue and execution paths)
-	effectiveAgentID := req.AgentID
-	if effectiveAgentID == "" {
-		effectiveAgentID = model.GetDefaultAgentID()
+// handleEnqueueMessage handles the case when a session is already running — enqueues the message.
+func handleEnqueueMessage(w http.ResponseWriter, r *http.Request, projectPath, backendName, sessionID, message string, allFiles []string) {
+	qMsg := model.QueuedMessage{
+		Text:      message,
+		FilePaths: allFiles,
+		Files:     allFiles,
+		CreatedAt: time.Now().Format(time.RFC3339),
 	}
+	queueState := service.EnqueueMessage(sessionID, qMsg)
+	_, _ = service.AddChatMessage(projectPath, backendName, sessionID, "user", message, allFiles, false, T(r, "FileMessage"))
+	service.SendSessionEvent(sessionID, ai.StreamEvent{
+		Type:       jsonKeyQueueUpdate,
+		QueueEvent: &ai.QueueEventData{Queue: queueState},
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		jsonKeyRunning: true,
+		"queued":       true,
+		jsonKeyQueue:   queueState,
+	})
+}
 
-	// Persist user's model selection to session so that subsequent GET requests
-	// return the correct modelId. This ensures the frontend can restore the
-	// user's choice after stream completion instead of resetting to agent default.
-	if req.ModelID != "" {
-		service.UpdateSessionModel(sessionID, req.ModelID)
-	}
-
-	// Persist thinking effort selection for this session so subsequent loads
-	// restore the user's choice instead of the agent default (auto/empty).
-	if req.ThinkingEffort != "" {
-		service.UpdateSessionThinkingEffort(sessionID, req.ThinkingEffort)
-	}
-
-	// Prevent concurrent sessions for the same session ID
-	if !service.TrySetSessionRunning(sessionID) {
-		// Session already running — enqueue the message
-		qMsg := model.QueuedMessage{
-			Text:      req.Message,
-			FilePaths: allFilePaths,
-			Files:     allFiles,
-			CreatedAt: time.Now().Format(time.RFC3339),
-		}
-		queueState := service.EnqueueMessage(sessionID, qMsg)
-
-		// Persist user message to DB immediately
-		service.AddChatMessage(projectPath, backendName, sessionID, "user", req.Message, allFiles, false, T(r, "FileMessage"))
-
-		// Notify the running goroutine via SSE
-		service.SendSessionEvent(sessionID, ai.StreamEvent{
-			Type:       "queue_update",
-			QueueEvent: &ai.QueueEventData{Queue: queueState},
-		})
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"running": true,
-			"queued":  true,
-			"queue":   queueState,
-		})
-		return
-	}
-
-	if _, err := service.AddChatMessage(projectPath, backendName, sessionID, "user", req.Message, allFiles, false, T(r, "FileMessage")); err != nil {
-		service.SetSessionRunning(sessionID, false)
-		model.WriteError(w, model.Internal(fmt.Errorf("failed to save message")))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"started": true, "sessionId": sessionID})
-
-	// Register stream channel BEFORE starting goroutine to avoid race with SSE connection
-	streamCh := service.RegisterSessionStream(sessionID)
-
+// startAIGoroutine launches the background goroutine that runs the AI backend.
+func startAIGoroutine(r *http.Request, streamCh chan ai.StreamEvent, projectPath, sessionID, backendName, agentID, prompt, modelID, thinkingEffort, fileDir string) {
 	slog.Info("about to start ai goroutine", slog.String("project", projectPath))
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("AI goroutine panicked",
+				slog.Error(
+					"AI goroutine panicked",
 					slog.String("session", sessionID),
 					slog.Any("panic", r),
 					slog.String("stack", string(debug.Stack())),
 				)
 				service.SetSessionRunning(sessionID, false)
 				service.UnregisterSessionCancel(sessionID)
-				// Try to send error event to SSE stream
-				service.SendSessionEvent(sessionID, ai.StreamEvent{Type: "error", Error: "AI internal error, please retry", Reason: ai.ReasonPanic})
+				service.SendSessionEvent(sessionID, ai.StreamEvent{Type: jsonKeyError, Error: "AI internal error, please retry", Reason: ai.ReasonPanic})
 				service.UnregisterSessionStream(sessionID)
-				// Persist error to database
 				errMsg := "AI internal error, please retry"
-				errContent, _ := json.Marshal(map[string]any{"blocks": []any{map[string]string{"type": "error", "text": errMsg, "reason": ai.ReasonPanic}}})
-				service.FinalizeStreamingMessage(projectPath, backendName, sessionID, string(errContent))
+				errContent, _ := json.Marshal(map[string]any{jsonKeyBlocks: []any{map[string]string{"type": jsonKeyError, jsonKeyText: errMsg, "reason": ai.ReasonPanic}}})
+				_ = service.FinalizeStreamingMessage(projectPath, backendName, sessionID, string(errContent))
 			}
 		}()
 		slog.Info("ai goroutine started", slog.String("project", projectPath))
 		defer service.SetSessionRunning(sessionID, false)
 		defer service.UnregisterSessionStream(sessionID)
 
-		// Use independent context with cancel to prevent goroutine leaks
-		// and support user-initiated cancellation (no timeout - let AI run indefinitely)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		service.RegisterSessionCancel(sessionID, cancel)
 		defer service.UnregisterSessionCancel(sessionID)
 
-		// Build the first chat request
-		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, effectiveAgentID, req.ModelID, req.ThinkingEffort, fileDir)
+		firstChatReq := buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, modelID, thinkingEffort, fileDir)
+		result := executeStreamRun(ctx, r, streamCh, projectPath, sessionID, backendName, agentID, firstChatReq, fileDir)
 
-		// Execute first message
-		result := executeStreamRun(ctx, r, streamCh, projectPath, sessionID, backendName, effectiveAgentID, firstChatReq, fileDir)
-
-		// Drain loop: keep executing queued messages after normal completion
-		for {
-			if result.cancelReason == "user" {
-				service.ClearQueue(sessionID)
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "cancelled"})
-				return
-			}
-			if result.err != "" {
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "error", Error: result.err})
-				return
-			}
-			if result.empty {
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "error", Error: "AI returned no content", Reason: ai.ReasonEmpty})
-				return
-			}
-			if result.cancelReason != "" {
-				// Other cancel reasons
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "cancelled"})
-				return
-			}
-
-			// Normal completion — check queue for next message
-			qMsg, ok := service.DequeueMessage(sessionID)
-			if !ok {
-				// Brief re-check for enqueue-during-exit race
-				time.Sleep(50 * time.Millisecond)
-				qMsg, ok = service.DequeueMessage(sessionID)
-			}
-			if !ok {
-				// Queue empty — truly done
-				sendFinalEvent(streamCh, ai.StreamEvent{Type: "done"})
-				return
-			}
-
-			// Queue has next message — notify frontend that current message is done,
-			// then send queue_consume + queue_update, persist, execute the next one
-			slog.Info("draining queued message", slog.String("session", sessionID), slog.String("text", qMsg.Text))
-
-			// Notify frontend: current streaming message is finalized (remove loading dots)
-			sendEvent(ctx, streamCh, ai.StreamEvent{Type: "queue_done"})
-
-			// Notify frontend: a queued message is about to execute
-			sendEvent(ctx, streamCh, ai.StreamEvent{
-				Type:       "queue_consume",
-				QueueEvent: &ai.QueueEventData{Text: qMsg.Text, FilePaths: qMsg.FilePaths, Files: qMsg.Files},
-			})
-
-			// Persist user message to DB
-			service.AddChatMessage(projectPath, backendName, sessionID, "user", qMsg.Text, qMsg.Files, false, T(r, "FileMessage"))
-
-			// Send updated queue state
-			remainingQueue := service.GetQueue(sessionID)
-			sendEvent(ctx, streamCh, ai.StreamEvent{
-				Type:       "queue_update",
-				QueueEvent: &ai.QueueEventData{Queue: remainingQueue},
-			})
-
-			// Build chat request from queued message and execute
-			nextChatReq := buildChatRequestFromQueue(qMsg, sessionID, projectPath, backendName, effectiveAgentID, fileDir)
-			result = executeStreamRun(ctx, r, streamCh, projectPath, sessionID, backendName, effectiveAgentID, nextChatReq, fileDir)
-			// Loop continues
-		}
+		drainQueueLoop(ctx, r, streamCh, projectPath, sessionID, backendName, agentID, result, fileDir)
 	}()
+}
+
+// drainQueueLoop processes queued messages after an initial AI response completes.
+func drainQueueLoop(ctx context.Context, r *http.Request, streamCh chan ai.StreamEvent, projectPath, sessionID, backendName, agentID string, result streamRunResult, fileDir string) {
+	for {
+		if result.cancelReason == jsonKeyUser {
+			service.ClearQueue(sessionID)
+			sendFinalEvent(streamCh, ai.StreamEvent{Type: "cancelled"})
+			return
+		}
+		if result.err != "" {
+			sendFinalEvent(streamCh, ai.StreamEvent{Type: jsonKeyError, Error: result.err})
+			return
+		}
+		if result.empty {
+			sendFinalEvent(streamCh, ai.StreamEvent{Type: jsonKeyError, Error: "AI returned no content", Reason: ai.ReasonEmpty})
+			return
+		}
+		if result.cancelReason != "" {
+			sendFinalEvent(streamCh, ai.StreamEvent{Type: "cancelled"})
+			return
+		}
+
+		qMsg, ok := service.DequeueMessage(sessionID)
+		if !ok {
+			time.Sleep(50 * time.Millisecond)
+			qMsg, ok = service.DequeueMessage(sessionID)
+		}
+		if !ok {
+			sendFinalEvent(streamCh, ai.StreamEvent{Type: jsonKeyDone})
+			return
+		}
+
+		slog.Info("draining queued message", slog.String("session", sessionID), slog.String("text", qMsg.Text))
+		sendEvent(ctx, streamCh, ai.StreamEvent{Type: "queue_done"})
+		sendEvent(ctx, streamCh, ai.StreamEvent{
+			Type:       "queue_consume",
+			QueueEvent: &ai.QueueEventData{Text: qMsg.Text, FilePaths: qMsg.FilePaths, Files: qMsg.Files},
+		})
+		_, _ = service.AddChatMessage(projectPath, backendName, sessionID, "user", qMsg.Text, qMsg.Files, false, T(r, "FileMessage"))
+		remainingQueue := service.GetQueue(sessionID)
+		sendEvent(ctx, streamCh, ai.StreamEvent{
+			Type:       jsonKeyQueueUpdate,
+			QueueEvent: &ai.QueueEventData{Queue: remainingQueue},
+		})
+
+		nextChatReq := buildChatRequestFromQueue(qMsg, sessionID, projectPath, backendName, agentID, fileDir)
+		result = executeStreamRun(ctx, r, streamCh, projectPath, sessionID, backendName, agentID, nextChatReq, fileDir)
+	}
 }
 
 // streamRunResult captures the outcome of a single AI stream execution.
@@ -484,16 +549,16 @@ func executeStreamRun(
 	streamCh chan<- ai.StreamEvent,
 	projectPath, sessionID, backendName, agentID string,
 	chatReq ai.ChatRequest,
-	fileDir string,
+	_ string,
 ) streamRunResult {
 	backend, err := ai.NewBackend(backendName)
 	if err != nil {
 		slog.Error("failed to create backend", slog.String("backend", backendName), slog.String("err", err.Error()))
 		errMsg := T(r, "BackendCreateFailed", map[string]any{"Error": err.Error()})
-		if !sendEvent(ctx, streamCh, ai.StreamEvent{Type: "error", Error: errMsg}) {
+		if !sendEvent(ctx, streamCh, ai.StreamEvent{Type: jsonKeyError, Error: errMsg}) {
 			return streamRunResult{err: errMsg}
 		}
-		_, _ = service.AddChatMessage(projectPath, backendName, sessionID, "assistant", errMsg, nil, false, "")
+		_, _ = service.AddChatMessage(projectPath, backendName, sessionID, roleAssistant, errMsg, nil, false, "")
 		return streamRunResult{err: errMsg}
 	}
 
@@ -501,33 +566,89 @@ func executeStreamRun(
 	if err != nil {
 		slog.Error("failed to start stream", slog.String("err", err.Error()))
 		errMsg := T(r, "StreamStartFailed", map[string]any{"Error": err.Error()})
-		if !sendEvent(ctx, streamCh, ai.StreamEvent{Type: "error", Error: errMsg}) {
+		if !sendEvent(ctx, streamCh, ai.StreamEvent{Type: jsonKeyError, Error: errMsg}) {
 			return streamRunResult{err: errMsg}
 		}
-		_, _ = service.AddChatMessage(projectPath, backendName, sessionID, "assistant", errMsg, nil, false, "")
+		_, _ = service.AddChatMessage(projectPath, backendName, sessionID, roleAssistant, errMsg, nil, false, "")
 		return streamRunResult{err: errMsg}
 	}
 
-	// Record wall-clock start time for duration tracking
 	wallStart := time.Now()
 
 	// Create streaming placeholder message in DB
-	emptyContent, _ := json.Marshal(map[string]any{"blocks": []any{}})
-	_, _ = service.AddChatMessage(projectPath, backendName, sessionID, "assistant", string(emptyContent), nil, true, "")
+	emptyContent, _ := json.Marshal(map[string]any{jsonKeyBlocks: []any{}})
+	_, _ = service.AddChatMessage(projectPath, backendName, sessionID, roleAssistant, string(emptyContent), nil, true, "")
 
-	var blocks []model.ContentBlock
-	var responseMetadata *ai.Metadata
-	var rawOutput string // collected from raw_output event for debugging
+	return executeStreamEventLoop(ctx, streamCh, projectPath, backendName, sessionID, agentID, eventCh, wallStart)
+}
 
-	// Incremental persistence: flush every 1s or every 5 events
+// streamRunState holds mutable state for the stream event loop.
+type streamRunState struct {
+	blocks           []model.ContentBlock
+	responseMetadata *ai.Metadata
+	rawOutput        string
+	eventCount       int
+}
+
+// executeStreamEventLoop processes the AI event channel until the stream ends or context is canceled.
+// processStreamEvent handles a single event from the stream channel, returning
+// the finalization result if the stream should end, or nil to continue.
+func processStreamEvent(
+	ctx context.Context,
+	streamCh chan<- ai.StreamEvent,
+	projectPath, backendName, sessionID, agentID string,
+	state *streamRunState,
+	eventCh <-chan ai.StreamEvent,
+	wallStart time.Time,
+	serializeBlocks func() string,
+	event ai.StreamEvent,
+) *streamRunResult {
+	if handleStreamEvent(backendName, sessionID, state, event) {
+		return nil
+	}
+	// Forward to SSE channel
+	if !sendEvent(ctx, streamCh, event) {
+		result := finalizeStreamRun(ctx, streamCh, projectPath, backendName, sessionID, agentID,
+			ai.ChatRequest{}, state.blocks, state.responseMetadata, state.rawOutput, eventCh, wallStart)
+		return &result
+	}
+
+	ai.AccumulateBlock(&state.blocks, event)
+
+	if event.Type == "resume_split" {
+		handleResumeSplit(projectPath, backendName, sessionID, state, serializeBlocks)
+		return nil
+	}
+
+	if event.Type == jsonKeyMetadata && event.Meta != nil {
+		state.responseMetadata = event.Meta
+		captureExternalSessionID(backendName, sessionID, event.Meta.SessionID)
+	}
+	state.eventCount++
+	if state.eventCount%5 == 0 {
+		if err := service.UpdateStreamingMessage(projectPath, backendName, sessionID, serializeBlocks()); err != nil {
+			slog.Error("failed to update streaming message", slog.String("session", sessionID), slog.String("err", err.Error()))
+		}
+	}
+	return nil
+}
+
+func executeStreamEventLoop(
+	ctx context.Context,
+	streamCh chan<- ai.StreamEvent,
+	projectPath, backendName, sessionID, agentID string,
+	eventCh <-chan ai.StreamEvent,
+	wallStart time.Time,
+) streamRunResult {
+	state := &streamRunState{}
+
 	flushTicker := time.NewTicker(1 * time.Second)
 	defer flushTicker.Stop()
-	eventCount := 0
 
 	serializeBlocks := func() string {
-		contentMap := map[string]any{"blocks": blocks}
-		if responseMetadata != nil {
-			contentMap["metadata"] = responseMetadata
+		contentMap := map[string]any{jsonKeyBlocks: state.blocks}
+		if state.responseMetadata != nil {
+			contentMap[jsonKeyMetadata] = state.responseMetadata
 		}
 		blocksJSON, _ := json.Marshal(contentMap)
 		return string(blocksJSON)
@@ -536,132 +657,87 @@ func executeStreamRun(
 	for {
 		select {
 		case event, ok := <-eventCh:
-			if !ok {
-				// Stream ended — finalize below
-				return finalizeStreamRun(ctx, streamCh, projectPath, backendName, sessionID, agentID, chatReq, blocks, responseMetadata, rawOutput, eventCh, wallStart)
+			if !ok || event.Type == jsonKeyDone {
+				return finalizeStreamRun(ctx, streamCh, projectPath, backendName, sessionID, agentID,
+					ai.ChatRequest{}, state.blocks, state.responseMetadata, state.rawOutput, eventCh, wallStart)
 			}
-			// Don't forward "done" here — finalize below
-			if event.Type == "done" {
-				return finalizeStreamRun(ctx, streamCh, projectPath, backendName, sessionID, agentID, chatReq, blocks, responseMetadata, rawOutput, eventCh, wallStart)
-			}
-			// Capture raw output for debugging (not forwarded to SSE)
-			if event.Type == "raw_output" {
-				rawOutput = event.RawOutput
-				continue
-			}
-			// Early capture of external session ID (OpenCode/Codex).
-			// Persist immediately so that if the stream is cancelled before
-			// step_finish/turn.completed, the ID is already saved for resumption.
-			if event.Type == "session_capture" {
-				if (backendName == "opencode" || backendName == "codex" || backendName == "deepseek" || backendName == "pi") && event.Content != "" {
-					existingExtID := service.GetExternalSessionID(sessionID)
-					if existingExtID == "" {
-						if err := service.UpdateExternalSessionID(sessionID, event.Content); err != nil {
-							slog.Error("failed to save external session ID (early capture)",
-								slog.String("session", sessionID),
-								slog.String("external_id", event.Content),
-								slog.String("err", err.Error()),
-							)
-						} else {
-							slog.Info("early-captured external session ID",
-								slog.String("session", sessionID),
-								slog.String("external_id", event.Content))
-						}
-					}
-				}
-				continue
-			}
-			// Forward to SSE channel
-			if !sendEvent(ctx, streamCh, event) {
-				return finalizeStreamRun(ctx, streamCh, projectPath, backendName, sessionID, agentID, chatReq, blocks, responseMetadata, rawOutput, eventCh, wallStart)
-			}
-
-			ai.AccumulateBlock(&blocks, event)
-
-			// Handle resume_split: the AI adapter layer detected ExitPlanMode and
-			// will auto-resume. Finalize current DB message and start a new one.
-			if event.Type == "resume_split" {
-				slog.Info("resume_split received, finalizing current message and starting new one",
-					slog.String("session", sessionID))
-
-				// Finalize current streaming message
-				if err := service.FinalizeStreamingMessage(projectPath, backendName, sessionID, serializeBlocks()); err != nil {
-					slog.Error("failed to finalize pre-resume message",
-						slog.String("session", sessionID),
-						slog.String("err", err.Error()))
-				}
-
-				// Save raw output if captured so far
-				if rawOutput != "" {
-					if msgID := service.GetStreamingMessageID(sessionID); msgID > 0 {
-						if err := service.SaveRawResponse(sessionID, backendName, msgID, rawOutput); err != nil {
-							slog.Error("failed to save raw response",
-								slog.String("session", sessionID),
-								slog.String("err", err.Error()))
-						}
-					}
-					rawOutput = ""
-				}
-
-				// Reset blocks and metadata for the resumed stream
-				blocks = nil
-				responseMetadata = nil
-				eventCount = 0
-				wallStart = time.Now() // Reset wall-clock start for the resumed segment
-
-				// Create new streaming assistant placeholder
-				emptyContent, _ = json.Marshal(map[string]any{"blocks": []any{}})
-				if _, err := service.AddChatMessage(projectPath, backendName, sessionID, "assistant", string(emptyContent), nil, true, ""); err != nil {
-					slog.Error("failed to create resume streaming message",
-						slog.String("session", sessionID),
-						slog.String("err", err.Error()))
-					return streamRunResult{err: "failed to create resume streaming message"}
-				}
-				continue
-			}
-
-			if event.Type == "metadata" && event.Meta != nil {
-				responseMetadata = event.Meta
-				// Capture external session ID on first response (OpenCode/Codex)
-				if (backendName == "opencode" || backendName == "codex" || backendName == "deepseek" || backendName == "pi") && event.Meta.SessionID != "" {
-					existingExtID := service.GetExternalSessionID(sessionID)
-					if existingExtID == "" {
-						if err := service.UpdateExternalSessionID(sessionID, event.Meta.SessionID); err != nil {
-							slog.Error("failed to save external session ID",
-								slog.String("session", sessionID),
-								slog.String("external_id", event.Meta.SessionID),
-								slog.String("err", err.Error()),
-							)
-						}
-					}
-				}
-			}
-			eventCount++
-			if eventCount%5 == 0 {
-				if err := service.UpdateStreamingMessage(projectPath, backendName, sessionID, serializeBlocks()); err != nil {
-					slog.Error("failed to update streaming message",
-						slog.String("session", sessionID),
-						slog.String("err", err.Error()),
-					)
-				}
+			if result := processStreamEvent(ctx, streamCh, projectPath, backendName, sessionID, agentID,
+				state, eventCh, wallStart, serializeBlocks, event); result != nil {
+				return *result
 			}
 		case <-ctx.Done():
-			// Context cancelled (user cancel or disconnect) — exit the event loop promptly.
-			// Without this branch, the goroutine blocks until the next event or 1s ticker.
-			slog.Info("executeStreamRun context cancelled, finalizing stream",
+			slog.Info("executeStreamRun context canceled, finalizing stream",
 				slog.String("session", sessionID),
 				slog.String("reason", ctx.Err().Error()))
-			return finalizeStreamRun(ctx, streamCh, projectPath, backendName, sessionID, agentID, chatReq, blocks, responseMetadata, rawOutput, eventCh, wallStart)
+			return finalizeStreamRun(ctx, streamCh, projectPath, backendName, sessionID, agentID,
+				ai.ChatRequest{}, state.blocks, state.responseMetadata, state.rawOutput, eventCh, wallStart)
 		case <-flushTicker.C:
-			if len(blocks) > 0 {
+			if len(state.blocks) > 0 {
 				if err := service.UpdateStreamingMessage(projectPath, backendName, sessionID, serializeBlocks()); err != nil {
-					slog.Error("failed to update streaming message",
-						slog.String("session", sessionID),
-						slog.String("err", err.Error()),
-					)
+					slog.Error("failed to update streaming message", slog.String("session", sessionID), slog.String("err", err.Error()))
 				}
 			}
 		}
+	}
+}
+
+// handleStreamEvent processes non-forwarded events (raw_output, session_capture, resume_split).
+// Returns true if the event was fully handled and should not be forwarded to SSE.
+func handleStreamEvent(backendName, sessionID string, state *streamRunState, event ai.StreamEvent) bool {
+	if event.Type == "raw_output" {
+		state.rawOutput = event.RawOutput
+		return true
+	}
+	if event.Type == "session_capture" {
+		captureExternalSessionID(backendName, sessionID, event.Content)
+		return true
+	}
+	return false
+}
+
+// captureExternalSessionID persists an external session ID for backends that use their own format.
+func captureExternalSessionID(backendName, sessionID, extID string) {
+	if extID == "" {
+		return
+	}
+	if backendName != jsonKeyOpenCode && backendName != jsonKeyCodex && backendName != jsonKeyDeepSeek && backendName != "pi" {
+		return
+	}
+	existingExtID := service.GetExternalSessionID(sessionID)
+	if existingExtID != "" {
+		return
+	}
+	if err := service.UpdateExternalSessionID(sessionID, extID); err != nil {
+		slog.Error("failed to save external session ID", slog.String("session", sessionID), slog.String("external_id", extID), slog.String("err", err.Error()))
+	} else {
+		slog.Info("early-captured external session ID", slog.String("session", sessionID), slog.String("external_id", extID))
+	}
+}
+
+// handleResumeSplit handles the resume_split event by finalizing the current message and starting a new one.
+func handleResumeSplit(projectPath, backendName, sessionID string, state *streamRunState, serializeBlocks func() string) {
+	slog.Info("resume_split received, finalizing current message and starting new one", slog.String("session", sessionID))
+
+	if err := service.FinalizeStreamingMessage(projectPath, backendName, sessionID, serializeBlocks()); err != nil {
+		slog.Error("failed to finalize pre-resume message", slog.String("session", sessionID), slog.String("err", err.Error()))
+	}
+
+	if state.rawOutput != "" {
+		if msgID := service.GetStreamingMessageID(sessionID); msgID > 0 {
+			if err := service.SaveRawResponse(sessionID, backendName, msgID, state.rawOutput); err != nil {
+				slog.Error("failed to save raw response", slog.String("session", sessionID), slog.String("err", err.Error()))
+			}
+		}
+		state.rawOutput = ""
+	}
+
+	state.blocks = nil
+	state.responseMetadata = nil
+	state.eventCount = 0
+
+	emptyContent, _ := json.Marshal(map[string]any{jsonKeyBlocks: []any{}})
+	if _, err := service.AddChatMessage(projectPath, backendName, sessionID, roleAssistant, string(emptyContent), nil, true, ""); err != nil {
+		slog.Error("failed to create resume streaming message", slog.String("session", sessionID), slog.String("err", err.Error()))
 	}
 }
 
@@ -671,8 +747,8 @@ func executeStreamRun(
 func finalizeStreamRun(
 	ctx context.Context,
 	streamCh chan<- ai.StreamEvent,
-	projectPath, backendName, sessionID, agentID string,
-	chatReq ai.ChatRequest,
+	projectPath, backendName, sessionID, _ string,
+	_ ai.ChatRequest,
 	blocks []model.ContentBlock,
 	responseMetadata *ai.Metadata,
 	rawOutput string,
@@ -680,128 +756,131 @@ func finalizeStreamRun(
 	wallStart time.Time,
 ) streamRunResult {
 	// Detect <ask-question> in the fully accumulated text blocks and convert to tool_use blocks.
-	// This enables all backends (not just Claude/Codebuddy) to produce interactive question cards.
 	if stringsContainsAnyBlock(blocks, "<ask-question") {
-		slog.Info("detected ask-question tag(s) in accumulated text blocks",
-			slog.String("session", sessionID),
-		)
+		slog.Info("detected ask-question tag(s) in accumulated text blocks", slog.String("session", sessionID))
 		blocks = convertAskQuestionBlocks(blocks)
 	}
 
-	// Remove tool_use blocks for tool names rejected by the CLI ("not found in agent cli").
-	// This covers both AskUserQuestion (when XML tags are used instead) and hallucinated
-	// tool names like "/commit" (model confuses slash commands with tools).
 	blocks = removeRejectedToolBlocks(blocks)
 
-	// Compute wall-clock duration and inject into metadata
 	wallMs := int(time.Since(wallStart).Milliseconds())
 	if responseMetadata == nil {
 		responseMetadata = &ai.Metadata{}
 	}
 	responseMetadata.WallMs = wallMs
 
-	// Determine cancellation reason
 	cancelReason := service.GetAndClearCancelReason(sessionID)
 
-	// Serialize blocks + metadata as JSON for database storage
-	var content string
-	if len(blocks) == 0 {
-		// Auto-infer reason for empty response
-		var errMsg string
-		var reason string
-		switch {
-		case cancelReason == "user":
-			errMsg, reason = "User cancelled", ai.ReasonUserCancel
-		case ctx.Err() == context.Canceled:
-			errMsg, reason = "AI response cancelled", ai.ReasonContextCancel
-		case ctx.Err() == context.DeadlineExceeded:
-			errMsg, reason = "AI response timed out (30 min)", ai.ReasonTimeout
-		default:
-			errMsg, reason = "AI returned no content", ai.ReasonEmpty
-		}
-		blocks = append(blocks, model.ContentBlock{Type: "warning", Text: errMsg, Reason: reason})
-		contentMap := map[string]any{"blocks": blocks}
-		if cancelReason == "user" || ctx.Err() == context.Canceled {
-			contentMap["cancelled"] = true
-		}
-		blocksJSON, _ := json.Marshal(contentMap)
-		content = string(blocksJSON)
-	} else {
-		contentMap := map[string]any{"blocks": blocks}
-		if responseMetadata != nil {
-			contentMap["metadata"] = responseMetadata
-		}
-		// When there are blocks but the stream was interrupted, add a warning and mark cancelled
-		if cancelReason == "user" {
-			contentMap["cancelled"] = true
-		} else if ctx.Err() == context.Canceled {
-			contentMap["cancelled"] = true
-		} else if ctx.Err() == context.DeadlineExceeded {
-			blocks = append(blocks, model.ContentBlock{Type: "warning", Text: "AI response timed out (30 min)", Reason: ai.ReasonTimeout})
-		}
-		contentMap["blocks"] = blocks
-		blocksJSON, _ := json.Marshal(contentMap)
-		content = string(blocksJSON)
-	}
+	content := buildFinalizedContent(ctx, blocks, responseMetadata, cancelReason)
+
 	if err := service.FinalizeStreamingMessage(projectPath, backendName, sessionID, content); err != nil {
-		slog.Error("failed to finalize streaming message",
-			slog.String("session", sessionID),
-			slog.String("err", err.Error()),
-		)
+		slog.Error("failed to finalize streaming message", slog.String("session", sessionID), slog.String("err", err.Error()))
 	}
 
-	// Drain any remaining events from channel
-	for {
-		select {
-		case event, ok := <-eventCh:
-			if !ok {
-				goto saveRaw
-			}
-			if event.Type == "raw_output" && rawOutput == "" {
-				rawOutput = event.RawOutput
-			}
-		default:
-			goto saveRaw
-		}
-	}
+	drainRawOutput(eventCh, &rawOutput)
+	saveRawOutput(sessionID, backendName, rawOutput)
 
-saveRaw:
-	// Save raw AI backend output for debugging/analysis
-	if rawOutput != "" {
-		if msgID := service.GetStreamingMessageID(sessionID); msgID > 0 {
-			if err := service.SaveRawResponse(sessionID, backendName, msgID, rawOutput); err != nil {
-				slog.Error("failed to save raw response",
-					slog.String("session", sessionID),
-					slog.String("err", err.Error()),
-				)
-			}
-		}
-	}
+	result := buildStreamRunResult(ctx, cancelReason, blocks)
 
-	// Build result — do NOT send terminal SSE event here
-	result := streamRunResult{}
-
-	if cancelReason == "user" {
-		result.cancelReason = cancelReason
-	} else if ctx.Err() == context.Canceled {
-		result.cancelReason = "cancel"
-	} else if ctx.Err() == context.DeadlineExceeded {
-		result.err = "AI response timed out (30 min)"
-	} else if len(blocks) == 0 {
-		result.empty = true
-	}
-
-	slog.Info("ai stream run done",
+	slog.Info(
+		"ai stream run done",
 		slog.String("session", sessionID),
 		slog.Int("blocks", len(blocks)),
 		slog.String("cancel_reason", cancelReason),
 		slog.Int("wall_ms", wallMs),
 	)
 
-	// Send updated metadata (with wallMs) to SSE before the terminal event
-	// so the frontend has duration info even for cancelled streams.
-	sendEvent(ctx, streamCh, ai.StreamEvent{Type: "metadata", Meta: responseMetadata})
+	sendEvent(ctx, streamCh, ai.StreamEvent{Type: jsonKeyMetadata, Meta: responseMetadata})
 
+	return result
+}
+
+// buildFinalizedContent serializes the blocks and metadata into the final JSON content for DB storage.
+func buildFinalizedContent(ctx context.Context, blocks []model.ContentBlock, responseMetadata *ai.Metadata, cancelReason string) string {
+	if len(blocks) == 0 {
+		return buildEmptyContent(ctx, cancelReason)
+	}
+	contentMap := map[string]any{jsonKeyBlocks: blocks}
+	if responseMetadata != nil {
+		contentMap[jsonKeyMetadata] = responseMetadata
+	}
+	switch {
+	case cancelReason == jsonKeyUser:
+		contentMap["cancelled"] = true
+	case ctx.Err() == context.Canceled:
+		contentMap["cancelled"] = true
+	case ctx.Err() == context.DeadlineExceeded:
+		blocks = append(blocks, model.ContentBlock{Type: jsonKeyWarning, Text: timeoutMsg30Min, Reason: ai.ReasonTimeout})
+	}
+	contentMap["blocks"] = blocks
+	blocksJSON, _ := json.Marshal(contentMap)
+	return string(blocksJSON)
+}
+
+// buildEmptyContent generates content for an empty (no blocks) response.
+func buildEmptyContent(ctx context.Context, cancelReason string) string {
+	var errMsg, reason string
+	switch {
+	case cancelReason == jsonKeyUser:
+		errMsg, reason = "User canceled", ai.ReasonUserCancel
+	case ctx.Err() == context.Canceled:
+		errMsg, reason = "AI response canceled", ai.ReasonContextCancel
+	case ctx.Err() == context.DeadlineExceeded:
+		errMsg, reason = timeoutMsg30Min, ai.ReasonTimeout
+	default:
+		errMsg, reason = "AI returned no content", ai.ReasonEmpty
+	}
+	blocks := []model.ContentBlock{{Type: jsonKeyWarning, Text: errMsg, Reason: reason}}
+	contentMap := map[string]any{jsonKeyBlocks: blocks}
+	if cancelReason == jsonKeyUser || ctx.Err() == context.Canceled {
+		contentMap["cancelled"] = true
+	}
+	blocksJSON, _ := json.Marshal(contentMap)
+	return string(blocksJSON)
+}
+
+// drainRawOutput drains remaining events from the channel to capture any raw_output.
+func drainRawOutput(eventCh <-chan ai.StreamEvent, rawOutput *string) {
+	for {
+		select {
+		case event, ok := <-eventCh:
+			if !ok {
+				return
+			}
+			if event.Type == "raw_output" && *rawOutput == "" {
+				*rawOutput = event.RawOutput
+			}
+		default:
+			return
+		}
+	}
+}
+
+// saveRawOutput persists raw AI backend output for debugging if available.
+func saveRawOutput(sessionID, backendName, rawOutput string) {
+	if rawOutput == "" {
+		return
+	}
+	if msgID := service.GetStreamingMessageID(sessionID); msgID > 0 {
+		if err := service.SaveRawResponse(sessionID, backendName, msgID, rawOutput); err != nil {
+			slog.Error("failed to save raw response", slog.String("session", sessionID), slog.String("err", err.Error()))
+		}
+	}
+}
+
+// buildStreamRunResult determines the result status based on cancel reason and context.
+func buildStreamRunResult(ctx context.Context, cancelReason string, blocks []model.ContentBlock) streamRunResult {
+	result := streamRunResult{}
+	switch {
+	case cancelReason == jsonKeyUser:
+		result.cancelReason = cancelReason
+	case ctx.Err() == context.Canceled:
+		result.cancelReason = "cancel"
+	case ctx.Err() == context.DeadlineExceeded:
+		result.err = timeoutMsg30Min
+	case len(blocks) == 0:
+		result.empty = true
+	}
 	return result
 }
 
@@ -841,7 +920,7 @@ func buildChatRequest(prompt, sessionID, projectPath, backendName, agentID, mode
 	// resolve external session ID when resuming.
 	effectiveSessionID := sessionID
 	resume := service.SessionHasAssistant(sessionID)
-	if (backendName == "opencode" || backendName == "codex" || backendName == "deepseek" || backendName == "pi") && resume {
+	if (backendName == jsonKeyOpenCode || backendName == jsonKeyCodex || backendName == jsonKeyDeepSeek || backendName == "pi") && resume {
 		extID := service.GetExternalSessionID(sessionID)
 		if extID != "" {
 			effectiveSessionID = extID
@@ -1009,9 +1088,9 @@ func extractJSONCandidate(raw string) string {
 // block is replaced entirely, otherwise a new tool_use block is appended.
 //
 // Tolerates three closing-tag variants:
-//   1. Standard </ask-question>
-//   2. Non-standard closing tags (e.g. </user_query>, obfuscated tags)
-//   3. No closing tag at all (tag runs to end-of-text)
+//  1. Standard </ask-question>
+//  2. Non-standard closing tags (e.g. </user_query>, obfuscated tags)
+//  3. No closing tag at all (tag runs to end-of-text)
 //
 // Returns the updated blocks slice.
 func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock {
@@ -1019,25 +1098,6 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 	reStandard := regexp.MustCompile(`<ask-question\b[^>]*>([\s\S]*?)</ask-question>`)
 	reWrongClose := regexp.MustCompile(`<ask-question\b[^>]*>([\s\S]*?)</[^>]+>`)
 	reUnclosed := regexp.MustCompile(`<ask-question\b[^>]*>([\s\S]+)$`)
-
-	// findAskMatch tries three regex strategies (from strict to loose) to locate
-	// a valid <ask-question> tag in text. It returns the JSON content string and
-	// the [start, end) byte positions of the full tag span in text (for removal).
-	// Matches are tried from last to first because earlier occurrences may be prose
-	// references rather than actual structured questions.
-	// Returns ("", -1, -1) if no valid match is found.
-	findAskMatch := func(text string) (string, int, int) {
-		for _, re := range []*regexp.Regexp{reStandard, reWrongClose, reUnclosed} {
-			matches := re.FindAllStringSubmatchIndex(text, -1)
-			for j := len(matches) - 1; j >= 0; j-- {
-				pair := matches[j]
-				if candidate := extractJSONCandidate(text[pair[2]:pair[3]]); candidate != "" {
-					return candidate, pair[0], pair[1]
-				}
-			}
-		}
-		return "", -1, -1
-	}
 
 	// First pass: collect all conversions needed
 	type conversion struct {
@@ -1052,34 +1112,16 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 			continue
 		}
 
-		jsonContent, tagStart, tagEnd := findAskMatch(block.Text)
+		jsonContent, tagStart, tagEnd := findAskMatch(block.Text, reStandard, reWrongClose, reUnclosed)
 		if jsonContent == "" {
 			continue
 		}
 
-		var input map[string]any
-		if err := json.Unmarshal([]byte(jsonContent), &input); err != nil {
-			var questionsArr []any
-			if err2 := json.Unmarshal([]byte(jsonContent), &questionsArr); err2 == nil && len(questionsArr) > 0 {
-				input = map[string]any{"questions": questionsArr}
-			} else {
-				slog.Error("failed to parse ask-question JSON", slog.String("error", err.Error()))
-				continue
-			}
-		}
-
-		questions, ok := input["questions"]
+		input, ok := parseAskQuestionJSON(jsonContent)
 		if !ok {
-			slog.Error("ask-question missing 'questions' field")
-			continue
-		}
-		questionsArr, ok := questions.([]any)
-		if !ok || len(questionsArr) == 0 {
-			slog.Error("ask-question 'questions' must be a non-empty array")
 			continue
 		}
 
-		// Strip the matched tag span from the text.
 		cleanText := strings.TrimSpace(block.Text[:tagStart] + block.Text[tagEnd:])
 		conversions = append(conversions, conversion{index: i, input: input, cleanText: cleanText})
 	}
@@ -1088,8 +1130,8 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 	for i := len(conversions) - 1; i >= 0; i-- {
 		c := conversions[i]
 		toolBlock := model.ContentBlock{
-			Type:  "tool_use",
-			Name:  "AskUserQuestion",
+			Type:  jsonKeyToolUse,
+			Name:  toolNameAskUserQuestion,
 			ID:    "ask-" + uuid.New().String(),
 			Input: c.input,
 			Done:  true,
@@ -1109,6 +1151,48 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 	return blocks
 }
 
+// findAskMatch tries three regex strategies (from strict to loose) to locate
+// a valid <ask-question> tag in text. Returns the JSON content string and
+// the [start, end) byte positions of the full tag span in text (for removal).
+func findAskMatch(text string, reStandard, reWrongClose, reUnclosed *regexp.Regexp) (content string, start, end int) {
+	for _, re := range []*regexp.Regexp{reStandard, reWrongClose, reUnclosed} {
+		matches := re.FindAllStringSubmatchIndex(text, -1)
+		for j := len(matches) - 1; j >= 0; j-- {
+			pair := matches[j]
+			if candidate := extractJSONCandidate(text[pair[2]:pair[3]]); candidate != "" {
+				return candidate, pair[0], pair[1]
+			}
+		}
+	}
+	return "", -1, -1
+}
+
+// parseAskQuestionJSON parses the JSON content from an <ask-question> tag into a map.
+func parseAskQuestionJSON(jsonContent string) (map[string]any, bool) {
+	var input map[string]any
+	if err := json.Unmarshal([]byte(jsonContent), &input); err != nil {
+		var questionsArr []any
+		if err2 := json.Unmarshal([]byte(jsonContent), &questionsArr); err2 == nil && len(questionsArr) > 0 {
+			input = map[string]any{"questions": questionsArr}
+		} else {
+			slog.Error("failed to parse ask-question JSON", slog.String("error", err.Error()))
+			return nil, false
+		}
+	}
+
+	questions, ok := input["questions"]
+	if !ok {
+		slog.Error("ask-question missing 'questions' field")
+		return nil, false
+	}
+	questionsArr, ok := questions.([]any)
+	if !ok || len(questionsArr) == 0 {
+		slog.Error("ask-question 'questions' must be a non-empty array")
+		return nil, false
+	}
+	return input, true
+}
+
 // removeRejectedToolBlocks strips tool_use blocks that were rejected by the CLI
 // (Status=="error" and output contains "not found in agent cli"). These occur when
 // the AI model hallucinates tool names (e.g. "/commit" as a slash command, or
@@ -1119,7 +1203,7 @@ func removeRejectedToolBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 	// Collect names of rejected tools from failed tool_use blocks
 	rejectedNames := make(map[string]bool)
 	for _, block := range blocks {
-		if block.Type == "tool_use" && block.Status == "error" && strings.Contains(block.Output, "not found in agent cli") {
+		if block.Type == jsonKeyToolUse && block.Status == "error" && strings.Contains(block.Output, "not found in agent cli") {
 			rejectedNames[block.Name] = true
 		}
 	}
@@ -1130,8 +1214,9 @@ func removeRejectedToolBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 	filtered := make([]model.ContentBlock, 0, len(blocks))
 	for _, block := range blocks {
 		// Remove failed tool_use blocks for rejected tool names
-		if block.Type == "tool_use" && block.Status == "error" && rejectedNames[block.Name] {
-			slog.Info("removing rejected tool_use block from CLI",
+		if block.Type == jsonKeyToolUse && block.Status == "error" && rejectedNames[block.Name] {
+			slog.Info(
+				"removing rejected tool_use block from CLI",
 				slog.String("name", block.Name),
 				slog.String("id", block.ID),
 				slog.String("output", block.Output),
@@ -1139,7 +1224,7 @@ func removeRejectedToolBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 			continue
 		}
 		// Remove warning blocks that reference the rejected tool name with "not found"
-		if block.Type == "warning" && strings.Contains(block.Text, "not found") {
+		if block.Type == jsonKeyWarning && strings.Contains(block.Text, "not found") {
 			matched := false
 			for name := range rejectedNames {
 				if strings.Contains(block.Text, name) {
@@ -1148,7 +1233,8 @@ func removeRejectedToolBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 				}
 			}
 			if matched {
-				slog.Info("removing rejected-tool warning block",
+				slog.Info(
+					"removing rejected-tool warning block",
 					slog.String("text", block.Text),
 				)
 				continue
@@ -1174,7 +1260,8 @@ func sendEvent(ctx context.Context, ch chan<- ai.StreamEvent, event ai.StreamEve
 		if event.Tool != nil {
 			toolID = event.Tool.ID
 		}
-		slog.Warn("SSE event dropped — channel full",
+		slog.Warn(
+			"SSE event dropped — channel full",
 			slog.String("type", event.Type),
 			slog.String("tool_id", toolID),
 		)
@@ -1182,14 +1269,15 @@ func sendEvent(ctx context.Context, ch chan<- ai.StreamEvent, event ai.StreamEve
 	}
 }
 
-// sendFinalEvent sends a terminal event (done/cancelled/error) to the stream channel
+// sendFinalEvent sends a terminal event (done/canceled/error) to the stream channel
 // without checking context cancellation. This ensures the SSE client always receives
-// the terminal event even after the CLI context has been cancelled (e.g. ExitPlanMode).
+// the terminal event even after the CLI context has been canceled (e.g. ExitPlanMode).
 func sendFinalEvent(ch chan<- ai.StreamEvent, event ai.StreamEvent) {
 	select {
 	case ch <- event:
 	default:
-		slog.Warn("SSE terminal event dropped — channel full",
+		slog.Warn(
+			"SSE terminal event dropped — channel full",
 			slog.String("type", event.Type),
 		)
 	}

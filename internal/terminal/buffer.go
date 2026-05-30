@@ -1,3 +1,4 @@
+// Package terminal provides web terminal session management with PTY support and ring buffer replay.
 package terminal
 
 import "sync"
@@ -44,7 +45,7 @@ func (rb *RingBuffer) Write(p []byte) {
 
 	// Split on \n, keeping \n with the preceding line
 	start := 0
-	for i := 0; i < len(p); i++ {
+	for i := range p {
 		if p[i] == '\n' {
 			line := p[start : i+1] // includes \n
 			rb.addLine(line)
@@ -117,13 +118,13 @@ func (rb *RingBuffer) Replay() []byte {
 
 	// Pre-calculate total size for efficient allocation
 	totalSize := 0
-	for i := 0; i < rb.count; i++ {
+	for i := range rb.count {
 		idx := (rb.head + i) % rb.capacity
 		totalSize += len(rb.lines[idx].data)
 	}
 
 	result := make([]byte, 0, totalSize)
-	for i := 0; i < rb.count; i++ {
+	for i := range rb.count {
 		idx := (rb.head + i) % rb.capacity
 		result = append(result, rb.lines[idx].data...)
 	}

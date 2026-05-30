@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testMsgFileTooLarge = "FileTooLarge"
+
 func TestWithLocalizer_SetsContext(t *testing.T) {
 	var gotLoc *i18n.Localizer
 	handler := WithLocalizer(func(w http.ResponseWriter, r *http.Request) {
@@ -16,7 +19,7 @@ func TestWithLocalizer_SetsContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.Header.Set("X-Locale", "zh")
 	w := httptest.NewRecorder()
 	handler(w, r)
@@ -24,7 +27,7 @@ func TestWithLocalizer_SetsContext(t *testing.T) {
 	assert.NotNil(t, gotLoc)
 
 	// Verify it's the Chinese localizer
-	msg, err := gotLoc.Localize(&i18n.LocalizeConfig{MessageID: "FileTooLarge"})
+	msg, err := gotLoc.Localize(&i18n.LocalizeConfig{MessageID: testMsgFileTooLarge})
 	assert.NoError(t, err)
 	assert.Equal(t, "文件过大", msg)
 }
@@ -36,13 +39,13 @@ func TestWithLocalizer_DefaultEnglish(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	handler(w, r)
 
 	assert.NotNil(t, gotLoc)
 
-	msg, err := gotLoc.Localize(&i18n.LocalizeConfig{MessageID: "FileTooLarge"})
+	msg, err := gotLoc.Localize(&i18n.LocalizeConfig{MessageID: testMsgFileTooLarge})
 	assert.NoError(t, err)
 	assert.Equal(t, "File too large", msg)
 }
@@ -50,13 +53,13 @@ func TestWithLocalizer_DefaultEnglish(t *testing.T) {
 func TestGetLocalizer_FallbackWithoutMiddleware(t *testing.T) {
 	// If GetLocalizer is called without WithLocalizer middleware,
 	// it should fall back to creating a Localizer from the request
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.Header.Set("X-Locale", "zh")
 
 	loc := GetLocalizer(r)
 	assert.NotNil(t, loc)
 
-	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: "FileTooLarge"})
+	msg, err := loc.Localize(&i18n.LocalizeConfig{MessageID: testMsgFileTooLarge})
 	assert.NoError(t, err)
 	assert.Equal(t, "文件过大", msg)
 }

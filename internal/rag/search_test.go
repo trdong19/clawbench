@@ -24,10 +24,10 @@ func setupSearchDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	_, _ = db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS chat_sessions (
 			id TEXT PRIMARY KEY,
 			project_path TEXT NOT NULL,
@@ -66,7 +66,7 @@ func setupSearchDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() {
 		service.DB = origDB
 		service.DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	})
 	return db
 }
@@ -98,7 +98,7 @@ func TestRAGSearch_DefaultLimit(t *testing.T) {
 	require.NoError(t, store.CreateFTSIndex())
 
 	// Search with limit=0 should use defaultLimit
-	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "test", Limit: 0}, 5, 20)
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryTest, Limit: 0}, 5, 20)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(result.Results), 5)
 }
@@ -115,7 +115,7 @@ func TestRAGSearch_WithResults(t *testing.T) {
 	insertTestChunks(t, store, 2)
 	require.NoError(t, store.CreateFTSIndex())
 
-	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "test", Limit: 10}, 5, 20)
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryTest, Limit: 10}, 5, 20)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.Results)
 	assert.Equal(t, len(result.Results), result.Total)
@@ -136,14 +136,14 @@ func TestRAGSearch_FTSOnly(t *testing.T) {
 	require.NoError(t, store.CreateFTSIndex())
 
 	// Use nil embedder (embedder not available) — should fall back to FTS-only
-	result, err := RAGSearch(context.Background(), store, nil, SearchParams{Query: "chunk", Limit: 5}, 5, 20)
+	result, err := RAGSearch(context.Background(), store, nil, SearchParams{Query: testSearchQueryChunk, Limit: 5}, 5, 20)
 	assert.NoError(t, err)
 	assert.Equal(t, SearchModeFTS, result.Mode)
 	assert.NotEmpty(t, result.Results)
 }
 
 func TestRAGSearch_NilStore(t *testing.T) {
-	_, err := RAGSearch(context.Background(), nil, nil, SearchParams{Query: "test"}, 5, 20)
+	_, err := RAGSearch(context.Background(), nil, nil, SearchParams{Query: testSearchQueryTest}, 5, 20)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "RAG not initialized")
 }
@@ -169,7 +169,7 @@ func TestRAGSearch_SearchModeField(t *testing.T) {
 	embedder, cleanup := newHealthyMockEmbedder(t)
 	defer cleanup()
 
-	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "chunk", Limit: 5}, 5, 20)
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryChunk, Limit: 5}, 5, 20)
 	require.NoError(t, err)
 	// With both FTS and embedder available, should use hybrid
 	assert.Equal(t, SearchModeHybrid, result.Mode)
@@ -220,7 +220,7 @@ func TestRAGSearch_VectorOnlyMode(t *testing.T) {
 	// Insert chunks with embeddings
 	insertTestChunks(t, store, 2)
 
-	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "test", Limit: 5}, 5, 20)
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryTest, Limit: 5}, 5, 20)
 	require.NoError(t, err)
 	assert.Equal(t, SearchModeVector, result.Mode)
 }
@@ -233,7 +233,7 @@ func TestRAGSearch_NoSearchAvailable(t *testing.T) {
 	SetEmbedderHealthy(false)
 
 	// nil embedder — no search available
-	_, err := RAGSearch(context.Background(), store, nil, SearchParams{Query: "test"}, 5, 20)
+	_, err := RAGSearch(context.Background(), store, nil, SearchParams{Query: testSearchQueryTest}, 5, 20)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no search available")
 }
@@ -253,7 +253,7 @@ func TestRAGSearch_DefaultPoolSize(t *testing.T) {
 	require.NoError(t, store.CreateFTSIndex())
 
 	// poolSize=0 should use default of 20
-	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "test", Limit: 5}, 5, 0)
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryTest, Limit: 5}, 5, 0)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.Results)
 }
@@ -269,9 +269,10 @@ func TestRAGSearch_EmbeddingFailsFallsBackToFTS(t *testing.T) {
 
 	// Server where embedding endpoint fails
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
-			json.NewEncoder(w).Encode(openaiModelsResponse{Data: []openaiModelInfo{{ID: "bge-m3:latest"}}})
-		} else if r.URL.Path == "/v1/embeddings" {
+		switch r.URL.Path {
+		case testV1Models:
+			_ = json.NewEncoder(w).Encode(openaiModelsResponse{Data: []openaiModelInfo{{ID: testModelBgeM3Latest}}})
+		case testV1Embeddings:
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 	}))
@@ -285,7 +286,7 @@ func TestRAGSearch_EmbeddingFailsFallsBackToFTS(t *testing.T) {
 	insertTestChunks(t, store, 3)
 	require.NoError(t, store.CreateFTSIndex())
 
-	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "chunk", Limit: 5}, 5, 20)
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryChunk, Limit: 5}, 5, 20)
 	require.NoError(t, err)
 	assert.Equal(t, SearchModeFTS, result.Mode, "should fall back to FTS when embedding fails")
 }
@@ -309,7 +310,7 @@ func TestRAGSearch_CachedEmbedderHealth(t *testing.T) {
 	embedder, cleanup := newHealthyMockEmbedder(t)
 	defer cleanup()
 
-	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "test", Limit: 5}, 5, 20)
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryTest, Limit: 5}, 5, 20)
 	require.NoError(t, err)
 	// With cached healthy state, should use hybrid or vector mode
 	assert.Contains(t, []SearchMode{SearchModeHybrid, SearchModeVector}, result.Mode)
@@ -329,7 +330,7 @@ func TestRAGSearch_VectorOnlyNoFTS(t *testing.T) {
 
 	insertTestChunks(t, store, 2)
 
-	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "test", Limit: 5}, 5, 20)
+	result, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryTest, Limit: 5}, 5, 20)
 	require.NoError(t, err)
 	assert.Equal(t, SearchModeVector, result.Mode)
 }
@@ -344,9 +345,10 @@ func TestRAGSearch_VectorOnlyEmbeddingError(t *testing.T) {
 
 	// Embedding will fail
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
-			json.NewEncoder(w).Encode(openaiModelsResponse{Data: []openaiModelInfo{{ID: "bge-m3:latest"}}})
-		} else if r.URL.Path == "/v1/embeddings" {
+		switch r.URL.Path {
+		case testV1Models:
+			_ = json.NewEncoder(w).Encode(openaiModelsResponse{Data: []openaiModelInfo{{ID: "bge-m3:latest"}}})
+		case testV1Embeddings:
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 	}))
@@ -357,7 +359,7 @@ func TestRAGSearch_VectorOnlyEmbeddingError(t *testing.T) {
 
 	insertTestChunks(t, store, 2)
 
-	_, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: "test", Limit: 5}, 5, 20)
+	_, err := RAGSearch(context.Background(), store, embedder, SearchParams{Query: testSearchQueryTest, Limit: 5}, 5, 20)
 	assert.Error(t, err, "should error when embedding fails in vector-only mode")
 }
 
@@ -371,7 +373,7 @@ func TestGetSessionTitles_BatchFailureFallback(t *testing.T) {
 	require.NoError(t, err)
 
 	// Drop the chat_sessions table to make batch query fail
-	db.Exec("DROP TABLE chat_sessions")
+	_, _ = db.ExecContext(context.Background(), "DROP TABLE chat_sessions")
 
 	// Should fall back gracefully (return empty map)
 	titles := getSessionTitles(map[string]bool{sid: true})

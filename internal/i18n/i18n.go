@@ -1,3 +1,4 @@
+// Package i18n provides internationalization support via go-i18n with embedded locale files.
 package i18n
 
 import (

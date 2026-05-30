@@ -8,10 +8,10 @@ import (
 
 // OpenCodeStreamMessage represents a single JSON line from `opencode run --format json`
 type OpenCodeStreamMessage struct {
-	Type      string          `json:"type"`       // "step_start", "text", "reasoning", "tool_use", "step_finish"
+	Type      string          `json:"type"` // "step_start", "text", "reasoning", "tool_use", "step_finish"
 	Timestamp float64         `json:"timestamp"`
 	SessionID string          `json:"sessionID"`
-	Part      json.RawMessage `json:"part"`       // Varies by type — parse separately
+	Part      json.RawMessage `json:"part"` // Varies by type — parse separately
 }
 
 // OpenCodeTextPart is the part for type="text" and type="reasoning" messages
@@ -22,7 +22,7 @@ type OpenCodeTextPart struct {
 
 // OpenCodeToolPart is the part for type="tool_use" messages
 type OpenCodeToolPart struct {
-	Type   string             `json:"type"`  // "tool"
+	Type   string             `json:"type"` // "tool"
 	Tool   string             `json:"tool"`
 	CallID string             `json:"callID"`
 	State  *OpenCodeToolState `json:"state"`
@@ -30,14 +30,14 @@ type OpenCodeToolPart struct {
 
 // OpenCodeToolState holds tool execution status and I/O
 type OpenCodeToolState struct {
-	Status string          `json:"status"`  // "completed", "running"
+	Status string          `json:"status"` // "completed", "running"
 	Input  json.RawMessage `json:"input"`
 	Output string          `json:"output"`
 }
 
 // OpenCodeFinishPart is the part for type="step_finish" messages
 type OpenCodeFinishPart struct {
-	Reason string          `json:"reason"`  // "stop" or "tool-calls"
+	Reason string          `json:"reason"` // "stop" or "tool-calls"
 	Tokens *OpenCodeTokens `json:"tokens,omitempty"`
 	Cost   float64         `json:"cost"`
 }
@@ -63,7 +63,7 @@ func (p *OpenCodeStreamParser) GetCapturedSessionID() string { return p.sessionI
 
 // ParseLine parses a single JSON line from OpenCode's stream-json output and sends
 // StreamEvent(s) to the provided channel.
-func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
+func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) { //nolint:gocyclo,gocognit // 复杂的 stream 解析逻辑
 	var msg OpenCodeStreamMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		slog.Debug("opencode stream: skipping unparseable line", "line", line, "error", err)
@@ -76,7 +76,7 @@ func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 	}
 
 	switch msg.Type {
-	case "text":
+	case "text": //nolint:goconst // JSON 字段名/协议字符串
 		var part OpenCodeTextPart
 		if err := json.Unmarshal(msg.Part, &part); err != nil {
 			slog.Debug("opencode stream: skipping unparseable text part", "error", err)
@@ -88,7 +88,7 @@ func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 		// Strip the leading \n\n that OpenCode prepends to text responses
 		text := strings.TrimPrefix(part.Text, "\n\n")
 		if text != "" {
-			ch <- StreamEvent{Type: "content", Content: text}
+			ch <- StreamEvent{Type: "content", Content: text} //nolint:goconst // JSON 字段名/协议字符串
 		}
 
 	case "reasoning":
@@ -102,10 +102,10 @@ func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 		}
 		text := strings.TrimPrefix(part.Text, "\n\n")
 		if text != "" {
-			ch <- StreamEvent{Type: "thinking", Content: text}
+			ch <- StreamEvent{Type: "thinking", Content: text} //nolint:goconst // JSON 字段名/协议字符串
 		}
 
-	case "tool_use":
+	case "tool_use": //nolint:goconst // JSON 字段名/协议字符串
 		var part OpenCodeToolPart
 		if err := json.Unmarshal(msg.Part, &part); err != nil {
 			slog.Debug("opencode stream: skipping unparseable tool_use part", "error", err)
@@ -131,7 +131,7 @@ func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 		if part.State != nil {
 			output = truncateToolOutput(part.State.Output)
 			if done && part.State.Output != "" {
-				status = "success"
+				status = "success" //nolint:goconst // JSON 字段名/协议字符串
 			}
 		}
 		ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{
@@ -149,7 +149,7 @@ func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			slog.Debug("opencode stream: skipping unparseable step_finish part", "error", err)
 			return
 		}
-		if part.Reason == "stop" {
+		if part.Reason == "stop" { //nolint:goconst // JSON 字段名/协议字符串
 			meta := &Metadata{
 				SessionID:  p.sessionID,
 				StopReason: "stop",
@@ -159,8 +159,8 @@ func (p *OpenCodeStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 				meta.InputTokens = part.Tokens.Input
 				meta.OutputTokens = part.Tokens.Output
 			}
-			ch <- StreamEvent{Type: "metadata", Meta: meta}
-			ch <- StreamEvent{Type: "done"}
+			ch <- StreamEvent{Type: "metadata", Meta: meta} //nolint:goconst // JSON 字段名/协议字符串
+			ch <- StreamEvent{Type: "done"}                 //nolint:goconst // JSON 字段名/协议字符串
 		}
 		// reason="tool-calls" means more steps coming — no event
 

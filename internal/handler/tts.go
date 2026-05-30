@@ -52,7 +52,105 @@ func SetSummarizer(s summarize.Summarizer) {
 type ttsGenerateRequest struct {
 	Text      string `json:"text"`
 	Language  string `json:"language"`  // language code, e.g. "zh", "en"; defaults to "zh" if empty
-	MessageID int64  `json:"messageId"`  // chat_history.id for TTS summary caching
+	MessageID int64  `json:"messageId"` // chat_history.id for TTS summary caching
+}
+
+// runTTSJob performs the summarize + synthesize pipeline for a TTS job.
+func runTTSJob(ctx context.Context, r *http.Request, projectPath, cacheKey, absAudioPath, relAudioPath string, req ttsGenerateRequest) {
+	defer service.UnregisterTTSJob(cacheKey)
+	defer service.CloseTTSJobDone(cacheKey)
+
+	// Phase 1: Summarize
+	summary := ttsSummarize(ctx, r, cacheKey, req)
+	if summary == "" {
+		return
+	}
+
+	// Phase 2: Synthesize
+	service.SendTTSEvent(cacheKey, service.TTSEvent{Type: "phase", Phase: "synthesizing"})
+
+	synthesizeCtx, synthesizeCancel := context.WithTimeout(ctx, ttsSynthesizeTimeout)
+	err := speechProvider.Synthesize(synthesizeCtx, summary, absAudioPath, req.Language)
+	synthesizeCancel()
+	if err != nil {
+		slog.Error(
+			"tts synthesize failed",
+			slog.String("error", err.Error()),
+			slog.String("cache_key", cacheKey),
+		)
+		service.SendTTSEvent(cacheKey, service.TTSEvent{
+			Type:             jsonKeyResult,
+			SynthesizeFailed: true,
+			SynthesizeError:  T(r, "SynthesizeFailed"),
+			Summary:          summary,
+		})
+		return
+	}
+
+	slog.Info(
+		"tts generate completed",
+		slog.String("cache_key", cacheKey),
+		slog.String("path", relAudioPath),
+	)
+
+	// Evict oldest cached files if over the limit
+	service.EvictTTSCache(projectPath, model.TTSMaxCacheFiles)
+
+	service.SendTTSEvent(cacheKey, service.TTSEvent{
+		Type:      jsonKeyResult,
+		AudioPath: relAudioPath,
+		Summary:   summary,
+	})
+}
+
+// ttsSummarize runs the summarization phase of a TTS job, returning the summary text.
+// Returns empty string on failure (sends error event).
+func ttsSummarize(ctx context.Context, r *http.Request, cacheKey string, req ttsGenerateRequest) string {
+	cachedSummary, found := service.GetTTSSummaryByMessageID(req.MessageID)
+	if found && cachedSummary != "" && req.MessageID > 0 {
+		slog.Info(
+			"tts summary cache hit, skipping summarization",
+			slog.String("cache_key", cacheKey),
+		)
+		return cachedSummary
+	}
+
+	service.SendTTSEvent(cacheKey, service.TTSEvent{Type: "phase", Phase: "summarizing"})
+
+	summarizeCtx, summarizeCancel := context.WithTimeout(ctx, ttsSummarizeTimeout)
+	summary, err := summarizer.Summarize(summarizeCtx, req.Text, req.Language)
+	summarizeCancel()
+	if err != nil {
+		slog.Warn(
+			"tts summarize failed",
+			slog.String("error", err.Error()),
+		)
+		service.SendTTSEvent(cacheKey, service.TTSEvent{
+			Type:             jsonKeyResult,
+			SynthesizeFailed: true,
+			SynthesizeError:  T(r, "SummarizeFailed"),
+		})
+		return ""
+	}
+
+	slog.Info(
+		"tts summarize completed",
+		slog.String("cache_key", cacheKey),
+		slog.Int("original_len", len([]rune(req.Text))),
+		slog.Int("summary_len", len([]rune(summary))),
+	)
+
+	// Save summary to database
+	if req.MessageID > 0 {
+		if err := service.SaveTTSSummaryByMessageID(req.MessageID, summary); err != nil {
+			slog.Warn(
+				"tts failed to cache summary to DB",
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
+	return summary
 }
 
 // TTSGenerate handles POST /api/tts/generate.
@@ -97,13 +195,8 @@ func TTSGenerate(w http.ResponseWriter, r *http.Request) {
 
 	// Determine audio file extension based on TTS engine
 	audioExt := ".mp3"
-	if _, ok := speechProvider.(*speech.PiperProvider); ok {
-		audioExt = ".wav"
-	}
-	if _, ok := speechProvider.(*speech.KokoroProvider); ok {
-		audioExt = ".wav"
-	}
-	if _, ok := speechProvider.(*speech.MossNanoProvider); ok {
+	switch speechProvider.(type) {
+	case *speech.PiperProvider, *speech.KokoroProvider, *speech.MossNanoProvider:
 		audioExt = ".wav"
 	}
 	relAudioPath := filepath.Join(".clawbench", "generated", "tts", cacheKey+audioExt)
@@ -116,7 +209,8 @@ func TTSGenerate(w http.ResponseWriter, r *http.Request) {
 
 	// Check cache: if audio file already exists, return immediately as JSON
 	if info, err := os.Stat(absAudioPath); err == nil && info.Size() > 0 {
-		slog.Info("tts cache hit",
+		slog.Info(
+			"tts cache hit",
 			slog.String("cache_key", cacheKey),
 			slog.String("path", relAudioPath),
 		)
@@ -138,88 +232,7 @@ func TTSGenerate(w http.ResponseWriter, r *http.Request) {
 	service.RegisterTTSJob(cacheKey, cancel)
 
 	// Start background goroutine to perform summarize + synthesize
-	go func() {
-		defer service.UnregisterTTSJob(cacheKey)
-		defer service.CloseTTSJobDone(cacheKey)
-		defer cancel()
-
-		// Phase 1: Summarize
-		var summary string
-		cachedSummary, found := service.GetTTSSummaryByMessageID(req.MessageID)
-		if found && cachedSummary != "" && req.MessageID > 0 {
-			slog.Info("tts summary cache hit, skipping summarization",
-				slog.String("cache_key", cacheKey),
-			)
-			summary = cachedSummary
-		} else {
-			service.SendTTSEvent(cacheKey, service.TTSEvent{Type: "phase", Phase: "summarizing"})
-
-			summarizeCtx, summarizeCancel := context.WithTimeout(ctx, ttsSummarizeTimeout)
-			var err error
-			summary, err = summarizer.Summarize(summarizeCtx, req.Text, req.Language)
-			summarizeCancel()
-			if err != nil {
-				slog.Warn("tts summarize failed",
-					slog.String("error", err.Error()),
-				)
-				service.SendTTSEvent(cacheKey, service.TTSEvent{
-					Type:             "result",
-					SynthesizeFailed: true,
-					SynthesizeError:  T(r, "SummarizeFailed"),
-				})
-				return
-			}
-
-			slog.Info("tts summarize completed",
-				slog.String("cache_key", cacheKey),
-				slog.Int("original_len", len([]rune(req.Text))),
-				slog.Int("summary_len", len([]rune(summary))),
-			)
-
-			// Save summary to database
-			if req.MessageID > 0 {
-				if err := service.SaveTTSSummaryByMessageID(req.MessageID, summary); err != nil {
-					slog.Warn("tts failed to cache summary to DB",
-						slog.String("error", err.Error()),
-					)
-				}
-			}
-		}
-
-		// Phase 2: Synthesize
-		service.SendTTSEvent(cacheKey, service.TTSEvent{Type: "phase", Phase: "synthesizing"})
-
-		synthesizeCtx, synthesizeCancel := context.WithTimeout(ctx, ttsSynthesizeTimeout)
-		err := speechProvider.Synthesize(synthesizeCtx, summary, absAudioPath, req.Language)
-		synthesizeCancel()
-		if err != nil {
-			slog.Error("tts synthesize failed",
-				slog.String("error", err.Error()),
-				slog.String("cache_key", cacheKey),
-			)
-		service.SendTTSEvent(cacheKey, service.TTSEvent{
-			Type:             "result",
-			SynthesizeFailed: true,
-			SynthesizeError:  T(r, "SynthesizeFailed"),
-			Summary:          summary,
-		})
-			return
-		}
-
-		slog.Info("tts generate completed",
-			slog.String("cache_key", cacheKey),
-			slog.String("path", relAudioPath),
-		)
-
-		// Evict oldest cached files if over the limit
-		service.EvictTTSCache(projectPath, model.TTSMaxCacheFiles)
-
-		service.SendTTSEvent(cacheKey, service.TTSEvent{
-			Type:      "result",
-			AudioPath: relAudioPath,
-			Summary:   summary,
-		})
-	}()
+	go runTTSJob(ctx, r, projectPath, cacheKey, absAudioPath, relAudioPath, req)
 
 	// Return jobId so the frontend can connect via EventSource
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -271,7 +284,7 @@ func TTSStream(w http.ResponseWriter, r *http.Request) {
 			}
 			writeTTSSSE(w, event, canFlush, flusher)
 			// If this is a result event, we're done
-			if event.Type == "result" {
+			if event.Type == jsonKeyResult {
 				return
 			}
 		default:
@@ -289,11 +302,12 @@ liveStream:
 				return
 			}
 			writeTTSSSE(w, event, canFlush, flusher)
-			if event.Type == "result" {
+			if event.Type == jsonKeyResult {
 				return
 			}
 		case <-r.Context().Done():
-			slog.Info("tts sse client disconnected, cancelling job",
+			slog.Info(
+				"tts sse client disconnected, canceling job",
 				slog.String("job_id", jobID),
 			)
 			service.CancelTTSJob(jobID)
@@ -305,7 +319,7 @@ liveStream:
 // writeTTSSSE writes a single TTS event as a typed SSE message and flushes.
 func writeTTSSSE(w http.ResponseWriter, event service.TTSEvent, canFlush bool, flusher http.Flusher) {
 	data, _ := json.Marshal(event)
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
 	if canFlush {
 		flusher.Flush()
 	}

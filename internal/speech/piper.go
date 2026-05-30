@@ -86,7 +86,7 @@ func NewPiperProvider() *PiperProvider {
 				}
 			}
 		},
-		ExtraArgs: func(cliPath string, text string, outputPath string, _ string) []string {
+		ExtraArgs: func(_ string, text string, outputPath string, _ string) []string {
 			args := []string{
 				"--model", p.ModelPath,
 				"--output_file", outputPath,

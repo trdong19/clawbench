@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,26 +22,26 @@ import (
 // initGitRepo initializes a real git repo in dir with an initial commit.
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
-	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+	run := func(args ...string) {
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
+			t.Fatalf("command git %v failed: %v\n%s", args, err, out)
 		}
 	}
-	run("git", "init")
-	run("git", "config", "user.email", "test@test.com")
-	run("git", "config", "user.name", "Test")
+	run("init")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
 
 	// Create initial file and commit
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test"), 0o644); err != nil {
 		t.Fatalf("failed to write README: %v", err)
 	}
-	run("git", "add", ".")
-	run("git", "commit", "-m", "initial commit")
+	run("add", ".")
+	run("commit", "-m", "initial commit")
 
 	// Ensure branch is named "main" for test consistency
-	cmd := exec.Command("git", "symbolic-ref", "--short", "HEAD")
+	cmd := exec.CommandContext(context.Background(), "git", "symbolic-ref", "--short", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -48,7 +49,7 @@ func initGitRepo(t *testing.T, dir string) {
 	}
 	currentBranch := strings.TrimSpace(string(out))
 	if currentBranch != "main" {
-		run("git", "branch", "-m", currentBranch, "main")
+		run("branch", "-m", currentBranch, "main")
 	}
 }
 
@@ -56,7 +57,7 @@ func initGitRepo(t *testing.T, dir string) {
 func gitCommitAll(t *testing.T, dir, message string) {
 	t.Helper()
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -69,7 +70,7 @@ func gitCommitAll(t *testing.T, dir, message string) {
 // getHeadSHA returns the SHA of the HEAD commit.
 func getHeadSHA(t *testing.T, dir string) string {
 	t.Helper()
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -397,7 +398,7 @@ func TestServeGitProjectHistory_Pagination(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	// Create multiple commits
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		createTestFile(t, env.ProjectDir, fmt.Sprintf("file%d.txt", i), "content")
 		gitCommitAll(t, env.ProjectDir, fmt.Sprintf("add file%d", i))
 	}
@@ -481,7 +482,7 @@ func TestServeGitCommitFiles_MergeCommit(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1251,7 +1252,7 @@ func TestServeGitCheckout_DirtyWorktree(t *testing.T) {
 
 	// Create and switch to a second branch so we can try to switch back
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1286,7 +1287,7 @@ func TestServeGitCheckout_DirtyWithStash(t *testing.T) {
 
 	// Create and switch to a second branch
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1322,7 +1323,7 @@ func TestServeGitCheckout_Success(t *testing.T) {
 
 	// Create a second branch to switch to
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1348,7 +1349,7 @@ func TestServeGitCheckout_Success(t *testing.T) {
 	assert.Equal(t, false, resp["stashed"])
 
 	// Verify we actually switched
-	cmd := exec.Command("git", "symbolic-ref", "--short", "HEAD")
+	cmd := exec.CommandContext(context.Background(), "git", "symbolic-ref", "--short", "HEAD")
 	cmd.Dir = env.ProjectDir
 	out, err := cmd.Output()
 	assert.NoError(t, err)
@@ -1362,7 +1363,7 @@ func TestServeGitCheckout_Conflict(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1430,7 +1431,7 @@ func TestServeGitCheckout_ForceFlag(t *testing.T) {
 
 	// Create a second branch
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1487,7 +1488,7 @@ func TestGetCommitParents_MergeCommit(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1528,7 +1529,7 @@ func TestExtractMergeLabels_IntoFormat(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1559,7 +1560,7 @@ func TestExtractMergeLabels_NoInto(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1593,7 +1594,7 @@ func TestExtractMergeLabels_PullRequestFormat(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1626,7 +1627,7 @@ func TestExtractMergeLabels_FallbackToShortSHA(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1664,7 +1665,7 @@ func TestFallbackMergeFiles(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1720,7 +1721,7 @@ func TestBuildMergeFileGroups_DeduplicatesFiles(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1765,7 +1766,7 @@ func TestBuildMergeFileGroups_LabelsFromMergeMessage(t *testing.T) {
 	defer teardown()
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -1806,7 +1807,7 @@ func TestServeGitVerifyCommits_NonCommitObject(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	// Create a tree object (not a commit)
-	cmd := exec.Command("git", "mktree")
+	cmd := exec.CommandContext(context.Background(), "git", "mktree")
 	cmd.Dir = env.ProjectDir
 	cmd.Stdin = strings.NewReader("")
 	treeOut, treeErr := cmd.Output()
@@ -1927,7 +1928,7 @@ func TestGitDiff_StagedAndUnstaged(t *testing.T) {
 	// Stage some changes
 	createTestFile(t, env.ProjectDir, "README.md", "# Staged")
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2053,7 +2054,7 @@ func TestServeGitTags_LightweightTag(t *testing.T) {
 
 	// Create a lightweight tag (no message)
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2091,7 +2092,7 @@ func TestServeGitTags_AnnotatedTag(t *testing.T) {
 
 	// Create an annotated tag (has message)
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2126,7 +2127,7 @@ func TestServeGitTags_MultipleTags(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2223,7 +2224,7 @@ func TestServeGitDeleteBranch_Success(t *testing.T) {
 
 	// Create a second branch
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2272,7 +2273,7 @@ func TestServeGitDeleteBranch_DefaultBranch(t *testing.T) {
 
 	// Create and switch to a non-default branch
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2350,7 +2351,7 @@ func TestServeGitDeleteBranch_UnmergedForce(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2386,7 +2387,7 @@ func TestServeGitDeleteWorktree_Success(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2488,7 +2489,7 @@ func TestServeGitDeleteTag_Success(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2639,7 +2640,7 @@ func TestServeGitVerifyWorktrees_RelativePath(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2662,7 +2663,7 @@ func TestServeGitVerifyWorktrees_RelativePath(t *testing.T) {
 	results, ok := resp["results"].(map[string]interface{})
 	assert.True(t, ok)
 
-	absKey := filepath.Join(env.ProjectDir, ".worktrees/feature-x")
+	absKey := filepath.Join(env.ProjectDir, ".worktrees", "feature-x")
 	info, ok := results[absKey].(map[string]interface{})
 	assert.True(t, ok, "resolved path %q should be found in results (keys: %v)", absKey, keysOfMap(results))
 	assert.Equal(t, "feature-x", info["branch"])
@@ -2795,7 +2796,7 @@ func TestServeGitVerifyWorktrees_MultipleWorktrees(t *testing.T) {
 	initGitRepo(t, env.ProjectDir)
 
 	run := func(name string, args ...string) {
-		cmd := exec.Command(name, args...)
+		cmd := exec.CommandContext(context.Background(), name, args...)
 		cmd.Dir = env.ProjectDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("command %s %v failed: %v\n%s", name, args, err, out)
@@ -2808,8 +2809,8 @@ func TestServeGitVerifyWorktrees_MultipleWorktrees(t *testing.T) {
 	run("git", "worktree", "add", ".worktrees/feature-b", "feature-b")
 	defer os.RemoveAll(filepath.Join(env.ProjectDir, ".worktrees"))
 
-	featureAPath := filepath.Join(env.ProjectDir, ".worktrees/feature-a")
-	featureBPath := filepath.Join(env.ProjectDir, ".worktrees/feature-b")
+	featureAPath := filepath.Join(env.ProjectDir, ".worktrees", "feature-a")
+	featureBPath := filepath.Join(env.ProjectDir, ".worktrees", "feature-b")
 
 	req := newRequest(t, http.MethodPost, "/api/git/verify-worktrees", map[string]interface{}{
 		"paths": []string{featureAPath, featureBPath, "/tmp/nonexistent"},
@@ -2842,19 +2843,19 @@ func TestIsValidGitSHA(t *testing.T) {
 		sha  string
 		want bool
 	}{
-		{"abc1234", true},                     // 7-char abbreviated SHA
-		{"abc123def456", true},                 // 12-char abbreviated SHA
+		{"abc1234", true},      // 7-char abbreviated SHA
+		{"abc123def456", true}, // 12-char abbreviated SHA
 		{"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", true}, // 40-char full SHA
-		{"abcdef", true},                       // 6-char minimum
-		{"ABCDE", false},                       // uppercase, too short
-		{"abcde", false},                       // 5 chars, too short
-		{"", false},                            // empty
-		{"--upload-pack=evil", false},          // argument injection attempt
-		{"-c", false},                          // flag-like
-		{"abc123; rm -rf /", false},            // shell injection attempt
-		{"g123456", false},                     // non-hex char 'g'
-		{"12345abcde", true},                   // digits + hex
-		{"HEAD", true},                         // HEAD is a safe git ref for working tree diffs
+		{"abcdef", true},              // 6-char minimum
+		{"ABCDE", false},              // uppercase, too short
+		{"abcde", false},              // 5 chars, too short
+		{"", false},                   // empty
+		{"--upload-pack=evil", false}, // argument injection attempt
+		{"-c", false},                 // flag-like
+		{"abc123; rm -rf /", false},   // shell injection attempt
+		{"g123456", false},            // non-hex char 'g'
+		{"12345abcde", true},          // digits + hex
+		{"HEAD", true},                // HEAD is a safe git ref for working tree diffs
 	}
 	for _, tt := range tests {
 		t.Run(tt.sha, func(t *testing.T) {
@@ -2874,17 +2875,17 @@ func TestIsValidGitRefName(t *testing.T) {
 		{"release/v1.0", true},
 		{"fix_bug", true},
 		{"v1.0", true},
-		{"", false},                          // empty
-		{"-c", false},                        // starts with dash
-		{"--upload-pack=evil", false},        // starts with dash
-		{"-m", false},                        // starts with dash
-		{"branch with spaces", false},        // contains spaces
-		{"branch\twith\ttabs", false},        // contains tabs
-		{"branch\nnewline", false},           // contains newline
-		{"branch\x00null", false},            // contains NUL byte
-		{"feature-x.y", true},               // dots are fine
-		{"a", true},                          // single char
-		{"release/1.0.0", true},             // complex but valid
+		{"", false},                   // empty
+		{"-c", false},                 // starts with dash
+		{"--upload-pack=evil", false}, // starts with dash
+		{"-m", false},                 // starts with dash
+		{"branch with spaces", false}, // contains spaces
+		{"branch\twith\ttabs", false}, // contains tabs
+		{"branch\nnewline", false},    // contains newline
+		{"branch\x00null", false},     // contains NUL byte
+		{"feature-x.y", true},         // dots are fine
+		{"a", true},                   // single char
+		{"release/1.0.0", true},       // complex but valid
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

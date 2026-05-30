@@ -19,7 +19,7 @@ type CLIBackend struct {
 	defaultCommand string
 	buildArgs      func(req ChatRequest) []string
 	newParser      func() LineParser
-	filterLine     func(line string) (string, bool) // nil = skip empty lines only
+	filterLine     func(line string) (string, bool)     // nil = skip empty lines only
 	preStart       func(cmd *exec.Cmd, req ChatRequest) // optional, e.g. Claude stdin
 }
 
@@ -29,7 +29,7 @@ func (b *CLIBackend) Name() string {
 }
 
 // ExecuteStream runs the CLI backend in streaming mode and returns a channel of events.
-func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) {
+func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) { //nolint:gocyclo,gocognit // 复杂的 stream 解析逻辑
 	args := b.buildArgs(req)
 
 	cmdName := req.Command
@@ -50,7 +50,8 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 		b.preStart(cmd, req)
 	}
 
-	slog.Info("executing ai stream command",
+	slog.Info(
+		"executing ai stream command",
 		slog.String("backend", b.name),
 		slog.String("work_dir", req.WorkDir),
 		slog.String("session_id", req.SessionID),
@@ -92,11 +93,9 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 					continue
 				}
 				line = filtered
-			} else {
+			} else if line == "" {
 				// Default: skip empty lines
-				if line == "" {
-					continue
-				}
+				continue
 			}
 
 			// Collect raw line for debugging
@@ -109,7 +108,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			// before parsing so the handler receives it before the "done" event.
 			if strings.HasPrefix(line, `{"type":"result"`) {
 				select {
-				case ch <- StreamEvent{Type: "raw_output", RawOutput: rawLines.String()}:
+				case ch <- StreamEvent{Type: "raw_output", RawOutput: rawLines.String()}: //nolint:goconst // JSON 字段名/协议字符串
 				default:
 				}
 			}
@@ -123,7 +122,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			if capturedID := parser.GetCapturedSessionID(); capturedID != "" && capturedID != lastCapturedSessionID {
 				lastCapturedSessionID = capturedID
 				select {
-				case ch <- StreamEvent{Type: "session_capture", Content: capturedID}:
+				case ch <- StreamEvent{Type: "session_capture", Content: capturedID}: //nolint:goconst // JSON 字段名/协议字符串
 				default:
 				}
 			}
@@ -131,7 +130,8 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			// Check context after parsing
 			select {
 			case <-ctx.Done():
-				slog.Warn(b.name+" stream: context cancelled",
+				slog.Warn(
+					b.name+" stream: context cancelled",
 					slog.String("session_id", req.SessionID),
 				)
 				// Send raw output before returning so it's available for debugging
@@ -148,14 +148,15 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 
 		if err := scanner.Err(); err != nil {
 			select {
-			case ch <- StreamEvent{Type: "warning", Content: fmt.Sprintf("AI output parse error: %v", err), Reason: ReasonParseError}:
+			case ch <- StreamEvent{Type: "warning", Content: fmt.Sprintf("AI output parse error: %v", err), Reason: ReasonParseError}: //nolint:goconst // JSON 字段名/协议字符串
 			case <-ctx.Done():
 			}
 		}
 
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() != nil {
-				slog.Warn(b.name+" stream: command cancelled",
+				slog.Warn(
+					b.name+" stream: command cancelled",
 					slog.String("session_id", req.SessionID),
 					slog.String("ctx_err", ctx.Err().Error()),
 					slog.String("stderr", stderrBuf.String()),
@@ -170,7 +171,8 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 				return
 			}
 			stderr := stderrBuf.String()
-			slog.Error(b.name+" stream: command exited abnormally",
+			slog.Error(
+				b.name+" stream: command exited abnormally",
 				slog.String("session_id", req.SessionID),
 				slog.String("exit_error", err.Error()),
 				slog.String("stderr", stderr),
@@ -185,7 +187,8 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			}
 		} else if stderrBuf.Len() > 0 {
 			stderr := stderrBuf.String()
-			slog.Warn(b.name+" stream: command succeeded with stderr output",
+			slog.Warn(
+				b.name+" stream: command succeeded with stderr output",
 				slog.String("session_id", req.SessionID),
 				slog.String("stderr", stderr),
 			)

@@ -47,6 +47,19 @@ Rules:
 	// maxSummarizePasses is the maximum number of summarization attempts
 	// (first pass + optional re-summarization).
 	maxSummarizePasses = 2
+
+	// Language name constants (used in languageName and tests)
+	langChinese    = "Chinese"
+	langEnglish    = "English"
+	langJapanese   = "Japanese"
+	langKorean     = "Korean"
+	langFrench     = "French"
+	langGerman     = "German"
+	langSpanish    = "Spanish"
+	langPortuguese = "Portuguese"
+	langRussian    = "Russian"
+	langArabic     = "Arabic"
+	langItalian    = "Italian"
 )
 
 // MaxSummarizeRunes is the maximum number of runes for summarization input.
@@ -59,7 +72,7 @@ var MaxSummarizeRunes = DefaultMaxSummarizeRunes
 var MaxTextRunes = 0
 
 // SummarizeOption controls summarization behavior.
-type SummarizeOption struct {
+type SummarizeOption struct { //nolint:revive // stutter ok: summarize.SummarizeOption is the established API name
 	// PreserveMarkdown, when true, skips StripMarkdown on both input preparation
 	// and output post-processing. Used by TaskSummarizer to retain formatting.
 	PreserveMarkdown bool
@@ -72,14 +85,14 @@ type Summarizer interface {
 	// For short text, it may return the text as-is after stripping markdown.
 	// language is a language code (e.g. "zh", "en") used to direct output language.
 	// The caller is responsible for setting a deadline on ctx.
-	Summarize(ctx context.Context, text string, language string) (string, error)
+	Summarize(ctx context.Context, text, language string) (string, error)
 }
 
 // summarizePassFunc is the strategy function for a single summarization pass.
 // Each backend (API, AI backend) provides its own implementation.
 type summarizePassFunc func(ctx context.Context, text, systemPrompt string, pass int) (string, error)
 
-// ttsPipeline implements the shared Summarize logic that TTS backends use:
+// Pipeline implements the shared Summarize logic that TTS backends use:
 //  1. prepareTextForSummarization (strip markdown, truncate)
 //  2. Short text bypass
 //  3. Multi-pass with re-summarization (language-aware prompt)
@@ -87,7 +100,7 @@ type summarizePassFunc func(ctx context.Context, text, systemPrompt string, pass
 //
 // This pipeline is TTS-specific because it strips markdown formatting.
 // For task summarization that preserves formatting, use TaskSummarizer instead.
-type ttsPipeline struct {
+type Pipeline struct {
 	passFn     summarizePassFunc
 	basePrompt string // language-independent base prompt
 	opts       SummarizeOption
@@ -96,8 +109,8 @@ type ttsPipeline struct {
 // NewTTSPipeline creates a ttsPipeline with the given pass function.
 // The base prompt (without language) is loaded at creation time; language is
 // resolved per-request in the Summarize call.
-func NewTTSPipeline(passFn summarizePassFunc) ttsPipeline {
-	return ttsPipeline{
+func NewTTSPipeline(passFn summarizePassFunc) Pipeline {
+	return Pipeline{
 		passFn:     passFn,
 		basePrompt: defaultTTSPrompt,
 		opts:       SummarizeOption{PreserveMarkdown: false},
@@ -107,11 +120,11 @@ func NewTTSPipeline(passFn summarizePassFunc) ttsPipeline {
 // NewPipelineWithOpts creates a pipeline with the given pass function and options.
 // When opts.PreserveMarkdown is true, StripMarkdown is skipped on both input
 // and output — used by TaskSummarizer with API backends (OpenAI/Anthropic).
-func NewPipelineWithOpts(passFn summarizePassFunc, basePrompt string, opts SummarizeOption) ttsPipeline {
+func NewPipelineWithOpts(passFn summarizePassFunc, basePrompt string, opts SummarizeOption) Pipeline {
 	if basePrompt == "" {
 		basePrompt = defaultTTSPrompt
 	}
-	return ttsPipeline{
+	return Pipeline{
 		passFn:     passFn,
 		basePrompt: basePrompt,
 		opts:       opts,
@@ -120,7 +133,7 @@ func NewPipelineWithOpts(passFn summarizePassFunc, basePrompt string, opts Summa
 
 // Summarize implements the shared TTS summarization pipeline.
 // language is a language code (e.g. "zh", "en") used to direct output language.
-func (g *ttsPipeline) Summarize(ctx context.Context, text string, language string) (string, error) {
+func (g *Pipeline) Summarize(ctx context.Context, text, language string) (string, error) {
 	cleaned, needsSummarization := prepareTextForSummarization(text, g.opts.PreserveMarkdown)
 	if !needsSummarization {
 		return cleaned, nil
@@ -133,12 +146,12 @@ func (g *ttsPipeline) Summarize(ctx context.Context, text string, language strin
 		return "", err
 	}
 
-	// If the result is still too long, do a second pass with the same prompt
+	// If the result is still too long, do a second pass with the same prompt.
 	if needsReSummarization(result, 1) {
-		second, err := g.passFn(ctx, result, prompt, 2)
-		if err != nil {
-			// On second pass failure, use first pass result
-			return postProcess(result, g.opts.PreserveMarkdown), nil
+		second, secondErr := g.passFn(ctx, result, prompt, 2)
+		if secondErr != nil {
+			// Intentional fallback: use first pass result on second pass failure
+			return postProcess(result, g.opts.PreserveMarkdown), nil //nolint:nilerr // intentional fallback: second pass failed, first pass result is acceptable
 		}
 		result = second
 	}
@@ -160,27 +173,27 @@ func postProcess(result string, preserveMarkdown bool) string {
 func languageName(code string) string {
 	switch strings.ToLower(code) {
 	case "zh", "cmn", "chinese":
-		return "Chinese"
+		return langChinese
 	case "en", "eng", "english":
-		return "English"
+		return langEnglish
 	case "ja", "jpn", "japanese":
-		return "Japanese"
+		return langJapanese
 	case "ko", "kor", "korean":
-		return "Korean"
+		return langKorean
 	case "fr", "fra", "french":
-		return "French"
+		return langFrench
 	case "de", "deu", "german":
-		return "German"
+		return langGerman
 	case "es", "spa", "spanish":
-		return "Spanish"
+		return langSpanish
 	case "pt", "por", "portuguese":
-		return "Portuguese"
+		return langPortuguese
 	case "ru", "rus", "russian":
-		return "Russian"
+		return langRussian
 	case "ar", "ara", "arabic":
-		return "Arabic"
+		return langArabic
 	case "it", "ita", "italian":
-		return "Italian"
+		return langItalian
 	default:
 		return code
 	}

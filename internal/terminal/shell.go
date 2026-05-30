@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -47,7 +48,7 @@ func startPTY(cwd string) (*os.File, *exec.Cmd, error) {
 		return nil, nil, fmt.Errorf("shell not found: %w", err)
 	}
 
-	cmd := exec.Command(shell)
+	cmd := exec.CommandContext(context.Background(), shell)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
 

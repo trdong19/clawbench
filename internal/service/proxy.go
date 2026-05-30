@@ -24,12 +24,12 @@ import (
 
 // ProxyRegistry manages forwarded ports: registration, health checks, and auto-detection.
 type ProxyRegistry struct {
-	mu         sync.RWMutex
-	ports      map[int]*model.ForwardedPort     // key = localPort (auto-assigned, unique)
-	proxies    map[int]*proxy.ReverseProxy       // key = localPort, active HTTP reverse proxies for non-localhost targets
-	cfg        model.ProxyConfig
-	selfPort   int // ClawBench's own port, excluded from detection
-	cancel     context.CancelFunc
+	mu       sync.RWMutex
+	ports    map[int]*model.ForwardedPort // key = localPort (auto-assigned, unique)
+	proxies  map[int]*proxy.ReverseProxy  // key = localPort, active HTTP reverse proxies for non-localhost targets
+	cfg      model.ProxyConfig
+	selfPort int // ClawBench's own port, excluded from detection
+	cancel   context.CancelFunc
 }
 
 // allocateLocalPort finds an available local port for forwarding.
@@ -63,7 +63,7 @@ func (r *ProxyRegistry) allocateLocalPort(preferred int) int {
 // hostDisplayName returns a human-readable host name for error messages.
 func hostDisplayName(host string) string {
 	if host == "" {
-		return "localhost"
+		return ProxyLocalhost
 	}
 	return host
 }
@@ -76,7 +76,7 @@ var ProxyService *ProxyRegistry
 // The caller (main.go) decides whether to create this based on port_forward.enabled.
 func NewProxyRegistry(selfPort int) *ProxyRegistry {
 	ctx, cancel := context.WithCancel(context.Background())
-	allowedPorts := "1024-65535" // default: non-privileged ports only (ISS-186 — was empty=allow-all)
+	allowedPorts := DefaultAllowedPorts // default: non-privileged ports only (ISS-186 — was empty=allow-all)
 	r := &ProxyRegistry{
 		ports:    make(map[int]*model.ForwardedPort),
 		proxies:  make(map[int]*proxy.ReverseProxy),
@@ -88,7 +88,8 @@ func NewProxyRegistry(selfPort int) *ProxyRegistry {
 	// Restore persisted ports from database
 	r.loadPortsFromDB()
 
-	slog.Info("proxy service initialized",
+	slog.Info(
+		"proxy service initialized",
 		slog.String("allowed_ports", r.cfg.AllowedPorts),
 		slog.Int("self_port", selfPort),
 		slog.Int("restored_ports", len(r.ports)),
@@ -137,15 +138,15 @@ func (r *ProxyRegistry) Stop() {
 // RegisterPort adds a port to the forwarding registry and returns the allocated local port.
 // port is the target port on the remote host. If the same port is already
 // registered (with a different host), a nearby free local port is auto-assigned.
-func (r *ProxyRegistry) RegisterPort(port int, host string, name string, protocol string) (int, error) {
+func (r *ProxyRegistry) RegisterPort(port int, host, name, protocol string) (int, error) {
 	if port <= 0 || port > 65535 {
 		return 0, fmt.Errorf("invalid port number: %d", port)
 	}
 	if !r.IsPortAllowed(port) {
 		return 0, fmt.Errorf("port %d is not in the allowed range", port)
 	}
-	if protocol != "https" {
-		protocol = "http"
+	if protocol != ProtocolHTTPS {
+		protocol = ProtocolHTTP
 	}
 
 	r.mu.Lock()
@@ -177,7 +178,8 @@ func (r *ProxyRegistry) RegisterPort(port int, host string, name string, protoco
 	if isNonLocalhostTarget(host) {
 		if err := r.startReverseProxy(localPort, port, host, protocol); err != nil {
 			// Log but don't fail — the port is still registered for SSH tunneling
-			slog.Warn("failed to start reverse proxy for non-localhost target",
+			slog.Warn(
+				"failed to start reverse proxy for non-localhost target",
 				slog.Int("local_port", localPort),
 				slog.Int("target_port", port),
 				slog.String("host", host),
@@ -189,7 +191,8 @@ func (r *ProxyRegistry) RegisterPort(port int, host string, name string, protoco
 	// Persist to database
 	r.savePortToDB(localPort, port, host, name, protocol)
 
-	slog.Info("proxy port registered",
+	slog.Info(
+		"proxy port registered",
 		slog.Int("local_port", localPort),
 		slog.Int("target_port", port),
 		slog.String("host", host),
@@ -202,15 +205,15 @@ func (r *ProxyRegistry) RegisterPort(port int, host string, name string, protoco
 
 // UpdatePort modifies an existing forwarded port's host, name, and protocol.
 // localPort is the immutable key; the target (port, host) must remain unique among other entries.
-func (r *ProxyRegistry) UpdatePort(localPort int, port int, host string, name string, protocol string) error {
+func (r *ProxyRegistry) UpdatePort(localPort, port int, host, name, protocol string) error {
 	if port <= 0 || port > 65535 {
 		return fmt.Errorf("invalid port number: %d", port)
 	}
 	if !r.IsPortAllowed(port) {
 		return fmt.Errorf("port %d is not in the allowed range", port)
 	}
-	if protocol != "https" {
-		protocol = "http"
+	if protocol != ProtocolHTTPS {
+		protocol = ProtocolHTTP
 	}
 
 	r.mu.Lock()
@@ -259,7 +262,8 @@ func (r *ProxyRegistry) UpdatePort(localPort int, port int, host string, name st
 
 	r.savePortToDB(newLocalPort, port, host, name, protocol)
 
-	slog.Info("proxy port updated",
+	slog.Info(
+		"proxy port updated",
 		slog.Int("local_port", newLocalPort),
 		slog.Int("target_port", port),
 		slog.String("host", host),
@@ -320,7 +324,7 @@ func (r *ProxyRegistry) IsPortAllowed(port int) bool {
 // DetectedPort represents an auto-detected listening port with its protocol and process.
 type DetectedPort struct {
 	Port        int    `json:"port"`
-	Protocol    string `json:"protocol"`    // "http", "https", or "other" (non-HTTP like SSH)
+	Protocol    string `json:"protocol"`    // ProtocolHTTP, ProtocolHTTPS, or ProxyCategoryOther (non-HTTP like SSH)
 	ProcessName string `json:"processName"` // Name of the process listening on this port
 	ProcessArgs string `json:"processArgs"` // Partial command-line arguments
 }
@@ -371,65 +375,64 @@ func (r *ProxyRegistry) DetectListeningPorts() []DetectedPort {
 	return result
 }
 
+// nonHTTPProcessNames lists process name substrings for non-HTTP services.
+var nonHTTPProcessNames = []string{
+	"ssh", "sshd",
+	"mysql", "mysqld",
+	"postgres",
+	"redis",
+	"mongod",
+}
+
+// nonHTTPPorts lists well-known port numbers for non-HTTP services.
+var nonHTTPPorts = map[int]bool{
+	22: true, 2222: true, // SSH
+	25: true, 465: true, 587: true, // SMTP
+	3306:  true, // MySQL
+	5432:  true, // PostgreSQL
+	6379:  true, // Redis
+	27017: true, // MongoDB
+	21:    true, // FTP
+}
+
 // classifyPort determines the protocol of a listening port.
-// Known non-HTTP ports (SSH, MySQL, Redis, etc.) are marked as "other"
+// Known non-HTTP ports (SSH, MySQL, Redis, etc.) are marked as ProxyCategoryOther
 // since they cannot be forwarded through an HTTP proxy/browser.
 func classifyPort(port int, processName string) string {
 	// Well-known non-HTTP ports
-	switch port {
-	case 22, 2222: // SSH
-		return "other"
-	case 25, 465, 587: // SMTP
-		return "other"
-	case 3306: // MySQL
-		return "other"
-	case 5432: // PostgreSQL
-		return "other"
-	case 6379: // Redis
-		return "other"
-	case 27017: // MongoDB
-		return "other"
-	case 21: // FTP
-		return "other"
+	if nonHTTPPorts[port] {
+		return ProxyCategoryOther
 	}
 
 	// Check process name for known non-HTTP services
 	name := strings.ToLower(processName)
-	if strings.Contains(name, "ssh") || strings.Contains(name, "sshd") {
-		return "other"
-	}
-	if strings.Contains(name, "mysql") || strings.Contains(name, "mysqld") {
-		return "other"
-	}
-	if strings.Contains(name, "postgres") {
-		return "other"
-	}
-	if strings.Contains(name, "redis") {
-		return "other"
-	}
-	if strings.Contains(name, "mongod") {
-		return "other"
+	for _, substr := range nonHTTPProcessNames {
+		if strings.Contains(name, substr) {
+			return ProxyCategoryOther
+		}
 	}
 
 	// Probe for TLS
 	if detectTLS(port) {
-		return "https"
+		return ProtocolHTTPS
 	}
-	return "http"
+	return ProtocolHTTP
 }
 
 // detectTLS attempts a TLS handshake to determine if a port speaks HTTPS.
 func detectTLS(port int) bool {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
+	addr := fmt.Sprintf("%s:%d", LocalhostIP, port)
+	dialer := net.Dialer{Timeout: 1 * time.Second}
+	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return false
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
-	err = tlsConn.Handshake()
+	tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // local/SSH tunnel connection, certificate verification not applicable
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = tlsConn.HandshakeContext(ctx)
 	return err == nil
 }
 
@@ -484,18 +487,19 @@ func (r *ProxyRegistry) checkAllPorts() {
 func checkPortActive(port int, host string) bool {
 	targetHost := host
 	if targetHost == "" {
-		targetHost = "127.0.0.1"
+		targetHost = LocalhostIP
 	}
 	timeout := 2 * time.Second
-	if targetHost != "127.0.0.1" && targetHost != "localhost" {
+	if targetHost != LocalhostIP && targetHost != ProxyLocalhost {
 		timeout = 5 * time.Second
 	}
 	addr := net.JoinHostPort(targetHost, strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	dialer := net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
 }
 
@@ -602,82 +606,85 @@ func resolveInodeToProcess() map[uint64]procInfo {
 			continue
 		}
 		pidStr := entry.Name()
-		// Check if directory name is a number (PID)
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil || pid <= 0 {
 			continue
 		}
 
-		// Read process info from /proc/PID/cmdline
-		// cmdline uses null bytes as separators; fields: exe_path arg1 arg2 ...
-		cmdlinePath := "/proc/" + pidStr + "/cmdline"
-		cmdlineData, err := os.ReadFile(cmdlinePath)
-		if err != nil {
+		info, ok := readProcInfo(pidStr)
+		if !ok {
 			continue
 		}
 
-		// Split by null bytes
-		fields := bytes.Split(cmdlineData, []byte{0})
-		if len(fields) == 0 || len(fields[0]) == 0 {
-			continue
-		}
-
-		// First field is the executable path — extract basename
-		procName := filepath.Base(string(fields[0]))
-
-		// Remaining fields are arguments — join with space, truncate to 120 chars
-		var argsStr string
-		if len(fields) > 1 {
-			argParts := make([]string, 0, len(fields)-1)
-			for _, f := range fields[1:] {
-				if len(f) > 0 {
-					argParts = append(argParts, string(f))
-				}
-			}
-			argsStr = strings.Join(argParts, " ")
-			// Truncate long args
-			if len(argsStr) > 120 {
-				argsStr = argsStr[:120] + "…"
-			}
-		}
-
-		info := procInfo{Name: procName, Args: argsStr}
-
-		// Scan /proc/PID/fd/ for socket inodes
-		fdDir := "/proc/" + pidStr + "/fd"
-		fdEntries, err := os.ReadDir(fdDir)
-		if err != nil {
-			continue
-		}
-
-		for _, fd := range fdEntries {
-			link, err := os.Readlink(fdDir + "/" + fd.Name())
-			if err != nil {
-				continue
-			}
-			// Links look like: socket:[12345]
-			if !strings.HasPrefix(link, "socket:[") {
-				continue
-			}
-			inodeStr := strings.TrimPrefix(link, "socket:[")
-			inodeStr = strings.TrimSuffix(inodeStr, "]")
-			inode, err := strconv.ParseUint(inodeStr, 10, 64)
-			if err != nil {
-				continue
-			}
-			// Only store first process per inode (avoid overwriting with less relevant one)
-			if _, exists := inodeMap[inode]; !exists {
-				inodeMap[inode] = info
-			}
-		}
+		scanProcFDs(pidStr, info, inodeMap)
 	}
 
 	return inodeMap
 }
 
+// readProcInfo reads the process name and args from /proc/PID/cmdline.
+func readProcInfo(pidStr string) (procInfo, bool) {
+	cmdlinePath := "/proc/" + pidStr + "/cmdline"
+	cmdlineData, err := os.ReadFile(cmdlinePath)
+	if err != nil {
+		return procInfo{}, false
+	}
+
+	fields := bytes.Split(cmdlineData, []byte{0})
+	if len(fields) == 0 || len(fields[0]) == 0 {
+		return procInfo{}, false
+	}
+
+	procName := filepath.Base(string(fields[0]))
+
+	var argsStr string
+	if len(fields) > 1 {
+		argParts := make([]string, 0, len(fields)-1)
+		for _, f := range fields[1:] {
+			if len(f) > 0 {
+				argParts = append(argParts, string(f))
+			}
+		}
+		argsStr = strings.Join(argParts, " ")
+		if len(argsStr) > 120 {
+			argsStr = argsStr[:120] + "…"
+		}
+	}
+
+	return procInfo{Name: procName, Args: argsStr}, true
+}
+
+// scanProcFDs scans /proc/PID/fd/ for socket inodes and records them in inodeMap.
+func scanProcFDs(pidStr string, info procInfo, inodeMap map[uint64]procInfo) {
+	fdDir := "/proc/" + pidStr + "/fd"
+	fdEntries, err := os.ReadDir(fdDir)
+	if err != nil {
+		return
+	}
+
+	for _, fd := range fdEntries {
+		link, err := os.Readlink(fdDir + "/" + fd.Name())
+		if err != nil {
+			continue
+		}
+		if !strings.HasPrefix(link, "socket:[") {
+			continue
+		}
+		inodeStr := strings.TrimPrefix(link, "socket:[")
+		inodeStr = strings.TrimSuffix(inodeStr, "]")
+		inode, err := strconv.ParseUint(inodeStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		if _, exists := inodeMap[inode]; !exists {
+			inodeMap[inode] = info
+		}
+	}
+}
+
 // parseLsof uses lsof on macOS to find LISTEN sockets and their process names.
 func parseLsof() []detectedPortInfo {
-	cmd := exec.Command("lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n")
+	cmd := exec.CommandContext(context.Background(), "lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n")
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Debug("lsof command failed", slog.String("err", err.Error()))
@@ -726,7 +733,7 @@ func parseLsof() []detectedPortInfo {
 
 // parseNetstat uses netstat on Windows to find LISTEN sockets and their process names.
 func parseNetstat() []detectedPortInfo {
-	cmd := exec.Command("netstat", "-ano")
+	cmd := exec.CommandContext(context.Background(), "netstat", "-ano")
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Debug("netstat command failed", slog.String("err", err.Error()))
@@ -790,7 +797,7 @@ func resolveWindowsPIDs(portPID map[int]int) map[int]string {
 	}
 
 	// Run tasklist to get process names
-	cmd := exec.Command("tasklist", "/FO", "CSV", "/NH")
+	cmd := exec.CommandContext(context.Background(), "tasklist", "/FO", "CSV", "/NH")
 	output, err := cmd.Output()
 	if err != nil {
 		slog.Debug("tasklist command failed", slog.String("err", err.Error()))
@@ -864,12 +871,12 @@ func (r *ProxyRegistry) loadPortsFromDB() {
 		return
 	}
 
-	rows, err := DB.Query("SELECT local_port, port, host, name, protocol FROM forwarded_ports")
+	rows, err := DB.QueryContext(context.Background(), "SELECT local_port, port, host, name, protocol FROM forwarded_ports")
 	if err != nil {
 		slog.Warn("failed to load persisted ports from DB", slog.String("err", err.Error()))
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var localPort, port int
@@ -881,8 +888,8 @@ func (r *ProxyRegistry) loadPortsFromDB() {
 			slog.Warn("skipping persisted port outside allowed range", slog.Int("port", port))
 			continue
 		}
-		if protocol != "https" {
-			protocol = "http"
+		if protocol != ProtocolHTTPS {
+			protocol = ProtocolHTTP
 		}
 		r.ports[localPort] = &model.ForwardedPort{
 			Port:       port,
@@ -896,7 +903,8 @@ func (r *ProxyRegistry) loadPortsFromDB() {
 		// For non-localhost targets, start an HTTP reverse proxy to rewrite Host header.
 		if isNonLocalhostTarget(host) {
 			if err := r.startReverseProxy(localPort, port, host, protocol); err != nil {
-				slog.Warn("failed to start reverse proxy on DB load",
+				slog.Warn(
+					"failed to start reverse proxy on DB load",
 					slog.Int("local_port", localPort),
 					slog.Int("target_port", port),
 					slog.String("host", host),
@@ -905,6 +913,9 @@ func (r *ProxyRegistry) loadPortsFromDB() {
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("error iterating persisted ports", slog.String("err", err.Error()))
+	}
 
 	if len(r.ports) > 0 {
 		slog.Info("restored forwarded ports from database", slog.Int("count", len(r.ports)))
@@ -912,11 +923,12 @@ func (r *ProxyRegistry) loadPortsFromDB() {
 }
 
 // savePortToDB persists a single forwarded port to the database.
-func (r *ProxyRegistry) savePortToDB(localPort int, port int, host string, name, protocol string) {
+func (r *ProxyRegistry) savePortToDB(localPort, port int, host, name, protocol string) {
 	if DB == nil {
 		return
 	}
-	_, err := DB.Exec(
+	_, err := DB.ExecContext(
+		context.Background(),
 		"INSERT OR REPLACE INTO forwarded_ports (local_port, port, host, name, protocol) VALUES (?, ?, ?, ?, ?)",
 		localPort, port, host, name, protocol,
 	)
@@ -930,7 +942,7 @@ func (r *ProxyRegistry) deletePortFromDB(localPort int) {
 	if DB == nil {
 		return
 	}
-	_, err := DB.Exec("DELETE FROM forwarded_ports WHERE local_port = ?", localPort)
+	_, err := DB.ExecContext(context.Background(), "DELETE FROM forwarded_ports WHERE local_port = ?", localPort)
 	if err != nil {
 		slog.Error("failed to delete port from DB", slog.Int("local_port", localPort), slog.String("err", err.Error()))
 	}
@@ -939,13 +951,13 @@ func (r *ProxyRegistry) deletePortFromDB(localPort int) {
 // isNonLocalhostTarget returns true if the target host is not localhost/127.0.0.1.
 // Non-localhost targets need an HTTP reverse proxy to rewrite the Host header.
 func isNonLocalhostTarget(host string) bool {
-	return host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1"
+	return host != "" && host != ProxyLocalhost && host != "127.0.0.1" && host != "::1"
 }
 
 // startReverseProxy creates and starts an HTTP reverse proxy for a non-localhost target.
 // The proxy listens on 127.0.0.1:{localPort} and forwards to {host}:{port},
 // rewriting the Host header to match the target.
-func (r *ProxyRegistry) startReverseProxy(localPort int, targetPort int, host string, protocol string) error {
+func (r *ProxyRegistry) startReverseProxy(localPort, targetPort int, host, protocol string) error {
 	targetAddr := net.JoinHostPort(host, strconv.Itoa(targetPort))
 	rp, err := proxy.NewReverseProxy("127.0.0.1", localPort, targetAddr, protocol)
 	if err != nil {
@@ -955,7 +967,8 @@ func (r *ProxyRegistry) startReverseProxy(localPort int, targetPort int, host st
 	go rp.Serve()
 	r.proxies[localPort] = rp
 
-	slog.Info("reverse proxy started for non-localhost target",
+	slog.Info(
+		"reverse proxy started for non-localhost target",
 		slog.Int("local_port", localPort),
 		slog.String("target", targetAddr),
 		slog.String("protocol", protocol),

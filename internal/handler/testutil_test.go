@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -28,13 +29,13 @@ type testEnv struct {
 	WatchDir        string
 	OrigToken       string
 	OrigCookieToken string
-	OrigRootPaths    []string
+	OrigRootPaths   []string
 	OrigDB          *sql.DB
 }
 
 // setupTestEnv creates a temporary project directory, initializes an in-memory DB,
 // and saves/restores global state. Returns env and teardown function.
-func setupTestEnv(t *testing.T) (*testEnv, func()) {
+func setupTestEnv(t *testing.T) (env *testEnv, teardown func()) {
 	t.Helper()
 
 	// Create temp directories — project must be under WatchDir to match production
@@ -46,7 +47,7 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 	// symlink resolution internally, so RootPaths and path arguments can use
 	// either resolved or unresolved forms.
 	projectDir := filepath.Join(watchDir, "project")
-	os.MkdirAll(projectDir, 0755)
+	os.MkdirAll(projectDir, 0o755)
 
 	// Save original globals
 	origToken := model.SessionToken
@@ -68,11 +69,11 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL")
+	db.ExecContext(context.Background(), "PRAGMA busy_timeout=5000")
 
 	// Create tables
-	_, err = db.Exec(`
+	_, err = db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS chat_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_path TEXT NOT NULL,
@@ -96,7 +97,6 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 			model TEXT DEFAULT '',
 			session_type TEXT NOT NULL DEFAULT 'chat',
 			external_session_id TEXT DEFAULT '',
-			source_session_id TEXT DEFAULT NULL,
 			thinking_effort TEXT DEFAULT '',
 			deleted INTEGER NOT NULL DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -141,7 +141,6 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 		CREATE INDEX IF NOT EXISTS idx_executions_task ON task_executions(task_id, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_history_session ON chat_history(project_path, backend, session_id, created_at);
 		CREATE INDEX IF NOT EXISTS idx_sessions_project_backend ON chat_sessions(project_path, backend);
-		CREATE INDEX IF NOT EXISTS idx_sessions_source_session ON chat_sessions(source_session_id) WHERE source_session_id IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS idx_executions_session ON task_executions(session_id);
 		CREATE TABLE IF NOT EXISTS summaries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,20 +194,20 @@ func setupTestEnv(t *testing.T) (*testEnv, func()) {
 	// Register mock agents so GetDefaultAgentID() works
 	model.Agents = map[string]*model.Agent{
 		"codebuddy": {ID: "codebuddy", Name: "Test", Backend: "codebuddy", Models: []model.AgentModel{{ID: "glm-5.1", Name: "GLM 5.1", Default: true}}},
-		"claude":  {ID: "claude", Name: "Claude", Backend: "claude", Models: []model.AgentModel{{ID: "claude-sonnet-4-6", Name: "Claude Sonnet", Default: true}}},
+		"claude":    {ID: "claude", Name: "Claude", Backend: "claude", Models: []model.AgentModel{{ID: "claude-sonnet-4-6", Name: "Claude Sonnet", Default: true}}},
 	}
 	model.AgentList = []*model.Agent{model.Agents["codebuddy"], model.Agents["claude"]}
 
-	env := &testEnv{
+	env = &testEnv{
 		ProjectDir:      projectDir,
 		WatchDir:        watchDir,
 		OrigToken:       origToken,
 		OrigCookieToken: origCookieToken,
-		OrigRootPaths:    origRootPaths,
+		OrigRootPaths:   origRootPaths,
 		OrigDB:          origDB,
 	}
 
-	teardown := func() {
+	teardown = func() {
 		model.SessionToken = origToken
 		model.CookieToken = origCookieToken
 		model.RootPaths = origRootPaths
@@ -233,7 +232,7 @@ func newRequest(t *testing.T, method, path string, body interface{}) *http.Reque
 		}
 		reader = bytes.NewReader(data)
 	}
-	req := httptest.NewRequest(method, path, reader)
+	req := httptest.NewRequestWithContext(context.Background(), method, path, reader)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -250,12 +249,11 @@ func withProjectCookie(req *http.Request, projectPath string) *http.Request {
 }
 
 // withAuthCookie adds the clawbench_session cookie to the request.
-func withAuthCookie(req *http.Request, token string) *http.Request {
+func withAuthCookie(req *http.Request, token string) {
 	req.AddCookie(&http.Cookie{
 		Name:  model.SessionCookie,
 		Value: token,
 	})
-	return req
 }
 
 // withSessionCookie adds the chat_session_id cookie to the request.
@@ -299,10 +297,10 @@ func callHandlerWithAuth(handler http.HandlerFunc, req *http.Request) *httptest.
 func createTestFile(t *testing.T, projectDir, relPath, content string) {
 	t.Helper()
 	fullPath := filepath.Join(projectDir, relPath)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatalf("failed to create directories: %v", err)
 	}
-	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("failed to write file: %v", err)
 	}
 }

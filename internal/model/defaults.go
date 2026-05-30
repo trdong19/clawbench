@@ -3,10 +3,17 @@ package model
 import (
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"clawbench/internal/platform"
+)
+
+// Default constants for config values.
+const (
+	DefaultTTSEngine        = "edge"
+	DefaultSummarizeBackend = "simple"
 )
 
 // ParsePresenceMap walks a raw YAML map and returns a flat set of dot-separated
@@ -40,74 +47,94 @@ func walkPresenceMap(m map[string]any, prefix string, presence map[string]bool) 
 // used to distinguish "user wrote enabled: false" from "user omitted the section".
 // Returns the auto-generated password if one was created, empty string otherwise.
 func ApplyDefaults(cfg *Config, presence map[string]bool) string {
-	var autoPassword string
+	applyServerDefaults(cfg)
+	autoPassword := applyPasswordDefaults(cfg)
+	applyLogDefaults(cfg)
+	applyUploadDefaults(cfg)
+	applyChatDefaults(cfg)
+	applySessionDefaults(cfg)
+	applyPortForwardDefaults(cfg, presence)
+	applyTTSDefaults(cfg)
+	applyRAGDefaults(cfg)
+	applyTerminalDefaults(cfg, presence)
+	return autoPassword
+}
 
-	// --- Server ---
+// applyServerDefaults sets defaults for server, dev port, log level, and watch dir.
+func applyServerDefaults(cfg *Config) {
 	if cfg.Port <= 0 {
 		cfg.Port = 20000
 	}
-
-	// --- DevPort ---
 	// -1 = explicitly disabled; 0 = auto (Port+2 when TLS enabled, disabled otherwise)
-	if cfg.DevPort == 0 {
-		if cfg.TLS.Enabled {
-			cfg.DevPort = cfg.Port + 2
-		}
+	if cfg.DevPort == 0 && cfg.TLS.Enabled {
+		cfg.DevPort = cfg.Port + 2
 	}
-
-	// --- LogLevel ---
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
 	}
+}
 
-	// --- Password ---
+// applyPasswordDefaults handles password auto-generation and persistence.
+func applyPasswordDefaults(cfg *Config) string {
 	autoPasswordFile := filepath.Join(BinDir, ".clawbench", "auto-password")
-	if cfg.Password == "" {
-		// Try to reuse previously auto-generated password
-		saved, err := os.ReadFile(autoPasswordFile)
-		if err == nil && len(saved) > 0 {
-			cfg.Password = string(saved)
-		} else {
-			// Generate new random password (8 hex chars = 4 bytes)
-			b := make([]byte, 4)
-			if _, err := rand.Read(b); err != nil {
-				// Random generation failure is fatal — password would be predictable
-				fmt.Fprintf(os.Stderr, "FATAL: crypto/rand.Read failed: %v\n", err)
-				os.Exit(1)
-			}
-			cfg.Password = fmt.Sprintf("%x", b)
-			// Persist for reuse across restarts
-			os.MkdirAll(filepath.Dir(autoPasswordFile), 0755)
-			os.WriteFile(autoPasswordFile, []byte(cfg.Password), 0600)
-		}
-		autoPassword = cfg.Password
-	} else if IsSHA256Password(cfg.Password) {
-		// SHA-256 hashed password from config (set via settings API) — treat as explicitly set
-		os.Remove(autoPasswordFile)
-	} else {
-		// User explicitly set a plaintext password — remove stale auto-password file if any
-		os.Remove(autoPasswordFile)
+	switch cfg.Password {
+	case "":
+		return resolveOrGeneratePassword(cfg, autoPasswordFile)
+	default:
+		// User explicitly set a password (SHA-256 hash or plaintext) — remove stale auto-password file if any
+		_ = os.Remove(autoPasswordFile)
+		return ""
 	}
+}
 
-	// --- LogDir ---
+// resolveOrGeneratePassword reuses a saved auto-password or generates a new one.
+func resolveOrGeneratePassword(cfg *Config, autoPasswordFile string) string {
+	saved, err := os.ReadFile(autoPasswordFile)
+	if err == nil && len(saved) > 0 {
+		cfg.Password = string(saved)
+		return cfg.Password
+	}
+	// Generate new random password (8 hex chars = 4 bytes)
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		// Random generation failure is fatal — password would be predictable
+		fmt.Fprintf(os.Stderr, "FATAL: crypto/rand.Read failed: %v\n", err)
+		os.Exit(1)
+	}
+	cfg.Password = fmt.Sprintf("%x", b)
+	// Persist for reuse across restarts
+	if err := os.MkdirAll(filepath.Dir(autoPasswordFile), 0o750); err != nil {
+		slog.Warn("failed to create auto-password directory", "error", err)
+	}
+	if err := os.WriteFile(autoPasswordFile, []byte(cfg.Password), 0o600); err != nil {
+		slog.Warn("failed to persist auto-password", "error", err)
+	}
+	return cfg.Password
+}
+
+// applyLogDefaults sets defaults for log directory and retention.
+func applyLogDefaults(cfg *Config) {
 	if cfg.LogDir == "" {
 		cfg.LogDir = filepath.Join(BinDir, ".clawbench", "logs")
 	}
 	cfg.LogDir = platform.ExpandTilde(cfg.LogDir)
-
 	if cfg.LogMaxDays <= 0 {
 		cfg.LogMaxDays = 7
 	}
+}
 
-	// --- Upload ---
+// applyUploadDefaults sets upload size and file count defaults.
+func applyUploadDefaults(cfg *Config) {
 	if cfg.Upload.MaxSizeMB <= 0 {
 		cfg.Upload.MaxSizeMB = 100
 	}
 	if cfg.Upload.MaxFiles <= 0 {
 		cfg.Upload.MaxFiles = 20
 	}
+}
 
-	// --- Chat ---
+// applyChatDefaults sets chat UI defaults.
+func applyChatDefaults(cfg *Config) {
 	if cfg.Chat.InitialMessages <= 0 {
 		cfg.Chat.InitialMessages = 20
 	}
@@ -123,37 +150,35 @@ func ApplyDefaults(cfg *Config, presence map[string]bool) string {
 	if cfg.Chat.SystemPromptInterval <= 0 {
 		cfg.Chat.SystemPromptInterval = 10
 	}
+}
 
-	// --- Session ---
+// applySessionDefaults sets session and recent projects defaults.
+func applySessionDefaults(cfg *Config) {
 	if cfg.Session.MaxCount <= 0 {
 		cfg.Session.MaxCount = 10
 	}
-
-	// --- Recent Projects ---
 	if cfg.RecentProjects.MaxCount <= 0 {
 		cfg.RecentProjects.MaxCount = 10
 	}
+}
 
-	// --- Proxy (legacy) ---
-	// proxy.enabled and proxy.allowed_ports have been removed.
-	// ProxyConfig is kept for backward-compatible YAML reading only.
-
-	// --- Port Forward (SSH Tunnel) ---
-	// Same bool zero-value trap as Proxy.
+// applyPortForwardDefaults sets SSH tunnel / port forward defaults.
+func applyPortForwardDefaults(cfg *Config, presence map[string]bool) {
 	if !presence["port_forward.enabled"] {
 		cfg.PortForward.Enabled = true
 	}
-	// Persist host key to avoid SSH fingerprint mismatch after server restart
 	if cfg.PortForward.HostKey == "" {
 		cfg.PortForward.HostKey = filepath.Join(BinDir, ".clawbench", "ssh_host_key")
 	}
+}
 
-	// --- TTS ---
+// applyTTSDefaults sets TTS engine and summarization defaults.
+func applyTTSDefaults(cfg *Config) {
 	if cfg.TTS.Engine == "" {
-		cfg.TTS.Engine = "edge"
+		cfg.TTS.Engine = DefaultTTSEngine
 	}
 	if cfg.Summarize.Backend == "" {
-		cfg.Summarize.Backend = "simple"
+		cfg.Summarize.Backend = DefaultSummarizeBackend
 	}
 	if cfg.TTS.Speed <= 0 {
 		cfg.TTS.Speed = 1.0
@@ -170,10 +195,10 @@ func ApplyDefaults(cfg *Config, presence map[string]bool) string {
 	if cfg.TTS.MaxCacheFiles == 0 {
 		cfg.TTS.MaxCacheFiles = 100
 	}
+}
 
-	// --- RAG ---
-	// RAG is always enabled. No "enabled" toggle needed.
-	// When the embedding API is unavailable, falls back to BM25 full-text search.
+// applyRAGDefaults sets RAG configuration defaults and migrates deprecated fields.
+func applyRAGDefaults(cfg *Config) {
 	// Backward compatibility: migrate deprecated Ollama fields to new generic fields.
 	if cfg.RAG.BaseURL == "" && cfg.RAG.OllamaBaseURL != "" {
 		cfg.RAG.BaseURL = cfg.RAG.OllamaBaseURL
@@ -208,9 +233,10 @@ func ApplyDefaults(cfg *Config, presence map[string]bool) string {
 	if cfg.RAG.RetentionDays <= 0 {
 		cfg.RAG.RetentionDays = 90
 	}
+}
 
-	// --- Terminal ---
-	// Bool zero-value trap: same as proxy/port_forward — default to true when absent.
+// applyTerminalDefaults sets web terminal defaults.
+func applyTerminalDefaults(cfg *Config, presence map[string]bool) {
 	if !presence["terminal.enabled"] {
 		cfg.Terminal.Enabled = true
 	}
@@ -229,6 +255,4 @@ func ApplyDefaults(cfg *Config, presence map[string]bool) string {
 	if cfg.Terminal.MaxSessions <= 0 {
 		cfg.Terminal.MaxSessions = 10
 	}
-
-	return autoPassword
 }

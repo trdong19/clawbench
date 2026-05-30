@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -47,68 +48,15 @@ func printHelp(info HelpInfo) {
 	b.WriteString(info.Usage)
 	b.WriteString("\n")
 
-	// Subcommands
-	if len(info.Subcommands) > 0 {
-		b.WriteString("\nSubcommands:\n")
-		maxName := 0
-		for _, cmd := range info.Subcommands {
-			if len(cmd.Name) > maxName {
-				maxName = len(cmd.Name)
-			}
-		}
-		for _, cmd := range info.Subcommands {
-			b.WriteString("  ")
-			b.WriteString(cmd.Name)
-			b.WriteString(strings.Repeat(" ", maxName-len(cmd.Name)+2))
-			b.WriteString(cmd.Desc)
-			b.WriteString("\n")
-		}
-		b.WriteString("\nRun \"")
-		// Use first two words of Usage for group help prefix (e.g. "clawbench task")
-		usageWords := strings.Fields(info.Usage)
-		groupPrefix := usageWords[0]
-		if len(usageWords) > 1 && !strings.HasPrefix(usageWords[1], "<") && !strings.HasPrefix(usageWords[1], "[") {
-			groupPrefix = usageWords[0] + " " + usageWords[1]
-		}
-		b.WriteString(groupPrefix)
-		b.WriteString(" <subcommand> --help\" for details.\n")
-	}
+	writeSubcommands(&b, info)
+	writeFlags(&b, info)
 
-	// Flags
-	if len(info.Flags) > 0 {
-		b.WriteString("\nFlags:\n")
-		maxFlag := 0
-		for _, f := range info.Flags {
-			flagStr := flagDisplayName(f)
-			if len(flagStr) > maxFlag {
-				maxFlag = len(flagStr)
-			}
-		}
-		for _, f := range info.Flags {
-			b.WriteString("  ")
-			name := flagDisplayName(f)
-			b.WriteString(name)
-			b.WriteString(strings.Repeat(" ", maxFlag-len(name)+2))
-			b.WriteString(f.Desc)
-			if f.Required {
-				b.WriteString(" (required)")
-			} else if f.Default != "" && f.Default != "0" && f.Default != "\"\"" {
-				b.WriteString(" (default: ")
-				b.WriteString(f.Default)
-				b.WriteString(")")
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	// Positional args
 	if info.Positional != "" {
 		b.WriteString("\nPositional:\n  ")
 		b.WriteString(info.Positional)
 		b.WriteString("\n")
 	}
 
-	// Examples
 	if len(info.Examples) > 0 {
 		b.WriteString("\nExamples:\n")
 		for _, ex := range info.Examples {
@@ -118,7 +66,6 @@ func printHelp(info HelpInfo) {
 		}
 	}
 
-	// Footer
 	if info.Footer != "" {
 		b.WriteString("\n")
 		b.WriteString(info.Footer)
@@ -126,6 +73,63 @@ func printHelp(info HelpInfo) {
 	}
 
 	fmt.Print(b.String())
+}
+
+func writeSubcommands(b *strings.Builder, info HelpInfo) {
+	if len(info.Subcommands) == 0 {
+		return
+	}
+	b.WriteString("\nSubcommands:\n")
+	maxName := 0
+	for _, cmd := range info.Subcommands {
+		if len(cmd.Name) > maxName {
+			maxName = len(cmd.Name)
+		}
+	}
+	for _, cmd := range info.Subcommands {
+		b.WriteString("  ")
+		b.WriteString(cmd.Name)
+		b.WriteString(strings.Repeat(" ", maxName-len(cmd.Name)+2))
+		b.WriteString(cmd.Desc)
+		b.WriteString("\n")
+	}
+	b.WriteString("\nRun \"")
+	usageWords := strings.Fields(info.Usage)
+	groupPrefix := usageWords[0]
+	if len(usageWords) > 1 && !strings.HasPrefix(usageWords[1], "<") && !strings.HasPrefix(usageWords[1], "[") {
+		groupPrefix = usageWords[0] + " " + usageWords[1]
+	}
+	b.WriteString(groupPrefix)
+	b.WriteString(" <subcommand> --help\" for details.\n")
+}
+
+func writeFlags(b *strings.Builder, info HelpInfo) {
+	if len(info.Flags) == 0 {
+		return
+	}
+	b.WriteString("\nFlags:\n")
+	maxFlag := 0
+	for _, f := range info.Flags {
+		flagStr := flagDisplayName(f)
+		if len(flagStr) > maxFlag {
+			maxFlag = len(flagStr)
+		}
+	}
+	for _, f := range info.Flags {
+		b.WriteString("  ")
+		name := flagDisplayName(f)
+		b.WriteString(name)
+		b.WriteString(strings.Repeat(" ", maxFlag-len(name)+2))
+		b.WriteString(f.Desc)
+		if f.Required {
+			b.WriteString(" (required)")
+		} else if f.Default != "" && f.Default != "0" && f.Default != "\"\"" {
+			b.WriteString(" (default: ")
+			b.WriteString(f.Default)
+			b.WriteString(")")
+		}
+		b.WriteString("\n")
+	}
 }
 
 // flagDisplayName returns the display form of a flag, e.g. "--name string" or "-q string".
@@ -141,25 +145,23 @@ func flagDisplayName(f FlagHelp) string {
 }
 
 // parseOrHelp wraps flag.FlagSet.Parse() to handle --help and usage errors.
-// Returns true if help was printed (caller should os.Exit).
-func parseOrHelp(fs *flag.FlagSet, args []string, info *HelpInfo) bool {
+// It calls os.Exit on --help or bad flags, so it never returns in those cases.
+func parseOrHelp(fs *flag.FlagSet, args []string, info *HelpInfo) {
 	err := fs.Parse(args)
-	if err == flag.ErrHelp {
+	if errors.Is(err, flag.ErrHelp) {
 		printHelp(*info)
 		os.Exit(0)
 	}
 	if err != nil {
-		// Bad flag (e.g. --nonexistent) — show help and exit 1
 		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
 		printHelp(*info)
 		os.Exit(1)
 	}
-	return false
 }
 
 // printGroupHelp prints help for a command group that has subcommands but no flags.
 // Used when a user runs "clawbench task" without a subcommand.
-func printGroupHelp(usage string, description string, subcommands []CmdHelp) {
+func printGroupHelp(usage, description string, subcommands []CmdHelp) {
 	info := HelpInfo{
 		Usage:       usage,
 		Description: description,

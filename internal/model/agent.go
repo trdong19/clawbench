@@ -1,3 +1,4 @@
+// Package model defines data models, configuration, and agent discovery for ClawBench.
 package model
 
 import (
@@ -20,18 +21,18 @@ type AgentModel struct {
 
 // Agent represents an AI agent with its own system prompt, backend, and models.
 type Agent struct {
-	ID           string       `yaml:"id" json:"id"`
-	Name         string       `yaml:"name" json:"name"`
-	Icon         string       `yaml:"icon" json:"icon"`
-	Specialty    string       `yaml:"specialty" json:"specialty"`
-	Backend      string       `yaml:"backend" json:"backend"`
-	Models       []AgentModel `yaml:"models,omitempty" json:"models"`
-	Command                      string   `yaml:"command,omitempty" json:"command"`                                       // optional: custom command path for the AI backend CLI
-	ThinkingEffort               string   `yaml:"thinking_effort,omitempty" json:"thinkingEffort"`                       // agent's default thinking effort (from YAML); not modified by user preference
-	ThinkingEffortLevels         []string `yaml:"thinking_effort_levels,omitempty" json:"thinkingEffortLevels"`         // valid levels for this backend, e.g. ["low","medium","high","xhigh"]
-	PreferredModel               string   `yaml:"preferred_model,omitempty" json:"preferredModel"`                       // user's preferred model; empty = use BaseModelID()
-	PreferredThinkingEffort      string   `yaml:"preferred_thinking_effort,omitempty" json:"preferredThinkingEffort"`   // user's preferred thinking effort; empty = use ThinkingEffort
-	SystemPrompt                 string   `yaml:"system_prompt,omitempty" json:"systemPrompt"`
+	ID                      string       `yaml:"id" json:"id"`
+	Name                    string       `yaml:"name" json:"name"`
+	Icon                    string       `yaml:"icon" json:"icon"`
+	Specialty               string       `yaml:"specialty" json:"specialty"`
+	Backend                 string       `yaml:"backend" json:"backend"`
+	Models                  []AgentModel `yaml:"models,omitempty" json:"models"`
+	Command                 string       `yaml:"command,omitempty" json:"command"`                                   // optional: custom command path for the AI backend CLI
+	ThinkingEffort          string       `yaml:"thinking_effort,omitempty" json:"thinkingEffort"`                    // agent's default thinking effort (from YAML); not modified by user preference
+	ThinkingEffortLevels    []string     `yaml:"thinking_effort_levels,omitempty" json:"thinkingEffortLevels"`       // valid levels for this backend, e.g. ["low","medium","high","xhigh"]
+	PreferredModel          string       `yaml:"preferred_model,omitempty" json:"preferredModel"`                    // user's preferred model; empty = use BaseModelID()
+	PreferredThinkingEffort string       `yaml:"preferred_thinking_effort,omitempty" json:"preferredThinkingEffort"` // user's preferred thinking effort; empty = use ThinkingEffort
+	SystemPrompt            string       `yaml:"system_prompt,omitempty" json:"systemPrompt"`
 
 	// ModelsAutoDetected indicates whether Models were filled by auto-discovery
 	// (from cache) rather than user-defined in YAML. Used by AsyncRefreshModelCache
@@ -78,11 +79,15 @@ func (a *Agent) EffectiveThinkingEffort() string {
 }
 
 var (
-	Agents        map[string]*Agent // indexed by ID
-	AgentList     []*Agent          // ordered list for API responses
-	ClawbenchBin  string            // absolute path to clawbench binary for {{CLAWBENCH_BIN}} replacement
-	ModelCacheDir string            // model cache directory, set by main.go at startup
-	agentsDir     string            // saved from LoadAgents for BuildCommonPrompt re-calls
+	// Agents maps agent IDs to Agent instances, indexed by ID.
+	Agents map[string]*Agent
+	// AgentList is the ordered list of agents for API responses.
+	AgentList []*Agent
+	// ClawbenchBin is the absolute path to the clawbench binary for {{CLAWBENCH_BIN}} replacement.
+	ClawbenchBin string
+	// ModelCacheDir is the model cache directory, set by main.go at startup.
+	ModelCacheDir string
+	agentsDir     string // saved from LoadAgents for BuildCommonPrompt re-calls
 )
 
 // GetDefaultAgentID returns the default agent ID for new sessions.
@@ -169,7 +174,7 @@ func WriteAgentYAML(agent *Agent) error {
 
 	// Parse into generic map to preserve unknown fields
 	var raw map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	if err = yaml.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parse agent YAML %s: %w", yamlPath, err)
 	}
 
@@ -193,7 +198,7 @@ func WriteAgentYAML(agent *Agent) error {
 
 	// Atomic write: tmp + rename
 	tmpPath := yamlPath + ".tmp"
-	if err := os.WriteFile(tmpPath, out, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, out, 0o600); err != nil {
 		return fmt.Errorf("write temp agent YAML %s: %w", tmpPath, err)
 	}
 	if err := os.Rename(tmpPath, yamlPath); err != nil {

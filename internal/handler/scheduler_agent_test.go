@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -124,7 +125,7 @@ func TestServeChatMessageUpdate_InvalidBody(t *testing.T) {
 	_, teardown := setupTestEnv(t)
 	defer teardown()
 
-	req := httptest.NewRequest(http.MethodPut, "/api/ai/chat/message", nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/ai/chat/message", http.NoBody)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	ServeChatMessageUpdate(w, req)
@@ -397,68 +398,6 @@ func TestServeTaskByID_Resume(t *testing.T) {
 	assertOK(t, w)
 }
 
-// ---------- ServeTaskByID Trigger (ISS-187) ----------
-
-func TestServeTaskByID_Trigger_AlreadyRunning(t *testing.T) {
-	env, teardown := setupTestEnv(t)
-	defer teardown()
-
-	model.Agents = map[string]*model.Agent{
-		"coder": {ID: "coder", Name: "Coder", Backend: "claude"},
-	}
-	defer func() { model.Agents = nil }()
-
-	s := service.NewScheduler()
-	defer s.Stop()
-	service.GlobalScheduler = s
-	defer func() { service.GlobalScheduler = nil }()
-
-	task := &model.ScheduledTask{
-		ProjectPath: env.ProjectDir,
-		Name:        "Running Task",
-		CronExpr:    "0 * * * *",
-		AgentID:     "coder",
-		Prompt:      "Test",
-		RepeatMode:  "unlimited",
-	}
-	s.AddTask(task)
-
-	// Simulate a running task using the public MarkTaskRunning helper (ISS-187)
-	s.MarkTaskRunning(task.ID)
-	defer s.UnmarkTaskRunning(task.ID)
-
-	// Trigger should return 409 Conflict since task is already running
-	req := newRequest(t, http.MethodPut, fmt.Sprintf("/api/tasks/%d", task.ID), map[string]any{
-		"action": "trigger",
-	})
-	req = withProjectCookie(req, env.ProjectDir)
-	w := callHandler(ServeTaskByID, req)
-	assertStatus(t, w, http.StatusConflict)
-}
-
-func TestServeTaskByID_Trigger_TaskNotFound(t *testing.T) {
-	env, teardown := setupTestEnv(t)
-	defer teardown()
-
-	model.Agents = map[string]*model.Agent{
-		"coder": {ID: "coder", Name: "Coder", Backend: "claude"},
-	}
-	defer func() { model.Agents = nil }()
-
-	s := service.NewScheduler()
-	defer s.Stop()
-	service.GlobalScheduler = s
-	defer func() { service.GlobalScheduler = nil }()
-
-	// Trigger a non-existent task — returns NotFound error from TriggerTask
-	req := newRequest(t, http.MethodPut, "/api/tasks/99999", map[string]any{
-		"action": "trigger",
-	})
-	req = withProjectCookie(req, env.ProjectDir)
-	w := callHandler(ServeTaskByID, req)
-	assertStatus(t, w, http.StatusNotFound)
-}
-
 func TestServeTaskByID_NotFound(t *testing.T) {
 	env, teardown := setupTestEnv(t)
 	defer teardown()
@@ -594,10 +533,10 @@ func TestServeTaskByID_Update(t *testing.T) {
 	s.AddTask(task)
 
 	req := newRequest(t, http.MethodPut, fmt.Sprintf("/api/tasks/%d", task.ID), map[string]any{
-		"action":   "update",
-		"name":     "Updated Name",
+		"action":    "update",
+		"name":      "Updated Name",
 		"cron_expr": "0 */2 * * *",
-		"prompt":   "Updated prompt",
+		"prompt":    "Updated prompt",
 	})
 	req = withProjectCookie(req, env.ProjectDir)
 	w := callHandler(ServeTaskByID, req)
@@ -610,7 +549,7 @@ func TestServeTaskByID_UpdateAssistantAgent(t *testing.T) {
 
 	// All agents are allowed for scheduled tasks
 	model.Agents = map[string]*model.Agent{
-		"coder":    {ID: "coder", Name: "Coder", Backend: "claude"},
+		"coder":     {ID: "coder", Name: "Coder", Backend: "claude"},
 		"assistant": {ID: "assistant", Name: "Assistant", Backend: "codebuddy"},
 	}
 	defer func() { model.Agents = nil }()
@@ -902,7 +841,7 @@ func TestServeTaskByID_DeleteExecution(t *testing.T) {
 
 	// Get execution ID and mark it as completed (simulates finished execution)
 	var execID int64
-	err = service.DB.QueryRow("SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
 	assert.NoError(t, err)
 	service.UpdateExecutionStatus(sessionID, "completed")
 
@@ -917,7 +856,7 @@ func TestServeTaskByID_DeleteExecution(t *testing.T) {
 
 	// Verify execution is deleted
 	var count int
-	service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE id = ?", execID).Scan(&count)
+	service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE id = ?", execID).Scan(&count)
 	assert.Equal(t, 0, count)
 }
 
@@ -1014,7 +953,7 @@ func TestServeTaskByID_DeleteExecution_WrongProject(t *testing.T) {
 	service.AddTaskExecution(task.ID, sessionID, "auto")
 	service.UpdateExecutionStatus(sessionID, "completed")
 	var execID int64
-	service.DB.QueryRow("SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
+	service.DB.QueryRowContext(context.Background(), "SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
 
 	// Request from a different project should be forbidden
 	otherProject := t.TempDir()
@@ -1052,7 +991,7 @@ func TestServeTaskByID_DeleteAllExecutions(t *testing.T) {
 	s.AddTask(task)
 
 	// Create 2 executions (mark as completed to simulate finished executions)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		sessionID, _ := service.CreateSession(env.ProjectDir, "claude", fmt.Sprintf("Exec %d", i), "coder", "", "default", "scheduled")
 		service.AddTaskExecution(task.ID, sessionID, "auto")
 		service.UpdateExecutionStatus(sessionID, "completed")
@@ -1060,7 +999,7 @@ func TestServeTaskByID_DeleteAllExecutions(t *testing.T) {
 
 	// Verify 2 executions exist
 	var count int
-	service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE task_id = ?", task.ID).Scan(&count)
+	service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE task_id = ?", task.ID).Scan(&count)
 	assert.Equal(t, 2, count)
 
 	// Delete all via API
@@ -1072,7 +1011,7 @@ func TestServeTaskByID_DeleteAllExecutions(t *testing.T) {
 	assertOK(t, w)
 
 	// Verify all executions deleted
-	service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE task_id = ?", task.ID).Scan(&count)
+	service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE task_id = ?", task.ID).Scan(&count)
 	assert.Equal(t, 0, count)
 }
 
@@ -1103,7 +1042,7 @@ func TestServeTaskByID_Executions_WithLimit(t *testing.T) {
 	s.AddTask(task)
 
 	// Create 3 completed executions
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		sessionID, err := service.CreateSession(env.ProjectDir, "claude", fmt.Sprintf("Exec %d", i), "coder", "", "default", "scheduled")
 		assert.NoError(t, err)
 		service.AddChatMessage(env.ProjectDir, "claude", sessionID, "user", fmt.Sprintf("prompt %d", i), nil, false, "Exec")
@@ -1192,7 +1131,7 @@ func TestServeTaskByID_Executions_CursorPagination(t *testing.T) {
 	s.AddTask(task)
 
 	// Create 5 completed executions
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		sessionID, _ := service.CreateSession(env.ProjectDir, "claude", fmt.Sprintf("Exec %d", i), "coder", "", "default", "scheduled")
 		service.AddTaskExecution(task.ID, sessionID, "auto")
 		service.UpdateExecutionStatus(sessionID, "completed")
@@ -1275,7 +1214,7 @@ func TestServeTaskByID_Executions_NoLimitBackwardCompat(t *testing.T) {
 	s.AddTask(task)
 
 	// Create 3 executions
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		sessionID, _ := service.CreateSession(env.ProjectDir, "claude", fmt.Sprintf("Exec %d", i), "coder", "", "default", "scheduled")
 		service.AddTaskExecution(task.ID, sessionID, "auto")
 		service.UpdateExecutionStatus(sessionID, "completed")

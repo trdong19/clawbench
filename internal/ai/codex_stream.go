@@ -15,14 +15,15 @@ import (
 
 // CodexStreamMessage represents a single JSON line from `codex exec --json`
 type CodexStreamMessage struct {
-	Type     string          `json:"type"`
-	ThreadID string          `json:"thread_id,omitempty"`
-	Message  string          `json:"message,omitempty"` // error message
-	Error    *CodexError     `json:"error,omitempty"`   // turn.failed error
-	Item     *CodexItem      `json:"item,omitempty"`
-	Usage    *CodexUsage     `json:"usage,omitempty"`
+	Type     string      `json:"type"`
+	ThreadID string      `json:"thread_id,omitempty"`
+	Message  string      `json:"message,omitempty"` // error message
+	Error    *CodexError `json:"error,omitempty"`   // turn.failed error
+	Item     *CodexItem  `json:"item,omitempty"`
+	Usage    *CodexUsage `json:"usage,omitempty"`
 }
 
+// CodexError represents an error from the Codex backend.
 type CodexError struct {
 	Message string `json:"message"`
 }
@@ -30,19 +31,19 @@ type CodexError struct {
 // CodexItem represents an item in Codex stream output
 type CodexItem struct {
 	ID               string `json:"id"`
-	Type             string `json:"type"`               // "agent_message" or "command_execution"
-	Text             string `json:"text,omitempty"`     // agent_message
-	Command          string `json:"command,omitempty"`  // command_execution
+	Type             string `json:"type"`                        // "agent_message" or "command_execution"
+	Text             string `json:"text,omitempty"`              // agent_message
+	Command          string `json:"command,omitempty"`           // command_execution
 	AggregatedOutput string `json:"aggregated_output,omitempty"` // command_execution
-	ExitCode         *int   `json:"exit_code,omitempty"`        // command_execution
-	Status           string `json:"status,omitempty"`           // "in_progress" or "completed"
+	ExitCode         *int   `json:"exit_code,omitempty"`         // command_execution
+	Status           string `json:"status,omitempty"`            // "in_progress" or "completed"
 }
 
 // CodexUsage represents token usage in a turn.completed event
 type CodexUsage struct {
-	InputTokens        int `json:"input_tokens"`
-	CachedInputTokens  int `json:"cached_input_tokens"`
-	OutputTokens       int `json:"output_tokens"`
+	InputTokens       int `json:"input_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
 }
 
 // CodexStreamParser parses JSON Lines output from `codex exec --json`
@@ -56,7 +57,7 @@ func (p *CodexStreamParser) GetCapturedSessionID() string { return p.threadID }
 
 // ParseLine parses a single JSON line from Codex's --json output and sends
 // StreamEvent(s) to the provided channel.
-func (p *CodexStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
+func (p *CodexStreamParser) ParseLine(line string, ch chan<- StreamEvent) { //nolint:gocyclo // 复杂的 stream 解析逻辑
 	var msg CodexStreamMessage
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
 		slog.Debug("codex stream: skipping unparseable line", "line", line, "error", err)
@@ -83,10 +84,10 @@ func (p *CodexStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			// and Codex's native \n\n separator.
 			thinking, content := codexSplitThinking(text)
 			if thinking != "" {
-				ch <- StreamEvent{Type: "thinking", Content: thinking}
+				ch <- StreamEvent{Type: "thinking", Content: thinking} //nolint:goconst // JSON 字段名/协议字符串
 			}
 			if content != "" {
-				ch <- StreamEvent{Type: "content", Content: content}
+				ch <- StreamEvent{Type: "content", Content: content} //nolint:goconst // JSON 字段名/协议字符串
 			}
 
 		case "command_execution":
@@ -114,15 +115,15 @@ func (p *CodexStreamParser) ParseLine(line string, ch chan<- StreamEvent) {
 			meta.InputTokens = msg.Usage.InputTokens
 			meta.OutputTokens = msg.Usage.OutputTokens
 		}
-		ch <- StreamEvent{Type: "metadata", Meta: meta}
-		ch <- StreamEvent{Type: "done"}
+		ch <- StreamEvent{Type: "metadata", Meta: meta} //nolint:goconst // JSON 字段名/协议字符串
+		ch <- StreamEvent{Type: "done"}                 //nolint:goconst // JSON 字段名/协议字符串
 
 	case "turn.started":
 		// Structural event — no content
 
-	case "error":
+	case "error": //nolint:goconst // JSON 字段名/协议字符串
 		if msg.Message != "" {
-			ch <- StreamEvent{Type: "warning", Content: msg.Message, Reason: ReasonRequestFailed}
+			ch <- StreamEvent{Type: "warning", Content: msg.Message, Reason: ReasonRequestFailed} //nolint:goconst // JSON 字段名/协议字符串
 		}
 
 	case "turn.failed":
@@ -192,7 +193,7 @@ func buildCodexStreamArgs(req ChatRequest) []string {
 //	codex
 //	<thinking block>
 //	<response content>
-func parseCodexResumeOutput(scanner *bufio.Scanner, ch chan<- StreamEvent, sessionID string, rawLines *strings.Builder) {
+func parseCodexResumeOutput(scanner *bufio.Scanner, ch chan<- StreamEvent, sessionID string, rawLines *strings.Builder) { //nolint:gocyclo,gocognit // 复杂的 stream 解析逻辑
 	role := "" // current role: "codex" or "exec"
 	inThinking := false
 	var thinkingBuf strings.Builder
@@ -222,9 +223,9 @@ func parseCodexResumeOutput(scanner *bufio.Scanner, ch chan<- StreamEvent, sessi
 		}
 
 		// Detect role markers
-		if line == "codex" || line == "user" {
+		if line == "codex" || line == "user" { //nolint:goconst // JSON 字段名/协议字符串
 			// Flush any pending exec block
-			if role == "exec" && execCommand != "" {
+			if role == "exec" && execCommand != "" { //nolint:goconst // JSON 字段名/协议字符串
 				input := execCommandJSON(execCommand)
 				output := truncateToolOutput(execOutput.String())
 				emitBashToolCall(ch, execID, input, output, true, nil)
@@ -327,23 +328,23 @@ func parseCodexResumeOutput(scanner *bufio.Scanner, ch chan<- StreamEvent, sessi
 			continue
 		}
 
-	// Handle exec role: command line and output
-	if role == "exec" {
-		if execCommand == "" {
-			// First line is the command summary, e.g.:
-			// "bash -c 'ls -1 /tmp | wc -l' in /tmp succeeded in 14ms:"
-			execCommand = strings.TrimSuffix(line, ":")
-			execID = fmt.Sprintf("exec-%d", execCounter)
-			execCounter++
-			emitBashToolCall(ch, execID, execCommandJSON(execCommand), "", false, nil)
-		} else {
-			if execOutput.Len() > 0 {
-				execOutput.WriteByte('\n')
+		// Handle exec role: command line and output
+		if role == "exec" {
+			if execCommand == "" {
+				// First line is the command summary, e.g.:
+				// "bash -c 'ls -1 /tmp | wc -l' in /tmp succeeded in 14ms:"
+				execCommand = strings.TrimSuffix(line, ":")
+				execID = fmt.Sprintf("exec-%d", execCounter)
+				execCounter++
+				emitBashToolCall(ch, execID, execCommandJSON(execCommand), "", false, nil)
+			} else {
+				if execOutput.Len() > 0 {
+					execOutput.WriteByte('\n')
+				}
+				execOutput.WriteString(line)
+			}
+			continue
 		}
-			execOutput.WriteString(line)
-		}
-		continue
-	}
 	}
 
 	// Flush any pending exec block at EOF
@@ -380,10 +381,10 @@ func emitBashToolCall(ch chan<- StreamEvent, id, input, output string, done bool
 		if exitCode != nil && *exitCode != 0 {
 			status = "error"
 		} else if output != "" {
-			status = "success"
+			status = "success" //nolint:goconst // JSON 字段名/协议字符串
 		}
 	}
-	ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{
+	ch <- StreamEvent{Type: "tool_use", Tool: &ToolCall{ //nolint:goconst // JSON 字段名/协议字符串
 		Name:   "Bash",
 		ID:     id,
 		Input:  input,
@@ -403,7 +404,7 @@ func codexBashInputJSON(command string) string { return execCommandJSON(command)
 func buildCodexResumeArgs(req ChatRequest, threadID string) []string {
 	var args []string
 
-	args = append(args, "resume")
+	args = append(args, "resume") //nolint:gocritic // appendCombine: separated intentionally for readability
 
 	// Resume does not support --dangerously-bypass-approvals-and-sandbox,
 	// use -c sandbox_permissions override instead.
@@ -437,7 +438,7 @@ func buildCodexResumeArgs(req ChatRequest, threadID string) []string {
 }
 
 // ExecuteStream runs the Codex CLI in streaming mode and returns a channel of events
-func (c *CodexBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) {
+func (c *CodexBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan StreamEvent, error) { //nolint:gocyclo,gocognit // 复杂的 stream 解析逻辑
 	// Parse command field: "codex --profile m27" -> binary="codex", baseArgs=["--profile","m27"]
 	cmdBinary := "codex"
 	var baseArgs []string
@@ -494,7 +495,8 @@ func (c *CodexBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 		cmd.Stderr = &stderrBuf
 	}
 
-	slog.Info("executing ai stream command",
+	slog.Info(
+		"executing ai stream command",
 		slog.String("backend", "codex"),
 		slog.String("work_dir", req.WorkDir),
 		slog.String("session_id", req.SessionID),
@@ -570,7 +572,7 @@ func (c *CodexBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 				if capturedID := parser.GetCapturedSessionID(); capturedID != "" && capturedID != lastCapturedSessionID {
 					lastCapturedSessionID = capturedID
 					select {
-					case ch <- StreamEvent{Type: "session_capture", Content: capturedID}:
+					case ch <- StreamEvent{Type: "session_capture", Content: capturedID}: //nolint:goconst // JSON 字段名/协议字符串
 					default:
 					}
 				}
@@ -578,13 +580,14 @@ func (c *CodexBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 				// Check context after parsing
 				select {
 				case <-ctx.Done():
-					slog.Warn("codex stream: context cancelled",
+					slog.Warn(
+						"codex stream: context cancelled",
 						slog.String("session_id", req.SessionID),
 					)
 					// Send raw output before returning so it's available for debugging
 					if rawLines.Len() > 0 {
 						select {
-						case ch <- StreamEvent{Type: "raw_output", RawOutput: rawLines.String()}:
+						case ch <- StreamEvent{Type: "raw_output", RawOutput: rawLines.String()}: //nolint:goconst // JSON 字段名/协议字符串
 						default:
 						}
 					}
@@ -603,7 +606,8 @@ func (c *CodexBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() != nil {
-				slog.Warn("codex stream: command cancelled",
+				slog.Warn(
+					"codex stream: command cancelled",
 					slog.String("session_id", req.SessionID),
 					slog.String("ctx_err", ctx.Err().Error()),
 				)
@@ -616,7 +620,8 @@ func (c *CodexBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-ch
 				}
 				return
 			}
-			slog.Error("codex stream: command exited abnormally",
+			slog.Error(
+				"codex stream: command exited abnormally",
 				slog.String("session_id", req.SessionID),
 				slog.String("exit_error", err.Error()),
 			)

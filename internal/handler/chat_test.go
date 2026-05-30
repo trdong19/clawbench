@@ -503,7 +503,7 @@ func TestServeChatHistory_Post_InvalidBody(t *testing.T) {
 	defer teardown()
 
 	// Send invalid JSON by using raw bytes
-	req := httptest.NewRequest(http.MethodPost, "/api/ai/history", strings.NewReader("not json"))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/ai/history", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
 	withProjectCookie(req, env.ProjectDir)
 
@@ -650,7 +650,7 @@ func TestServeSessions_Post_InvalidBody(t *testing.T) {
 	env, teardown := setupTestEnv(t)
 	defer teardown()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/ai/sessions", strings.NewReader("not json"))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/ai/sessions", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
 	withProjectCookie(req, env.ProjectDir)
 
@@ -732,7 +732,7 @@ func TestCancelChat_NoRunningSession(t *testing.T) {
 	req = withProjectCookie(req, env.ProjectDir)
 
 	w := callHandler(CancelChat, req)
-	// Idempotent: cancelling a non-running session succeeds
+	// Idempotent: canceling a non-running session succeeds
 	assertStatus(t, w, http.StatusOK)
 }
 
@@ -838,7 +838,7 @@ func TestUploadFile_ValidFile(t *testing.T) {
 	assert.NoError(t, err)
 	writer.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/upload/file", &buf)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/upload/file", &buf)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	withProjectCookie(req, env.ProjectDir)
 
@@ -864,7 +864,7 @@ func TestUploadFile_NoProjectCookie(t *testing.T) {
 	part.Write([]byte("hello"))
 	writer.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/upload/file", &buf)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/upload/file", &buf)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	w := callHandler(UploadFile, req)
@@ -893,7 +893,7 @@ func TestUploadFile_ExeExtension_Allowed(t *testing.T) {
 	part.Write([]byte("evil content"))
 	writer.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/upload/file", &buf)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/upload/file", &buf)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	withProjectCookie(req, env.ProjectDir)
 
@@ -911,7 +911,7 @@ func TestUploadFile_BatExtension_Allowed(t *testing.T) {
 	part.Write([]byte("@echo off"))
 	writer.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/upload/file", &buf)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/upload/file", &buf)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	withProjectCookie(req, env.ProjectDir)
 
@@ -1332,9 +1332,11 @@ func TestConvertAskQuestionBlocks_Deduplication(t *testing.T) {
 	// only the successfully converted XML-tag version.
 	blocks := []model.ContentBlock{
 		{Type: "text", Text: "Here is my analysis"},
-		{Type: "tool_use", Name: "AskUserQuestion", ID: "toolu_rejected", Status: "error",
+		{
+			Type: "tool_use", Name: "AskUserQuestion", ID: "toolu_rejected", Status: "error",
 			Output: "Tool AskUserQuestion not found in agent cli.", Done: true,
-			Input: map[string]any{"questions": []any{}}},
+			Input: map[string]any{"questions": []any{}},
+		},
 		{Type: "text", Text: `<ask-question>{"questions":[{"question":"Which approach?","header":"Approach","options":[{"label":"A","description":"Fast"},{"label":"B","description":"Safe"}],"multiSelect":false}]}</ask-question>`},
 		{Type: "warning", Text: "Tool AskUserQuestion not found in agent cli."},
 	}
@@ -1500,16 +1502,17 @@ func TestConvertAskQuestionBlocks_ObfuscatedCloseTag(t *testing.T) {
 
 	foundAskQ := false
 	for _, b := range result {
-		if b.Type == "tool_use" && b.Name == "AskUserQuestion" {
-			foundAskQ = true
-			questions, ok := b.Input["questions"]
-			if !ok {
-				t.Error("AskUserQuestion block missing 'questions' field in input")
-			}
-			questionsArr, ok := questions.([]any)
-			if !ok || len(questionsArr) == 0 {
-				t.Errorf("AskUserQuestion 'questions' should be non-empty array, got %v", questions)
-			}
+		if b.Type != jsonKeyToolUse || b.Name != toolNameAskUserQuestion {
+			continue
+		}
+		foundAskQ = true
+		questions, ok := b.Input["questions"]
+		if !ok {
+			t.Error("AskUserQuestion block missing 'questions' field in input")
+		}
+		questionsArr, ok := questions.([]any)
+		if !ok || len(questionsArr) == 0 {
+			t.Errorf("AskUserQuestion 'questions' should be non-empty array, got %v", questions)
 		}
 	}
 
@@ -2096,7 +2099,7 @@ func TestServeSessions_Pagination_NoLimit(t *testing.T) {
 	defer teardown()
 
 	// Create sessions
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, err := service.CreateSession(env.ProjectDir, "codebuddy", fmt.Sprintf("session %d", i), "", "", "default", "chat")
 		assert.NoError(t, err)
 	}
@@ -2120,7 +2123,7 @@ func TestServeSessions_Pagination_WithLimit(t *testing.T) {
 	defer teardown()
 
 	// Create 5 sessions
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, err := service.CreateSession(env.ProjectDir, "codebuddy", fmt.Sprintf("session %d", i), "", "", "default", "chat")
 		assert.NoError(t, err)
 	}
@@ -2185,7 +2188,7 @@ func TestServeSessions_Pagination_ZeroLimit(t *testing.T) {
 	env, teardown := setupTestEnv(t)
 	defer teardown()
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err := service.CreateSession(env.ProjectDir, "codebuddy", fmt.Sprintf("s%d", i), "", "", "default", "chat")
 		assert.NoError(t, err)
 	}
@@ -2219,9 +2222,7 @@ func TestServeSessions_Pagination_EmptyProject(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
 	// sessions may be null (nil slice) when empty
 	sessionsRaw := result["sessions"]
-	if sessionsRaw == nil {
-		// null is acceptable for empty
-	} else {
+	if sessionsRaw != nil {
 		sessions := sessionsRaw.([]interface{})
 		assert.Empty(t, sessions)
 	}
@@ -2540,7 +2541,7 @@ func TestAIChat_Get_NoSessionID_CreateSessionError(t *testing.T) {
 // ============================================================================
 
 // TestExecuteStreamRun_CtxCancelled verifies the ctx.Done() branch in
-// executeStreamRun. When the context is cancelled while the event loop is
+// executeStreamRun. When the context is canceled while the event loop is
 // waiting for events, the function should finalize and return.
 func TestExecuteStreamRun_CtxCancelled(t *testing.T) {
 	env, teardown := setupTestEnv(t)
@@ -2553,7 +2554,7 @@ func TestExecuteStreamRun_CtxCancelled(t *testing.T) {
 	service.SetSessionRunning(sessionID, true, false)
 	defer service.SetSessionRunning(sessionID, false, false)
 
-	// Use a cancelled context to trigger the ctx.Done() branch
+	// Use a canceled context to trigger the ctx.Done() branch
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
@@ -2565,7 +2566,7 @@ func TestExecuteStreamRun_CtxCancelled(t *testing.T) {
 
 	// executeStreamRun should hit the ctx.Done() branch because the
 	// backend.ExecuteStream call will fail (no claude CLI), and during
-	// the event loop iteration, the cancelled context will be selected.
+	// the event loop iteration, the canceled context will be selected.
 	result := executeStreamRun(ctx, req, streamCh, env.ProjectDir, sessionID, "claude", "default", chatReq, "")
 	// The result should indicate an error (no backend available) but
 	// the ctx.Done() path should still be covered in the select statement.
@@ -2590,12 +2591,11 @@ func TestFinalizeStreamRun_CtxCancelled(t *testing.T) {
 		{Type: "text", Text: "hello"},
 	}
 
-	req := newRequest(t, http.MethodPost, "/api/ai/chat", bytes.NewReader([]byte(`{}`)))
-	req = withProjectCookie(req, env.ProjectDir)
+	_ = newRequest(t, http.MethodPost, "/api/ai/chat", bytes.NewReader([]byte(`{}`)))
 
 	result := finalizeStreamRun(ctx, streamCh, env.ProjectDir, "claude", sessionID, "default", chatReq, blocks, nil, "", nil, time.Now())
 
-	// When ctx is cancelled with non-empty blocks, finalizeStreamRun
+	// When ctx is canceled with non-empty blocks, finalizeStreamRun
 	// should complete successfully (blocks are preserved).
 	assert.Equal(t, "", result.err, "non-empty blocks should finalize without error")
 	assert.Equal(t, "cancel", result.cancelReason)

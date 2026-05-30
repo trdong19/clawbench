@@ -1,8 +1,9 @@
 package service
 
 import (
-	"clawbench/internal/model"
 	"sync"
+
+	"clawbench/internal/model"
 )
 
 type queueEntry struct {
@@ -14,7 +15,8 @@ var sessionQueues sync.Map // map[string]*queueEntry
 
 func getOrCreateEntry(sessionID string) *queueEntry {
 	val, _ := sessionQueues.LoadOrStore(sessionID, &queueEntry{})
-	return val.(*queueEntry)
+	entry, _ := val.(*queueEntry)
+	return entry
 }
 
 // EnqueueMessage adds a message to the session's queue and returns the full queue.
@@ -35,7 +37,7 @@ func DequeueMessage(sessionID string) (model.QueuedMessage, bool) {
 	if !ok {
 		return model.QueuedMessage{}, false
 	}
-	entry := val.(*queueEntry)
+	entry, _ := val.(*queueEntry)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	if len(entry.items) == 0 {
@@ -55,7 +57,7 @@ func GetQueue(sessionID string) []model.QueuedMessage {
 	if !ok {
 		return nil
 	}
-	entry := val.(*queueEntry)
+	entry, _ := val.(*queueEntry)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	if len(entry.items) == 0 {
@@ -73,7 +75,7 @@ func RemoveQueueItem(sessionID string, index int) []model.QueuedMessage {
 	if !ok {
 		return nil
 	}
-	entry := val.(*queueEntry)
+	entry, _ := val.(*queueEntry)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	if index < 0 || index >= len(entry.items) {

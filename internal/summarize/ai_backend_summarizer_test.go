@@ -11,6 +11,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	testMockBackend  = "mock-backend"
+	testTypeContent  = "content"
+	testTypeDone     = "done"
+	testTypeError    = "error"
+	testTypeThinking = "thinking"
+)
+
 // --- NewAIBackendSummarizer ---
 
 func TestNewAIBackendSummarizer_UnsupportedBackend(t *testing.T) {
@@ -21,17 +29,17 @@ func TestNewAIBackendSummarizer_UnsupportedBackend(t *testing.T) {
 
 // --- AIBackendSummarizer.Summarize with mock backend ---
 
-// mockAIBackend implements ai.AIBackend for testing
+// mockAIBackend implements ai.Backend for testing
 type mockAIBackend struct {
-	name         string
-	streamCh     chan ai.StreamEvent
-	executeErr   error
+	name          string
+	streamCh      chan ai.StreamEvent
+	executeErr    error
 	executeCalled bool
 }
 
 func (m *mockAIBackend) Name() string { return m.name }
 
-func (m *mockAIBackend) ExecuteStream(ctx context.Context, req ai.ChatRequest) (<-chan ai.StreamEvent, error) {
+func (m *mockAIBackend) ExecuteStream(_ context.Context, _ ai.ChatRequest) (<-chan ai.StreamEvent, error) {
 	m.executeCalled = true
 	if m.executeErr != nil {
 		return nil, m.executeErr
@@ -43,7 +51,7 @@ func TestAIBackendSummarizer_Summarize_ShortText(t *testing.T) {
 	// Short text should bypass the AI backend entirely
 	s := &AIBackendSummarizer{
 		backend: &mockAIBackend{name: "test"},
-		gs:      NewTTSPipeline(func(ctx context.Context, text, systemPrompt string, pass int) (string, error) { return "", nil }),
+		gs:      NewTTSPipeline(func(_ context.Context, _, _ string, _ int) (string, error) { return "", nil }),
 	}
 
 	result, err := s.Summarize(context.Background(), "短文本", "zh")
@@ -53,12 +61,12 @@ func TestAIBackendSummarizer_Summarize_ShortText(t *testing.T) {
 
 func TestAIBackendSummarizer_doSummarizePass_Success(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 3)
-	ch <- ai.StreamEvent{Type: "content", Content: "This is "}
-	ch <- ai.StreamEvent{Type: "content", Content: "a summary."}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "This is "}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "a summary."}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
-	mock := &mockAIBackend{name: "mock-backend", streamCh: ch}
+	mock := &mockAIBackend{name: testMockBackend, streamCh: ch}
 	s := &AIBackendSummarizer{
 		backend: mock,
 	}
@@ -86,10 +94,10 @@ func TestAIBackendSummarizer_doSummarizePass_ExecuteError(t *testing.T) {
 
 func TestAIBackendSummarizer_doSummarizePass_StreamError(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "error", Error: "out of tokens"}
+	ch <- ai.StreamEvent{Type: testTypeError, Error: "out of tokens"}
 	close(ch)
 
-	mock := &mockAIBackend{name: "mock-backend", streamCh: ch}
+	mock := &mockAIBackend{name: testMockBackend, streamCh: ch}
 	s := &AIBackendSummarizer{
 		backend: mock,
 	}
@@ -101,10 +109,10 @@ func TestAIBackendSummarizer_doSummarizePass_StreamError(t *testing.T) {
 
 func TestAIBackendSummarizer_doSummarizePass_EmptyOutput(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 1)
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
-	mock := &mockAIBackend{name: "mock-backend", streamCh: ch}
+	mock := &mockAIBackend{name: testMockBackend, streamCh: ch}
 	s := &AIBackendSummarizer{
 		backend: mock,
 	}
@@ -116,11 +124,11 @@ func TestAIBackendSummarizer_doSummarizePass_EmptyOutput(t *testing.T) {
 
 func TestAIBackendSummarizer_doSummarizePass_WhitespaceOnlyOutput(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 2)
-	ch <- ai.StreamEvent{Type: "content", Content: "   \n\t  "}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "   \n\t  "}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
-	mock := &mockAIBackend{name: "mock-backend", streamCh: ch}
+	mock := &mockAIBackend{name: testMockBackend, streamCh: ch}
 	s := &AIBackendSummarizer{
 		backend: mock,
 	}
@@ -132,14 +140,14 @@ func TestAIBackendSummarizer_doSummarizePass_WhitespaceOnlyOutput(t *testing.T) 
 
 func TestAIBackendSummarizer_doSummarizePass_MultipleContentEvents(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 5)
-	ch <- ai.StreamEvent{Type: "content", Content: "First "}
-	ch <- ai.StreamEvent{Type: "content", Content: "Second "}
-	ch <- ai.StreamEvent{Type: "thinking", Content: "should be ignored"}
-	ch <- ai.StreamEvent{Type: "content", Content: "Third"}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "First "}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "Second "}
+	ch <- ai.StreamEvent{Type: testTypeThinking, Content: "should be ignored"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "Third"}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
-	mock := &mockAIBackend{name: "mock-backend", streamCh: ch}
+	mock := &mockAIBackend{name: testMockBackend, streamCh: ch}
 	s := &AIBackendSummarizer{
 		backend: mock,
 	}
@@ -167,19 +175,18 @@ func TestAIBackendSummarizer_doSummarizePass_CancelledContext(t *testing.T) {
 
 func TestAIBackendSummarizer_ModelOverride(t *testing.T) {
 	s := &AIBackendSummarizer{
-		backend: &mockAIBackend{name: "test"},
-		Model:   "custom-model-v2",
+		Model: "custom-model-v2",
 	}
 	assert.Equal(t, "custom-model-v2", s.Model)
 }
 
 func TestAIBackendSummarizer_doSummarizePass_PassNumber(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 2)
-	ch <- ai.StreamEvent{Type: "content", Content: "pass result"}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "pass result"}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
-	mock := &mockAIBackend{name: "mock-backend", streamCh: ch}
+	mock := &mockAIBackend{name: testMockBackend, streamCh: ch}
 	s := &AIBackendSummarizer{
 		backend: mock,
 	}
@@ -194,11 +201,11 @@ func TestAIBackendSummarizer_doSummarizePass_PassNumber(t *testing.T) {
 
 func TestAIBackendSummarizer_Summarize_LongText_WithMockBackend(t *testing.T) {
 	ch := make(chan ai.StreamEvent, 2)
-	ch <- ai.StreamEvent{Type: "content", Content: "这是一个总结结果。"}
-	ch <- ai.StreamEvent{Type: "done"}
+	ch <- ai.StreamEvent{Type: testTypeContent, Content: "这是一个总结结果。"}
+	ch <- ai.StreamEvent{Type: testTypeDone}
 	close(ch)
 
-	mock := &mockAIBackend{name: "mock-backend", streamCh: ch}
+	mock := &mockAIBackend{name: testMockBackend, streamCh: ch}
 	s := &AIBackendSummarizer{
 		backend: mock,
 		gs:      NewTTSPipeline((&AIBackendSummarizer{backend: mock}).DoSummarizePass),

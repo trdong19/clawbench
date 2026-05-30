@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +18,59 @@ func maxUploadSize() int64 {
 		mb = 10
 	}
 	return int64(mb) * 1024 * 1024
+}
+
+// resolveUploadTargetDir determines and validates the target directory for an upload.
+// Returns (targetDir, customDir, ok).
+func resolveUploadTargetDir(w http.ResponseWriter, r *http.Request, projectPath string) (targetDir string, customDir, ok bool) {
+	dir := r.FormValue("dir")
+	if dir == "" {
+		targetDir = filepath.Join(projectPath, ".clawbench", "uploads")
+		if err := os.MkdirAll(targetDir, 0o755); err != nil { //nolint:gosec // intentionally permissive for user-accessible files/directories
+			model.WriteError(w, model.Internal(fmt.Errorf("failed to create uploads directory")))
+			return
+		}
+		ok = true
+		return
+	}
+
+	dirAbs, dirOK := resolveAbsPath(w, r, dir)
+	if !dirOK {
+		return
+	}
+	dirInfo, err := os.Stat(dirAbs)
+	if err != nil {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "DirectoryNotFound")
+		return
+	}
+	if !dirInfo.IsDir() {
+		writeLocalizedErrorf(w, r, http.StatusBadRequest, "NotADirectory")
+		return
+	}
+	targetDir = dirAbs
+	customDir = true
+	ok = true
+	return
+}
+
+// generateUploadFilename generates a unique filename in targetDir, appending a
+// sequence number if the file already exists.
+func generateUploadFilename(targetDir, baseName string) (filename, dstPath string) {
+	ext := strings.ToLower(filepath.Ext(baseName))
+	nameWithoutExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	nameWithoutExt = strings.ReplaceAll(nameWithoutExt, " ", "_")
+	filename = nameWithoutExt + ext
+	dstPath = filepath.Join(targetDir, filename)
+	if _, err := os.Stat(dstPath); err == nil {
+		for i := 1; i <= 9999; i++ {
+			filename = fmt.Sprintf("%s_%d%s", nameWithoutExt, i, ext)
+			dstPath = filepath.Join(targetDir, filename)
+			if _, err := os.Stat(dstPath); err != nil {
+				break
+			}
+		}
+	}
+	return filename, dstPath
 }
 
 // UploadFile handles POST /api/upload/file
@@ -40,17 +92,17 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize())
 
 	// Parse multipart form
-	if err := r.ParseMultipartForm(maxUploadSize()); err != nil {
+	if err := r.ParseMultipartForm(maxUploadSize()); err != nil { //nolint:gosec // upload size limited by server config max_size_mb
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "FileTooLargeOrInvalid")
 		return
 	}
 
-	file, header, err := r.FormFile("file")
-	if err != nil {
+	file, header, fileErr := r.FormFile("file")
+	if fileErr != nil {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "NoFileProvided")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Validate file extension — all file types are allowed.
 	// This is intentional: users upload code, configs, binaries, and arbitrary
@@ -63,53 +115,12 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine target directory: custom dir or default .clawbench/uploads/
-	var targetDir string
-	var customDir bool
-	dir := r.FormValue("dir")
-	if dir != "" {
-		// Custom directory: validate and resolve
-		customDir = true
-		dirAbs, ok := resolveAbsPath(w, r, dir)
-		if !ok {
-			return
-		}
-		dirInfo, err := os.Stat(dirAbs)
-		if err != nil {
-			writeLocalizedErrorf(w, r, http.StatusBadRequest, "DirectoryNotFound")
-			return
-		}
-		if !dirInfo.IsDir() {
-			writeLocalizedErrorf(w, r, http.StatusBadRequest, "NotADirectory")
-			return
-		}
-		targetDir = dirAbs
-	} else {
-		// Default: .clawbench/uploads/
-		customDir = false
-		targetDir = filepath.Join(projectPath, ".clawbench", "uploads")
-		if err := os.MkdirAll(targetDir, 0755); err != nil {
-			model.WriteError(w, model.Internal(fmt.Errorf("failed to create uploads directory")))
-			return
-		}
+	targetDir, customDir, ok := resolveUploadTargetDir(w, r, projectPath)
+	if !ok {
+		return
 	}
 
-	// Generate filename: use original name, append sequential number if exists
-	baseName := filepath.Base(header.Filename)
-	nameWithoutExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
-	// Replace spaces with underscores for safety
-	nameWithoutExt = strings.ReplaceAll(nameWithoutExt, " ", "_")
-	filename := nameWithoutExt + ext
-	dstPath := filepath.Join(targetDir, filename)
-	if _, err := os.Stat(dstPath); err == nil {
-		for i := 1; i <= 9999; i++ {
-			filename = fmt.Sprintf("%s_%d%s", nameWithoutExt, i, ext)
-			dstPath = filepath.Join(targetDir, filename)
-			if _, err := os.Stat(dstPath); err != nil {
-				break
-			}
-		}
-	}
+	filename, dstPath := generateUploadFilename(targetDir, filepath.Base(header.Filename))
 
 	// Validate the final destination path is under a root path
 	// (defense-in-depth: resolveAbsPath already validated dir, but filepath.Join
@@ -125,11 +136,11 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 		model.WriteError(w, model.Internal(fmt.Errorf("failed to create file")))
 		return
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 
 	// Copy file content
 	if _, err := io.Copy(dst, file); err != nil {
-		os.Remove(dstPath)
+		_ = os.Remove(dstPath)
 		model.WriteError(w, model.Internal(fmt.Errorf("failed to save file")))
 		return
 	}
@@ -139,16 +150,15 @@ func UploadFile(w http.ResponseWriter, r *http.Request) {
 	if customDir {
 		relPath, err := filepath.Rel(projectPath, dstPath)
 		if err != nil {
-			relPath = filepath.Join(dir, filename)
+			relPath = filepath.Join(r.FormValue("dir"), filename)
 		}
 		relativePath = relPath
 	} else {
 		relativePath = filepath.Join(".clawbench", "uploads", filename)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"ok":   true,
-		"path": relativePath,
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":        true,
+		jsonKeyPath: relativePath,
 	})
 }

@@ -18,7 +18,7 @@ func RecoverPanic(next http.HandlerFunc) http.HandlerFunc {
 				)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintln(w, `{"error":"internal server error"}`)
+				_, _ = fmt.Fprintln(w, `{"error":"internal server error"}`)
 			}
 		}()
 		next.ServeHTTP(w, r)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 )
+
 // --- NewPiperProvider defaults ---
 
 func TestNewPiperProvider_Defaults(t *testing.T) {
@@ -45,7 +46,7 @@ func TestPiperSynthesize_WithCLI(t *testing.T) {
 	if err != nil {
 		// Try .venv/bin/piper relative to binary
 		if exePath, exeErr := os.Executable(); exeErr == nil {
-			candidatePath := filepath.Join(filepath.Dir(exePath), ".venv/bin/piper")
+			candidatePath := filepath.Join(filepath.Dir(exePath), ".venv", "bin", "piper")
 			if _, statErr := os.Stat(candidatePath); statErr == nil {
 				piperPath = candidatePath
 			}
@@ -151,7 +152,8 @@ func findPiperModel(t *testing.T) string {
 
 	// Also check relative to binary
 	if exePath, err := os.Executable(); err == nil {
-		searchDirs = append(searchDirs,
+		searchDirs = append(
+			searchDirs,
 			filepath.Join(filepath.Dir(exePath), ".clawbench", "piper-models"),
 		)
 	}
@@ -159,7 +161,8 @@ func findPiperModel(t *testing.T) string {
 	// Also check project root (go test runs from package dir)
 	if cwd, err := os.Getwd(); err == nil {
 		projectRoot := filepath.Join(cwd, "..", "..")
-		searchDirs = append(searchDirs,
+		searchDirs = append(
+			searchDirs,
 			filepath.Join(projectRoot, ".clawbench", "piper-models"),
 		)
 	}

@@ -1,6 +1,8 @@
+// Package handler implements HTTP handlers for ClawBench's API endpoints.
 package handler
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -31,7 +33,7 @@ func ServeAgents(w http.ResponseWriter, r *http.Request) {
 	writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 }
 
-func serveAgentsGet(w http.ResponseWriter, r *http.Request) {
+func serveAgentsGet(w http.ResponseWriter, _ *http.Request) {
 	configMutex.RLock()
 	agents := make([]*model.Agent, len(model.AgentList))
 	copy(agents, model.AgentList)
@@ -69,7 +71,20 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate and apply preferred_model
+	if err := applyAgentPatch(agent, patch, w, r); err != nil {
+		return
+	}
+
+	if err := model.WriteAgentYAML(agent); err != nil {
+		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agent)
+}
+
+// applyAgentPatch applies the patch fields to the agent. Returns non-nil error on validation failure.
+func applyAgentPatch(agent *model.Agent, patch map[string]any, w http.ResponseWriter, r *http.Request) error {
 	if v, exists := patch["preferred_model"]; exists {
 		modelID, _ := v.(string)
 		if modelID != "" {
@@ -82,13 +97,12 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) {
 			}
 			if !found {
 				writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidModelForAgent")
-				return
+				return fmt.Errorf("invalid model")
 			}
 		}
 		agent.PreferredModel = modelID
 	}
 
-	// Validate and apply preferred_thinking_effort
 	if v, exists := patch["preferred_thinking_effort"]; exists {
 		level, _ := v.(string)
 		if level != "" && len(agent.ThinkingEffortLevels) > 0 {
@@ -101,19 +115,12 @@ func serveAgentsPatch(w http.ResponseWriter, r *http.Request) {
 			}
 			if !found {
 				writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidThinkingEffort")
-				return
+				return fmt.Errorf("invalid thinking effort")
 			}
 		}
 		agent.PreferredThinkingEffort = level
 	}
-
-	// Persist to YAML
-	if err := model.WriteAgentYAML(agent); err != nil {
-		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, agent)
+	return nil
 }
 
 // ServeAgentRefreshModels handles POST /api/agents/{id}/refresh-models — triggers model re-discovery

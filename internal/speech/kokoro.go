@@ -56,9 +56,9 @@ func NewKokoroProvider() *KokoroProvider {
 
 // Synthesize generates an audio file at outputPath using Kokoro via Python bridge.
 // Text is piped via stdin to the bridge script.
-func (p *KokoroProvider) Synthesize(ctx context.Context, text string, outputPath string, _ string) error {
+func (p *KokoroProvider) Synthesize(ctx context.Context, text, outputPath, _ string) error {
 	dir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("failed to create output directory %s: %w", dir, err)
 	}
 
@@ -81,7 +81,7 @@ func (p *KokoroProvider) Synthesize(ctx context.Context, text string, outputPath
 	scriptPath := kokoroScriptRepo // default to repo copy
 	if exePath, err := os.Executable(); err == nil {
 		binDir := filepath.Dir(exePath)
-		candidatePython := filepath.Join(binDir, ".venv/bin/python3")
+		candidatePython := filepath.Join(binDir, ".venv", "bin", "python3")
 		if _, err := os.Stat(candidatePython); err == nil {
 			pythonPath = candidatePython
 		}
@@ -101,7 +101,7 @@ func (p *KokoroProvider) Synthesize(ctx context.Context, text string, outputPath
 		scriptPath,
 		"--model", p.ModelPath,
 		"--voices", p.VoicesPath,
-		"--voice", p.Voice,
+		edgeFlagVoice, p.Voice,
 		"--lang", p.Lang,
 		"--speed", fmt.Sprintf("%g", p.Speed),
 		"--output", outputPath,
@@ -135,12 +135,14 @@ func (p *KokoroProvider) Synthesize(ctx context.Context, text string, outputPath
 // ResolveKokoroPaths resolves the Kokoro model and voices paths from defaults.
 // If a path is explicitly set, it is returned as-is.
 // Otherwise, the default directory is used.
-func ResolveKokoroPaths(modelPath, voicesPath string) (string, string) {
-	if modelPath == "" {
-		modelPath = filepath.Join(kokoroDefaultModelDir, "kokoro-v1.1-zh.onnx")
+func ResolveKokoroPaths(modelPath, voicesPath string) (resolvedModel, resolvedVoices string) {
+	resolvedModel = modelPath
+	resolvedVoices = voicesPath
+	if resolvedModel == "" {
+		resolvedModel = filepath.Join(kokoroDefaultModelDir, "kokoro-v1.1-zh.onnx")
 	}
-	if voicesPath == "" {
-		voicesPath = filepath.Join(kokoroDefaultModelDir, "voices-v1.1-zh.bin")
+	if resolvedVoices == "" {
+		resolvedVoices = filepath.Join(kokoroDefaultModelDir, "voices-v1.1-zh.bin")
 	}
-	return modelPath, voicesPath
+	return
 }

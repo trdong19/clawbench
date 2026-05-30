@@ -1,7 +1,9 @@
+// Package push provides JPush notification integration for mobile push delivery.
 package push
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,8 +15,10 @@ import (
 	"clawbench/internal/model"
 )
 
+// JPushConfig is an alias for model.JPushConfig.
 type JPushConfig = model.JPushConfig
 
+// JPushClient sends push notifications via JPush API.
 type JPushClient struct {
 	enabled      bool
 	appKey       string
@@ -23,6 +27,7 @@ type JPushClient struct {
 	baseURL      string // overridable for testing
 }
 
+// NewJPushClient creates a JPushClient with the given configuration.
 func NewJPushClient(cfg JPushConfig) *JPushClient {
 	return &JPushClient{
 		enabled:      cfg.Enabled,
@@ -38,6 +43,7 @@ func (c *JPushClient) SetBaseURL(url string) {
 	c.baseURL = url
 }
 
+// Enabled reports whether JPush is properly configured.
 func (c *JPushClient) Enabled() bool {
 	return c.enabled && c.appKey != "" && c.masterSecret != ""
 }
@@ -47,6 +53,7 @@ func (c *JPushClient) AppKey() string {
 	return c.appKey
 }
 
+// SendNotification sends a push notification to the specified registration ID.
 func (c *JPushClient) SendNotification(registrationID, title, alert string, extras map[string]string) error {
 	if !c.Enabled() {
 		return nil
@@ -77,7 +84,7 @@ func (c *JPushClient) SendNotification(registrationID, title, alert string, extr
 		return fmt.Errorf("jpush: marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v3/push", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.baseURL+"/v3/push", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("jpush: create request: %w", err)
 	}
@@ -92,7 +99,7 @@ func (c *JPushClient) SendNotification(registrationID, title, alert string, extr
 	if err != nil {
 		return fmt.Errorf("jpush: send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {

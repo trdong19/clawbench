@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"testing"
@@ -86,12 +87,12 @@ CREATE TABLE IF NOT EXISTS ai_raw_responses (
 );
 `
 
-func setupSchedulerDB(t *testing.T) *sql.DB {
+func setupSchedulerDB(t *testing.T) {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	assert.NoError(t, err)
 	db.SetMaxOpenConns(1) // Required for :memory: SQLite — all queries must use the same connection
-	_, err = db.Exec(schedulerSchema)
+	_, err = db.ExecContext(context.Background(), schedulerSchema)
 	assert.NoError(t, err)
 	origDB := service.DB
 	origDBRead := service.DBRead
@@ -100,12 +101,11 @@ func setupSchedulerDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() {
 		service.DB = origDB
 		service.DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	})
-	return db
 }
 
-func setupScheduler(t *testing.T) (*service.Scheduler, func()) {
+func setupScheduler(t *testing.T) (scheduler *service.Scheduler, cleanup func()) {
 	t.Helper()
 	setupSchedulerDB(t)
 	s := service.NewScheduler()
@@ -137,14 +137,14 @@ func TestNewScheduler(t *testing.T) {
 
 // ---------- Start / Stop ----------
 
-func TestSchedulerStartStop(t *testing.T) {
+func TestSchedulerStartStop(_ *testing.T) {
 	s := service.NewScheduler()
 	s.Start()
 	s.Stop()
 	// Should not panic
 }
 
-func TestSchedulerStopWithoutStart(t *testing.T) {
+func TestSchedulerStopWithoutStart(_ *testing.T) {
 	s := service.NewScheduler()
 	s.Stop()
 	// Should not panic even if never started
@@ -166,13 +166,15 @@ func TestGetTasks_AllProjects(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj1", "Task 1", "0 * * * *", "agent1", "prompt1", "", "active", "unlimited", now, now,
+		"/proj1", "Task 1", "0 * * * *", "agent1", "prompt1", "", service.StatusActive, "unlimited", now, now,
 	)
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj2", "Task 2", "0 * * * *", "agent1", "prompt2", "", "active", "unlimited", now, now,
+		"/proj2", "Task 2", "0 * * * *", "agent1", "prompt2", "", service.StatusActive, "unlimited", now, now,
 	)
 
 	tasks, err := service.GetTasks("")
@@ -190,13 +192,15 @@ func TestGetTasks_OrdersByCreatedAtDesc(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "First", "0 * * * *", "agent1", "p", "", "active", "unlimited", now.Add(-1*time.Hour), now,
+		"/proj", "First", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now.Add(-1*time.Hour), now,
 	)
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Second", "0 * * * *", "agent1", "p", "", "active", "unlimited", now, now,
+		"/proj", "Second", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
 
 	tasks, err := service.GetTasks("/proj")
@@ -213,9 +217,10 @@ func TestGetTaskByID(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, max_runs, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task 1", "0 * * * *", "agent1", "prompt1", "sess-1", "active", "unlimited", 0, 3, now, now,
+		"/proj", "Task 1", "0 * * * *", "agent1", "prompt1", "sess-1", service.StatusActive, "unlimited", 0, 3, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -229,7 +234,7 @@ func TestGetTaskByID(t *testing.T) {
 	assert.Equal(t, "agent1", task.AgentID)
 	assert.Equal(t, "prompt1", task.Prompt)
 	assert.Equal(t, "sess-1", task.SessionID)
-	assert.Equal(t, "active", task.Status)
+	assert.Equal(t, service.StatusActive, task.Status)
 	assert.Equal(t, "unlimited", task.RepeatMode)
 	assert.Equal(t, 3, task.RunCount)
 }
@@ -253,7 +258,7 @@ func TestAddTask(t *testing.T) {
 	err := s.AddTask(task)
 	assert.NoError(t, err)
 	assert.NotZero(t, task.ID, "ID should be auto-generated")
-	assert.Equal(t, "active", task.Status)
+	assert.Equal(t, service.StatusActive, task.Status)
 	assert.NotNil(t, task.NextRunAt, "NextRunAt should be calculated")
 	assert.False(t, task.CreatedAt.IsZero(), "CreatedAt should be set")
 	assert.False(t, task.UpdatedAt.IsZero(), "UpdatedAt should be set")
@@ -286,7 +291,7 @@ func TestAddTask_SetsStatusToActive(t *testing.T) {
 	})
 	err := s.AddTask(task)
 	assert.NoError(t, err)
-	assert.Equal(t, "active", task.Status, "AddTask should always set status to active")
+	assert.Equal(t, service.StatusActive, task.Status, "AddTask should always set status to active")
 }
 
 func TestAddTask_GeneratesUniqueIDs(t *testing.T) {
@@ -384,7 +389,7 @@ func TestResumeTask(t *testing.T) {
 
 	persisted, err := service.GetTaskByID(task.ID)
 	assert.NoError(t, err)
-	assert.Equal(t, "active", persisted.Status)
+	assert.Equal(t, service.StatusActive, persisted.Status)
 }
 
 func TestResumeTask_NotPaused(t *testing.T) {
@@ -504,11 +509,13 @@ func TestLoadTasksFromDB(t *testing.T) {
 
 	// Insert tasks directly into DB
 	now := time.Now()
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Active Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", now, now,
+		"/proj", "Active Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		"/proj", "Paused Task", "0 * * * *", "agent1", "p", "", "paused", "unlimited", now, now,
 	)
@@ -519,7 +526,7 @@ func TestLoadTasksFromDB(t *testing.T) {
 	// Active task should be loaded; paused task should be skipped
 	// Get the active task's ID
 	var activeID int64
-	service.DB.QueryRow("SELECT id FROM scheduled_tasks WHERE status = 'active' AND project_path = '/proj'").Scan(&activeID)
+	_ = service.DB.QueryRowContext(context.Background(), "SELECT id FROM scheduled_tasks WHERE status = 'active' AND project_path = '/proj'").Scan(&activeID)
 
 	// We verify by checking that the active task can be removed without error
 	s.RemoveTask(activeID)
@@ -533,13 +540,15 @@ func TestLoadTasksFromDB_AllProjects(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj1", "Task 1", "0 * * * *", "agent1", "p", "", "active", "unlimited", now, now,
+		"/proj1", "Task 1", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj2", "Task 2", "0 * * * *", "agent1", "p", "", "active", "unlimited", now, now,
+		"/proj2", "Task 2", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
 
 	err := s.LoadTasksFromDB("") // empty = all projects
@@ -547,8 +556,8 @@ func TestLoadTasksFromDB_AllProjects(t *testing.T) {
 
 	// Both tasks should be loaded — verify by getting their IDs and removing them
 	var id1, id2 int64
-	service.DB.QueryRow("SELECT id FROM scheduled_tasks WHERE project_path = '/proj1'").Scan(&id1)
-	service.DB.QueryRow("SELECT id FROM scheduled_tasks WHERE project_path = '/proj2'").Scan(&id2)
+	_ = service.DB.QueryRowContext(context.Background(), "SELECT id FROM scheduled_tasks WHERE project_path = '/proj1'").Scan(&id1)
+	_ = service.DB.QueryRowContext(context.Background(), "SELECT id FROM scheduled_tasks WHERE project_path = '/proj2'").Scan(&id2)
 
 	s.RemoveTask(id1)
 	s.RemoveTask(id2)
@@ -564,9 +573,10 @@ func TestLoadTasksFromDB_InvalidCronSkipped(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	service.DB.Exec(
+	_, _ = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Bad Cron", "invalid", "agent1", "p", "", "active", "unlimited", now, now,
+		"/proj", "Bad Cron", "invalid", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
 
 	// Should not error — invalid cron tasks are logged and skipped
@@ -590,9 +600,10 @@ func TestAddTaskExecution(t *testing.T) {
 
 	// Insert a task
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", now, now,
+		"/proj", "Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -602,12 +613,12 @@ func TestAddTaskExecution(t *testing.T) {
 
 	// Verify the execution was recorded
 	var count int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE task_id = ?", taskID).Scan(&count)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE task_id = ?", taskID).Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, count)
 
 	var fetchedSessionID string
-	err = service.DB.QueryRow("SELECT session_id FROM task_executions WHERE task_id = ?", taskID).Scan(&fetchedSessionID)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT session_id FROM task_executions WHERE task_id = ?", taskID).Scan(&fetchedSessionID)
 	assert.NoError(t, err)
 	assert.Equal(t, "session-abc", fetchedSessionID)
 }
@@ -617,9 +628,10 @@ func TestAddTaskExecution_MultipleExecutions(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", now, now,
+		"/proj", "Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -630,7 +642,7 @@ func TestAddTaskExecution_MultipleExecutions(t *testing.T) {
 	assert.NoError(t, err)
 
 	var count int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE task_id = ?", taskID).Scan(&count)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE task_id = ?", taskID).Scan(&count)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, count)
 }
@@ -640,9 +652,10 @@ func TestUpdateExecutionStatus(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", now, now,
+		"/proj", "Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -652,7 +665,7 @@ func TestUpdateExecutionStatus(t *testing.T) {
 
 	// Verify default status is 'running'
 	var status string
-	err = service.DB.QueryRow("SELECT status FROM task_executions WHERE session_id = ?", "session-abc").Scan(&status)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT status FROM task_executions WHERE session_id = ?", "session-abc").Scan(&status)
 	assert.NoError(t, err)
 	assert.Equal(t, "running", status)
 
@@ -660,7 +673,7 @@ func TestUpdateExecutionStatus(t *testing.T) {
 	err = service.UpdateExecutionStatus("session-abc", "cancelled")
 	assert.NoError(t, err)
 
-	err = service.DB.QueryRow("SELECT status FROM task_executions WHERE session_id = ?", "session-abc").Scan(&status)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT status FROM task_executions WHERE session_id = ?", "session-abc").Scan(&status)
 	assert.NoError(t, err)
 	assert.Equal(t, "cancelled", status)
 }
@@ -670,9 +683,10 @@ func TestUpdateTaskStats(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Stats Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", 0, now, now,
+		"/proj", "Stats Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 0, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -681,13 +695,13 @@ func TestUpdateTaskStats(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, task.RunCount)
 
-	service.UpdateTaskStats(task, "active")
+	service.UpdateTaskStats(task, service.StatusActive)
 
 	updated, err := service.GetTaskByID(taskID)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, updated.RunCount)
 	assert.NotNil(t, updated.LastRunAt)
-	assert.Equal(t, "active", updated.Status)
+	assert.Equal(t, service.StatusActive, updated.Status)
 }
 
 // ---------- insertTask / updateTask (tested indirectly via AddTask / UpdateTask) ----------
@@ -723,7 +737,7 @@ func TestSchedulerFullLifecycle(t *testing.T) {
 		t.Name = "Lifecycle Task"
 	})
 	assert.NoError(t, s.AddTask(task))
-	assert.Equal(t, "active", task.Status)
+	assert.Equal(t, service.StatusActive, task.Status)
 
 	// 2. Pause
 	s.PauseTask(task.ID)
@@ -733,7 +747,7 @@ func TestSchedulerFullLifecycle(t *testing.T) {
 	// 3. Resume
 	assert.NoError(t, s.ResumeTask(task.ID))
 	resumed, _ := service.GetTaskByID(task.ID)
-	assert.Equal(t, "active", resumed.Status)
+	assert.Equal(t, service.StatusActive, resumed.Status)
 
 	// 4. Update
 	resumed.Name = "Updated Task"
@@ -782,17 +796,18 @@ func TestRunCount_AtomicIncrement(t *testing.T) {
 
 	// Insert a task directly
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "RC Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", 0, now, now,
+		"/proj", "RC Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 0, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
 	// Run 10 sequential atomic SQL increments.
-	for i := 0; i < 10; i++ {
-		_, err := service.DB.Exec("UPDATE scheduled_tasks SET run_count = run_count + 1 WHERE id = ?", taskID)
-		assert.NoError(t, err)
+	for range 10 {
+		_, incrErr := service.DB.ExecContext(context.Background(), "UPDATE scheduled_tasks SET run_count = run_count + 1 WHERE id = ?", taskID)
+		assert.NoError(t, incrErr)
 	}
 
 	// All 10 increments should be accounted for
@@ -829,7 +844,7 @@ func TestRemoveTask_CascadeDeletesSessions(t *testing.T) {
 
 	// Verify the session exists
 	var sessionDeleted int
-	err = service.DB.QueryRow("SELECT deleted FROM chat_sessions WHERE id = ?", sessionID).Scan(&sessionDeleted)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT deleted FROM chat_sessions WHERE id = ?", sessionID).Scan(&sessionDeleted)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, sessionDeleted, "session should not be deleted before RemoveTask")
 
@@ -837,13 +852,13 @@ func TestRemoveTask_CascadeDeletesSessions(t *testing.T) {
 	s.RemoveTask(task.ID)
 
 	// Verify session is soft-deleted
-	err = service.DB.QueryRow("SELECT deleted FROM chat_sessions WHERE id = ?", sessionID).Scan(&sessionDeleted)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT deleted FROM chat_sessions WHERE id = ?", sessionID).Scan(&sessionDeleted)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, sessionDeleted, "session should be soft-deleted after RemoveTask")
 
 	// Verify task_executions rows are deleted
 	var execCount int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE task_id = ?", task.ID).Scan(&execCount)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE task_id = ?", task.ID).Scan(&execCount)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, execCount, "task_executions should be deleted after RemoveTask")
 
@@ -863,13 +878,14 @@ func TestPurgeDeletedData_CleansTaskExecutions(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Add messages
-	service.AddChatMessage("/purge-proj", "claude", sessionID, "user", "prompt", nil, false, "Exec 1")
+	_, _ = service.AddChatMessage("/purge-proj", "claude", sessionID, "user", "prompt", nil, false, "Exec 1")
 
 	// Create task_execution
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/purge-proj", "Purge Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", now, now,
+		"/purge-proj", "Purge Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -879,14 +895,14 @@ func TestPurgeDeletedData_CleansTaskExecutions(t *testing.T) {
 
 	// Verify task_execution exists
 	var execCount int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE session_id = ?", sessionID).Scan(&execCount)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE session_id = ?", sessionID).Scan(&execCount)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, execCount)
 
 	// Soft-delete the session and set updated_at to old date
-	service.DeleteSession("/purge-proj", "claude", sessionID)
+	_ = service.DeleteSession("/purge-proj", "claude", sessionID)
 	oldTime := time.Now().Add(-100 * 24 * time.Hour) // 100 days ago
-	service.DB.Exec("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", oldTime, sessionID)
+	_, _ = service.DB.ExecContext(context.Background(), "UPDATE chat_sessions SET updated_at = ? WHERE id = ?", oldTime, sessionID)
 
 	// Get expired sessions and purge
 	cutoff := time.Now().Add(-90 * 24 * time.Hour)
@@ -900,7 +916,7 @@ func TestPurgeDeletedData_CleansTaskExecutions(t *testing.T) {
 	assert.True(t, messagesPurged >= 1)
 
 	// Verify task_executions rows are also deleted
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE session_id = ?", sessionID).Scan(&execCount)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE session_id = ?", sessionID).Scan(&execCount)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, execCount, "task_executions should be purged along with the session")
 }
@@ -913,9 +929,10 @@ func TestDeleteTaskExecution(t *testing.T) {
 
 	// Create a task
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "DelExec Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", 3, now, now,
+		"/proj", "DelExec Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 3, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -933,11 +950,11 @@ func TestDeleteTaskExecution(t *testing.T) {
 	// Create an execution linked to this session (mark as completed to allow deletion)
 	_, err = service.AddTaskExecution(taskID, sessionID, "auto")
 	assert.NoError(t, err)
-	service.UpdateExecutionStatus(sessionID, "completed")
+	_ = service.UpdateExecutionStatus(sessionID, "completed")
 
 	// Get the execution ID
 	var execID int64
-	err = service.DB.QueryRow("SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
 	assert.NoError(t, err)
 
 	// Delete the execution
@@ -946,13 +963,13 @@ func TestDeleteTaskExecution(t *testing.T) {
 
 	// Verify execution is hard-deleted
 	var execCount int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE id = ?", execID).Scan(&execCount)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE id = ?", execID).Scan(&execCount)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, execCount, "execution should be hard-deleted")
 
 	// Verify session is soft-deleted
 	var sessionDeleted int
-	err = service.DB.QueryRow("SELECT deleted FROM chat_sessions WHERE id = ?", sessionID).Scan(&sessionDeleted)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT deleted FROM chat_sessions WHERE id = ?", sessionID).Scan(&sessionDeleted)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, sessionDeleted, "session should be soft-deleted")
 
@@ -977,9 +994,10 @@ func TestDeleteTaskExecution_RunningExecution(t *testing.T) {
 
 	// Create a task and a running execution
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Running Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", 1, now, now,
+		"/proj", "Running Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 1, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -995,7 +1013,7 @@ func TestDeleteTaskExecution_RunningExecution(t *testing.T) {
 	assert.NoError(t, err)
 
 	var execID int64
-	err = service.DB.QueryRow("SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
 	assert.NoError(t, err)
 
 	// Attempt to delete a running execution should fail
@@ -1005,14 +1023,14 @@ func TestDeleteTaskExecution_RunningExecution(t *testing.T) {
 
 	// Verify execution still exists
 	var execCount int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE id = ?", execID).Scan(&execCount)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE id = ?", execID).Scan(&execCount)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, execCount, "running execution should not be deleted")
 
 	// Verify session is NOT soft-deleted (operation order fix: DELETE runs first,
 	// so if DELETE fails, session must remain intact)
 	var sessionDeleted int
-	err = service.DB.QueryRow("SELECT deleted FROM chat_sessions WHERE id = ?", sessionID).Scan(&sessionDeleted)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT deleted FROM chat_sessions WHERE id = ?", sessionID).Scan(&sessionDeleted)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, sessionDeleted, "session should NOT be soft-deleted when execution deletion is rejected")
 
@@ -1028,9 +1046,10 @@ func TestDeleteTaskExecution_RunCountClampToZero(t *testing.T) {
 
 	// Create a task with run_count = 0
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Zero Count", "0 * * * *", "agent1", "p", "", "active", "unlimited", 0, now, now,
+		"/proj", "Zero Count", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 0, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -1040,10 +1059,10 @@ func TestDeleteTaskExecution_RunCountClampToZero(t *testing.T) {
 
 	_, err = service.AddTaskExecution(taskID, sessionID, "auto")
 	assert.NoError(t, err)
-	service.UpdateExecutionStatus(sessionID, "completed")
+	_ = service.UpdateExecutionStatus(sessionID, "completed")
 
 	var execID int64
-	err = service.DB.QueryRow("SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT id FROM task_executions WHERE session_id = ?", sessionID).Scan(&execID)
 	assert.NoError(t, err)
 
 	// Delete the execution — run_count should clamp to 0 (not go negative)
@@ -1063,26 +1082,27 @@ func TestDeleteAllTaskExecutions(t *testing.T) {
 
 	// Create a task with run_count = 3
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "DelAll Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", 3, now, now,
+		"/proj", "DelAll Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 3, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
 	// Create 3 sessions and executions (mark as completed to allow deletion)
-	for i := 0; i < 3; i++ {
-		sessionID, err := service.CreateSession("/proj", "claude", fmt.Sprintf("Exec %d", i), "agent1", "", "default", "scheduled")
-		assert.NoError(t, err)
-		service.AddChatMessage("/proj", "claude", sessionID, "user", "prompt", nil, false, fmt.Sprintf("Exec %d", i))
-		_, err = service.AddTaskExecution(taskID, sessionID, "auto")
-		assert.NoError(t, err)
-		service.UpdateExecutionStatus(sessionID, "completed")
+	for i := range 3 {
+		sessionID, createErr := service.CreateSession("/proj", "claude", fmt.Sprintf("Exec %d", i), "agent1", "", "default", "scheduled")
+		assert.NoError(t, createErr)
+		_, _ = service.AddChatMessage("/proj", "claude", sessionID, "user", "prompt", nil, false, fmt.Sprintf("Exec %d", i))
+		_, execErr := service.AddTaskExecution(taskID, sessionID, "auto")
+		assert.NoError(t, execErr)
+		_ = service.UpdateExecutionStatus(sessionID, "completed")
 	}
 
 	// Verify 3 executions exist
 	var execCount int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE task_id = ?", taskID).Scan(&execCount)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE task_id = ?", taskID).Scan(&execCount)
 	assert.NoError(t, err)
 	assert.Equal(t, 3, execCount)
 
@@ -1091,7 +1111,7 @@ func TestDeleteAllTaskExecutions(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify all executions are deleted
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE task_id = ?", taskID).Scan(&execCount)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE task_id = ?", taskID).Scan(&execCount)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, execCount, "all executions should be deleted")
 
@@ -1106,20 +1126,21 @@ func TestDeleteAllTaskExecutions_PreservesRunning(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Mixed Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", 2, now, now,
+		"/proj", "Mixed Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 2, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
 	// One completed, one running
 	completedSession, _ := service.CreateSession("/proj", "claude", "Completed", "agent1", "", "default", "scheduled")
-	service.AddTaskExecution(taskID, completedSession, "auto")
-	service.UpdateExecutionStatus(completedSession, "completed")
+	_, _ = service.AddTaskExecution(taskID, completedSession, "auto")
+	_ = service.UpdateExecutionStatus(completedSession, "completed")
 
 	runningSession, _ := service.CreateSession("/proj", "claude", "Running", "agent1", "", "default", "scheduled")
-	service.AddTaskExecution(taskID, runningSession, "auto")
+	_, _ = service.AddTaskExecution(taskID, runningSession, "auto")
 	// Status is already 'running' from AddTaskExecution
 
 	// Delete all — should only delete the completed one
@@ -1128,7 +1149,7 @@ func TestDeleteAllTaskExecutions_PreservesRunning(t *testing.T) {
 
 	// Running execution should still exist
 	var runningCount int
-	err = service.DB.QueryRow("SELECT COUNT(*) FROM task_executions WHERE task_id = ? AND status = 'running'", taskID).Scan(&runningCount)
+	err = service.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM task_executions WHERE task_id = ? AND status = 'running'", taskID).Scan(&runningCount)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, runningCount, "running execution should be preserved")
 
@@ -1143,9 +1164,10 @@ func TestDeleteAllTaskExecutions_NoExecutions(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Empty Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", 0, now, now,
+		"/proj", "Empty Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 0, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
@@ -1171,9 +1193,10 @@ func TestHasUnreadTasks_NoExecutions(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	_, err := service.DB.Exec(
+	_, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task", "0 * * * *", "agent1", "p", "active", "unlimited", now, now,
+		"/proj", "Task", "0 * * * *", "agent1", "p", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 
@@ -1187,15 +1210,17 @@ func TestHasUnreadTasks_UnreadExecution(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task", "0 * * * *", "agent1", "p", "active", "unlimited", now, now,
+		"/proj", "Task", "0 * * * *", "agent1", "p", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
 	// Add execution with read_at = NULL (unread)
-	_, err = service.DB.Exec(
+	_, err = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO task_executions (task_id, session_id, trigger_type, status, created_at) VALUES (?, ?, ?, ?, ?)",
 		taskID, "session-1", "auto", "completed", now,
 	)
@@ -1211,15 +1236,17 @@ func TestHasUnreadTasks_ReadExecution(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task", "0 * * * *", "agent1", "p", "active", "unlimited", now, now,
+		"/proj", "Task", "0 * * * *", "agent1", "p", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
 	// Add execution with read_at set (read)
-	_, err = service.DB.Exec(
+	_, err = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO task_executions (task_id, session_id, trigger_type, status, read_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
 		taskID, "session-1", "auto", "completed", now, now,
 	)
@@ -1236,22 +1263,25 @@ func TestHasUnreadTasks_ScopedByProjectPath(t *testing.T) {
 
 	now := time.Now()
 	// Task in /proj-a with unread execution
-	resultA, err := service.DB.Exec(
+	resultA, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj-a", "Task A", "0 * * * *", "agent1", "p", "active", "unlimited", now, now,
+		"/proj-a", "Task A", "0 * * * *", "agent1", "p", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskIDA, _ := resultA.LastInsertId()
-	_, err = service.DB.Exec(
+	_, err = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO task_executions (task_id, session_id, trigger_type, status, created_at) VALUES (?, ?, ?, ?, ?)",
 		taskIDA, "session-a1", "auto", "completed", now,
 	)
 	assert.NoError(t, err)
 
 	// Task in /proj-b with no executions
-	_, err = service.DB.Exec(
+	_, err = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj-b", "Task B", "0 * * * *", "agent1", "p", "active", "unlimited", now, now,
+		"/proj-b", "Task B", "0 * * * *", "agent1", "p", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 
@@ -1269,14 +1299,16 @@ func TestHasUnreadTasks_EmptyProjectPath(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task", "0 * * * *", "agent1", "p", "active", "unlimited", now, now,
+		"/proj", "Task", "0 * * * *", "agent1", "p", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
-	_, err = service.DB.Exec(
+	_, err = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO task_executions (task_id, session_id, trigger_type, status, created_at) VALUES (?, ?, ?, ?, ?)",
 		taskID, "session-1", "auto", "completed", now,
 	)
@@ -1293,15 +1325,17 @@ func TestHasUnreadTasks_RunningExecutionNotUnread(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Task", "0 * * * *", "agent1", "p", "active", "unlimited", now, now,
+		"/proj", "Task", "0 * * * *", "agent1", "p", service.StatusActive, "unlimited", now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
 	// Add a running execution — should NOT be counted as unread
-	_, err = service.DB.Exec(
+	_, err = service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO task_executions (task_id, session_id, trigger_type, status, created_at) VALUES (?, ?, ?, ?, ?)",
 		taskID, "session-running", "auto", "running", now,
 	)
@@ -1312,7 +1346,7 @@ func TestHasUnreadTasks_RunningExecutionNotUnread(t *testing.T) {
 	assert.False(t, hasUnread, "running execution should not count as unread")
 
 	// Now mark it as completed — should become unread
-	service.UpdateExecutionStatus("session-running", "completed")
+	_ = service.UpdateExecutionStatus("session-running", "completed")
 	hasUnread, err = service.HasUnreadTasks("/proj")
 	assert.NoError(t, err)
 	assert.True(t, hasUnread, "completed execution should count as unread")
@@ -1321,7 +1355,7 @@ func TestHasUnreadTasks_RunningExecutionNotUnread(t *testing.T) {
 // ---------- DBRead initialization ----------
 
 func TestDBRead_Initialized_SchedulerDB(t *testing.T) {
-	_ = setupSchedulerDB(t)
+	setupSchedulerDB(t)
 	assert.NotNil(t, service.DBRead, "DBRead should be initialized in test setup")
 }
 
@@ -1338,16 +1372,18 @@ func TestCronReparseFailure_SetsStatusToPaused(t *testing.T) {
 
 	// Insert a task with a valid cron expression and session_id
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, run_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		"/proj", "Cron Task", "0 * * * *", "agent1", "p", "", "active", "unlimited", 1, now, now,
+		"/proj", "Cron Task", "0 * * * *", "agent1", "p", "", service.StatusActive, "unlimited", 1, now, now,
 	)
 	assert.NoError(t, err)
 	taskID, _ := result.LastInsertId()
 
 	// Simulate what executeTask would do on cron re-parse failure:
 	// Set status to "paused" (the fix for ISS-200)
-	_, err = service.DB.Exec(
+	_, err = service.DB.ExecContext(
+		context.Background(),
 		"UPDATE scheduled_tasks SET status = ?, next_run_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
 		"paused", taskID,
 	)
@@ -1369,7 +1405,8 @@ func TestCronReparseFailure_InvalidExprCannotBeResumed(t *testing.T) {
 
 	// Insert a task with an invalid cron expression directly into DB
 	now := time.Now()
-	result, err := service.DB.Exec(
+	result, err := service.DB.ExecContext(
+		context.Background(),
 		"INSERT INTO scheduled_tasks (project_path, name, cron_expr, agent_id, prompt, session_id, status, repeat_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		"/proj", "Broken Cron", "not-a-valid-cron", "agent1", "p", "", "paused", "unlimited", now, now,
 	)

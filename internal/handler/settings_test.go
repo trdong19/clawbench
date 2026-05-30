@@ -589,7 +589,7 @@ func TestServeConfigRestart_Success(t *testing.T) {
 		restartCh <- struct{}{}
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/config/restart", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/config/restart", http.NoBody)
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeConfigRestart, req)
 
@@ -611,7 +611,7 @@ func TestServeConfigRestart_MethodNotAllowed(t *testing.T) {
 	_, teardown := setupTestEnv(t)
 	defer teardown()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/config/restart", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/config/restart", http.NoBody)
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeConfigRestart, req)
 
@@ -846,8 +846,8 @@ func TestServeConfig_Patch_InvalidDefaultAgent(t *testing.T) {
 
 	// Set up agents so we can validate
 	agentsDir := filepath.Join(t.TempDir(), "agents")
-	require.NoError(t, os.MkdirAll(agentsDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "test.yaml"), []byte("id: test\nname: Test\nbackend: test\n"), 0644))
+	require.NoError(t, os.MkdirAll(agentsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "test.yaml"), []byte("id: test\nname: Test\nbackend: test\n"), 0o644))
 	require.NoError(t, model.LoadAgents(agentsDir))
 	defer func() { model.Agents = nil; model.AgentList = nil }()
 
@@ -1361,7 +1361,7 @@ func TestServeConfigRestart_NilRestartFunc(t *testing.T) {
 	}
 	defer func() { restartFunc = origRestartFunc }()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/config/restart", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/config/restart", http.NoBody)
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeConfigRestart, req)
 

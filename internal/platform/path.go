@@ -8,9 +8,11 @@ import (
 	"strings"
 )
 
+const goosWindows = "windows"
+
 // IsWindows returns true when running on Windows.
 func IsWindows() bool {
-	return runtime.GOOS == "windows"
+	return runtime.GOOS == goosWindows
 }
 
 // UserHomeDir returns the user's home directory in a cross-platform way.
@@ -184,13 +186,13 @@ func ManglePath(absPath string) string {
 // ManglePathForOS converts an absolute path into Claude's mangled directory name
 // for a specific OS. This is useful for testing and for WSL scenarios where
 // the binary's runtime.GOOS differs from the Claude CLI's platform.
-func ManglePathForOS(absPath string, goos string) string {
+func ManglePathForOS(absPath, goos string) string {
 	// Replace all backslashes with forward slashes first
 	normalized := strings.ReplaceAll(absPath, "\\", "/")
 	// Replace all forward slashes with dashes
 	mangled := strings.ReplaceAll(normalized, "/", "-")
 	// On Windows, replace colon after drive letter
-	if goos == "windows" && len(mangled) > 1 && mangled[1] == ':' {
+	if goos == goosWindows && len(mangled) > 1 && mangled[1] == ':' {
 		mangled = mangled[:1] + "-" + mangled[2:]
 	}
 	return mangled

@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	crypto_sha256 "crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -17,25 +18,28 @@ import (
 	"clawbench/internal/service"
 )
 
+const testUserRoot = "root"
+
 // testServerHelper creates and starts an SSH server on a random port for testing.
 func testServerHelper(t *testing.T, password string, portReg *service.ProxyRegistry) *Server {
 	t.Helper()
 	srv := NewServer(model.PortForwardConfig{Enabled: true, Port: 0}, 0, password, portReg)
 
 	// Find an available port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	lc := &net.ListenConfig{}
+	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to find available port: %v", err)
 	}
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	_, portStr, _ := net.SplitHostPort(addr)
 	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
 	srv.addr = fmt.Sprintf("127.0.0.1:%d", port)
 
-	go srv.ListenAndServe()
+	go func() { _ = srv.ListenAndServe() }()
 	t.Cleanup(func() { srv.Close() })
 
 	// Wait for server to start
@@ -44,10 +48,10 @@ func testServerHelper(t *testing.T, password string, portReg *service.ProxyRegis
 }
 
 // testSSHClient connects to an SSH server with the given credentials.
-func testSSHClient(t *testing.T, addr, user, password string) *gossh.Client {
+func testSSHClient(t *testing.T, addr, password string) *gossh.Client {
 	t.Helper()
 	clientCfg := &gossh.ClientConfig{
-		User: user,
+		User: sshUser,
 		Auth: []gossh.AuthMethod{
 			gossh.Password(password),
 		},
@@ -58,21 +62,22 @@ func testSSHClient(t *testing.T, addr, user, password string) *gossh.Client {
 	if err != nil {
 		t.Fatalf("failed to connect to SSH server %s: %v", addr, err)
 	}
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 	return client
 }
 
 // startEchoServer starts a TCP echo server on a random port and returns the port.
 func startEchoServer(t *testing.T) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	lc := &net.ListenConfig{}
+	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to start echo server: %v", err)
 	}
 	addr := listener.Addr().String()
 	_, portStr, _ := net.SplitHostPort(addr)
 	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
 
 	go func() {
 		for {
@@ -81,12 +86,12 @@ func startEchoServer(t *testing.T) int {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				buf := make([]byte, 4096)
 				for {
 					n, err := c.Read(buf)
 					if n > 0 {
-						c.Write(buf[:n])
+						_, _ = c.Write(buf[:n])
 					}
 					if err != nil {
 						return
@@ -95,7 +100,7 @@ func startEchoServer(t *testing.T) int {
 			}(conn)
 		}
 	}()
-	t.Cleanup(func() { listener.Close() })
+	t.Cleanup(func() { _ = listener.Close() })
 	return port
 }
 
@@ -115,7 +120,7 @@ func TestSSHServer_SHA256PasswordAuth_Success(t *testing.T) {
 	srv := testServerHelper(t, sha256Password, portReg)
 
 	// Authenticate with the plaintext password — server should hash and compare
-	client := testSSHClient(t, srv.addr, "clawbench", "my-secret-password")
+	client := testSSHClient(t, srv.addr, "my-secret-password")
 
 	// Verify connection works
 	if err := client.Close(); err != nil {
@@ -129,7 +134,7 @@ func TestSSHServer_SHA256PasswordAuth_WrongPassword(t *testing.T) {
 	srv := testServerHelper(t, sha256Password, portReg)
 
 	clientCfg := &gossh.ClientConfig{
-		User: "clawbench",
+		User: sshUser,
 		Auth: []gossh.AuthMethod{
 			gossh.Password("wrong-password"),
 		},
@@ -149,7 +154,7 @@ func TestSSHServer_SHA256PasswordAuth_WrongUser(t *testing.T) {
 	srv := testServerHelper(t, sha256Password, portReg)
 
 	clientCfg := &gossh.ClientConfig{
-		User: "root",
+		User: testUserRoot,
 		Auth: []gossh.AuthMethod{
 			gossh.Password("my-secret-password"),
 		},
@@ -165,7 +170,7 @@ func TestSSHServer_SHA256PasswordAuth_WrongUser(t *testing.T) {
 
 // sha256Hex returns the SHA-256 hex digest of (s + "clawbench-salt"), matching the server's derivation.
 func sha256Hex(s string) string {
-	h := crypto_sha256.Sum256([]byte(s + "clawbench-salt"))
+	h := crypto_sha256.Sum256([]byte(s + sshUser + "-salt"))
 	return hex.EncodeToString(h[:])
 }
 
@@ -175,7 +180,7 @@ func TestSSHServerConnectAndDisconnect(t *testing.T) {
 	portReg := newTestRegistry(t)
 	srv := testServerHelper(t, "test-password", portReg)
 
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	if srv.Fingerprint() == "" {
 		t.Error("expected non-empty fingerprint")
@@ -195,7 +200,7 @@ func TestSSHServerAuthFailure_WrongPassword(t *testing.T) {
 	srv := testServerHelper(t, "correct-password", portReg)
 
 	clientCfg := &gossh.ClientConfig{
-		User: "clawbench",
+		User: sshUser,
 		Auth: []gossh.AuthMethod{
 			gossh.Password("wrong-password"),
 		},
@@ -214,7 +219,7 @@ func TestSSHServerAuthFailure_WrongUser(t *testing.T) {
 	srv := testServerHelper(t, "test-password", portReg)
 
 	clientCfg := &gossh.ClientConfig{
-		User: "root",
+		User: testUserRoot,
 		Auth: []gossh.AuthMethod{
 			gossh.Password("test-password"),
 		},
@@ -238,13 +243,13 @@ func TestSSHPortForward_AllowedButUnregisteredPortWorks(t *testing.T) {
 	// Deliberately do NOT register echoPort — it's in the allowed range (1024-65535)
 
 	srv := testServerHelper(t, "test-password", portReg)
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	conn, err := client.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", echoPort))
 	if err != nil {
 		t.Fatalf("expected port forwarding to work for allowed-but-unregistered port %d, got: %v", echoPort, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	testMsg := []byte("hello unregistered port")
 	_, err = conn.Write(testMsg)
@@ -253,12 +258,12 @@ func TestSSHPortForward_AllowedButUnregisteredPortWorks(t *testing.T) {
 	}
 
 	buf := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read: %v", err)
 	}
-	if string(buf[:n]) != string(testMsg) {
+	if !bytes.Equal(buf[:n], testMsg) {
 		t.Errorf("echo mismatch: got %q, want %q", string(buf[:n]), string(testMsg))
 	}
 }
@@ -270,7 +275,7 @@ func TestSSHPortForward_DisallowedPortRejectedByTunnel(t *testing.T) {
 	defer r.Stop()
 
 	srv := testServerHelper(t, "test-password", r)
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	// Port 9999 is outside the allowed range (3000-4000)
 	_, err := client.Dial("tcp", "127.0.0.1:9999")
@@ -282,16 +287,16 @@ func TestSSHPortForward_DisallowedPortRejectedByTunnel(t *testing.T) {
 func TestSSHPortForward_RegisteredPortWorks(t *testing.T) {
 	portReg := newTestRegistry(t)
 	echoPort := startEchoServer(t)
-	portReg.RegisterPort(echoPort, "", "echo", "http")
+	_, _ = portReg.RegisterPort(echoPort, "", "echo", "http")
 
 	srv := testServerHelper(t, "test-password", portReg)
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	conn, err := client.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", echoPort))
 	if err != nil {
 		t.Fatalf("expected port forwarding to work for registered port %d, got: %v", echoPort, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	testMsg := []byte("hello ssh tunnel")
 	_, err = conn.Write(testMsg)
@@ -300,12 +305,12 @@ func TestSSHPortForward_RegisteredPortWorks(t *testing.T) {
 	}
 
 	buf := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read: %v", err)
 	}
-	if string(buf[:n]) != string(testMsg) {
+	if !bytes.Equal(buf[:n], testMsg) {
 		t.Errorf("echo mismatch: got %q, want %q", string(buf[:n]), string(testMsg))
 	}
 }
@@ -316,42 +321,42 @@ func TestSSHPortForward_MultiplePorts(t *testing.T) {
 	// Start two echo servers
 	echoPort1 := startEchoServer(t)
 	echoPort2 := startEchoServer(t)
-	portReg.RegisterPort(echoPort1, "", "echo1", "http")
-	portReg.RegisterPort(echoPort2, "", "echo2", "http")
+	_, _ = portReg.RegisterPort(echoPort1, "", "echo1", "http")
+	_, _ = portReg.RegisterPort(echoPort2, "", "echo2", "http")
 
 	srv := testServerHelper(t, "test-password", portReg)
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	// Forward to port 1
 	conn1, err := client.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", echoPort1))
 	if err != nil {
 		t.Fatalf("failed to forward to port %d: %v", echoPort1, err)
 	}
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 
 	// Forward to port 2
 	conn2, err := client.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", echoPort2))
 	if err != nil {
 		t.Fatalf("failed to forward to port %d: %v", echoPort2, err)
 	}
-	defer conn2.Close()
+	defer func() { _ = conn2.Close() }()
 
 	// Test both connections
 	testMsg1 := []byte("port1")
-	conn1.Write(testMsg1)
+	_, _ = conn1.Write(testMsg1)
 	buf1 := make([]byte, 1024)
-	conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n1, _ := conn1.Read(buf1)
-	if string(buf1[:n1]) != string(testMsg1) {
+	if !bytes.Equal(buf1[:n1], testMsg1) {
 		t.Errorf("port1 echo mismatch: got %q", string(buf1[:n1]))
 	}
 
 	testMsg2 := []byte("port2")
-	conn2.Write(testMsg2)
+	_, _ = conn2.Write(testMsg2)
 	buf2 := make([]byte, 1024)
-	conn2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn2.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n2, _ := conn2.Read(buf2)
-	if string(buf2[:n2]) != string(testMsg2) {
+	if !bytes.Equal(buf2[:n2], testMsg2) {
 		t.Errorf("port2 echo mismatch: got %q", string(buf2[:n2]))
 	}
 }
@@ -377,16 +382,16 @@ func TestSSHPortForward_DisallowedPortRejected(t *testing.T) {
 func TestSSHPortForward_LargeDataTransfer(t *testing.T) {
 	portReg := newTestRegistry(t)
 	echoPort := startEchoServer(t)
-	portReg.RegisterPort(echoPort, "", "echo", "http")
+	_, _ = portReg.RegisterPort(echoPort, "", "echo", "http")
 
 	srv := testServerHelper(t, "test-password", portReg)
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	conn, err := client.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", echoPort))
 	if err != nil {
 		t.Fatalf("failed to forward: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send 64KB of data
 	largeMsg := make([]byte, 64*1024)
@@ -402,7 +407,7 @@ func TestSSHPortForward_LargeDataTransfer(t *testing.T) {
 	// Read back all data
 	received := make([]byte, 0, len(largeMsg))
 	buf := make([]byte, 32*1024)
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	for len(received) < len(largeMsg) {
 		n, err := conn.Read(buf)
 		if n > 0 {
@@ -430,15 +435,16 @@ func TestSSHServer_HostKeyPersistence(t *testing.T) {
 	srv1 := NewServer(model.PortForwardConfig{Enabled: true, Port: 0, HostKey: keyPath}, 0, "test", portReg)
 
 	// Find port
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	lc := &net.ListenConfig{}
+	listener, _ := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 	_, portStr, _ := net.SplitHostPort(addr)
 	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
 	srv1.addr = fmt.Sprintf("127.0.0.1:%d", port)
 
-	go srv1.ListenAndServe()
+	go func() { _ = srv1.ListenAndServe() }()
 	time.Sleep(100 * time.Millisecond)
 
 	fingerprint1 := srv1.Fingerprint()
@@ -451,14 +457,14 @@ func TestSSHServer_HostKeyPersistence(t *testing.T) {
 
 	// Second server: loads existing host key
 	srv2 := NewServer(model.PortForwardConfig{Enabled: true, Port: 0, HostKey: keyPath}, 0, "test", portReg)
-	listener2, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener2, _ := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	addr2 := listener2.Addr().String()
-	listener2.Close()
+	_ = listener2.Close()
 	_, portStr2, _ := net.SplitHostPort(addr2)
-	fmt.Sscanf(portStr2, "%d", &port)
+	_, _ = fmt.Sscanf(portStr2, "%d", &port)
 	srv2.addr = fmt.Sprintf("127.0.0.1:%d", port)
 
-	go srv2.ListenAndServe()
+	go func() { _ = srv2.ListenAndServe() }()
 	time.Sleep(100 * time.Millisecond)
 
 	fingerprint2 := srv2.Fingerprint()
@@ -475,15 +481,16 @@ func TestSSHServer_EphemeralKeyChangesOnRestart(t *testing.T) {
 
 	// First server with ephemeral key
 	srv1 := NewServer(model.PortForwardConfig{Enabled: true, Port: 0}, 0, "test", portReg)
-	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	lc := &net.ListenConfig{}
+	listener, _ := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 	_, portStr, _ := net.SplitHostPort(addr)
 	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
 	srv1.addr = fmt.Sprintf("127.0.0.1:%d", port)
 
-	go srv1.ListenAndServe()
+	go func() { _ = srv1.ListenAndServe() }()
 	time.Sleep(100 * time.Millisecond)
 
 	fp1 := srv1.Fingerprint()
@@ -491,14 +498,14 @@ func TestSSHServer_EphemeralKeyChangesOnRestart(t *testing.T) {
 
 	// Second server with ephemeral key (should be different)
 	srv2 := NewServer(model.PortForwardConfig{Enabled: true, Port: 0}, 0, "test", portReg)
-	listener2, _ := net.Listen("tcp", "127.0.0.1:0")
+	listener2, _ := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	addr2 := listener2.Addr().String()
-	listener2.Close()
+	_ = listener2.Close()
 	_, portStr2, _ := net.SplitHostPort(addr2)
-	fmt.Sscanf(portStr2, "%d", &port)
+	_, _ = fmt.Sscanf(portStr2, "%d", &port)
 	srv2.addr = fmt.Sprintf("127.0.0.1:%d", port)
 
-	go srv2.ListenAndServe()
+	go func() { _ = srv2.ListenAndServe() }()
 	time.Sleep(100 * time.Millisecond)
 
 	fp2 := srv2.Fingerprint()
@@ -560,7 +567,7 @@ func TestSSHServer_ConnectionStats_ClientConnected(t *testing.T) {
 	}
 
 	// Connect a client
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	// Give the server a moment to update stats
 	time.Sleep(50 * time.Millisecond)
@@ -577,7 +584,7 @@ func TestSSHServer_ConnectionStats_ClientConnected(t *testing.T) {
 	}
 
 	// Disconnect
-	client.Close()
+	_ = client.Close()
 
 	// Wait for server to detect disconnect
 	time.Sleep(200 * time.Millisecond)
@@ -595,8 +602,8 @@ func TestSSHServer_ConnectionStats_MultipleClients(t *testing.T) {
 	portReg := newTestRegistry(t)
 	srv := testServerHelper(t, "test-password", portReg)
 
-	client1 := testSSHClient(t, srv.addr, "clawbench", "test-password")
-	client2 := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client1 := testSSHClient(t, srv.addr, "test-password")
+	client2 := testSSHClient(t, srv.addr, "test-password")
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -605,7 +612,7 @@ func TestSSHServer_ConnectionStats_MultipleClients(t *testing.T) {
 		t.Errorf("expected ClientCount=2, got %d", stats.ClientCount)
 	}
 
-	client1.Close()
+	_ = client1.Close()
 	time.Sleep(200 * time.Millisecond)
 
 	stats = srv.ConnectionStats()
@@ -613,7 +620,7 @@ func TestSSHServer_ConnectionStats_MultipleClients(t *testing.T) {
 		t.Errorf("expected ClientCount=1 after one disconnect, got %d", stats.ClientCount)
 	}
 
-	client2.Close()
+	_ = client2.Close()
 	time.Sleep(200 * time.Millisecond)
 
 	stats = srv.ConnectionStats()
@@ -625,10 +632,10 @@ func TestSSHServer_ConnectionStats_MultipleClients(t *testing.T) {
 func TestSSHServer_ConnectionStats_ActiveChannels(t *testing.T) {
 	portReg := newTestRegistry(t)
 	echoPort := startEchoServer(t)
-	portReg.RegisterPort(echoPort, "", "echo", "http")
+	_, _ = portReg.RegisterPort(echoPort, "", "echo", "http")
 
 	srv := testServerHelper(t, "test-password", portReg)
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -643,7 +650,7 @@ func TestSSHServer_ConnectionStats_ActiveChannels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to dial forwarded port: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -653,7 +660,7 @@ func TestSSHServer_ConnectionStats_ActiveChannels(t *testing.T) {
 	}
 
 	// Close the forwarded connection
-	conn.Close()
+	_ = conn.Close()
 	time.Sleep(200 * time.Millisecond)
 
 	stats = srv.ConnectionStats()
@@ -669,21 +676,21 @@ func TestSSHServer_BruteForceProtection(t *testing.T) {
 	srv := testServerHelper(t, "correct-password", portReg)
 
 	// Make multiple failed auth attempts from the same client
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		clientCfg := &gossh.ClientConfig{
-			User: "clawbench",
+			User: sshUser,
 			Auth: []gossh.AuthMethod{
 				gossh.Password("wrong-password"),
 			},
 			HostKeyCallback: gossh.InsecureIgnoreHostKey(),
 			Timeout:         5 * time.Second,
 		}
-		gossh.Dial("tcp", srv.addr, clientCfg)
+		_, _ = gossh.Dial("tcp", srv.addr, clientCfg)
 	}
 
 	// After 5 failures, even the correct password should be rejected (IP is blocked)
 	clientCfg := &gossh.ClientConfig{
-		User: "clawbench",
+		User: sshUser,
 		Auth: []gossh.AuthMethod{
 			gossh.Password("correct-password"),
 		},
@@ -702,7 +709,7 @@ func TestSSHServer_AuthFailureNoUsernameLeak(t *testing.T) {
 
 	// Wrong username should not leak which usernames exist
 	clientCfg := &gossh.ClientConfig{
-		User: "root",
+		User: testUserRoot,
 		Auth: []gossh.AuthMethod{
 			gossh.Password("test-password"),
 		},
@@ -714,7 +721,7 @@ func TestSSHServer_AuthFailureNoUsernameLeak(t *testing.T) {
 		t.Error("expected auth failure for wrong username")
 	}
 	// Error message should NOT contain the username "root"
-	if err != nil && strings.Contains(err.Error(), "root") {
+	if err != nil && strings.Contains(err.Error(), testUserRoot) {
 		t.Errorf("error message should not leak username: %v", err)
 	}
 }
@@ -724,38 +731,38 @@ func TestSSHServer_SuccessfulAuthResetsCounter(t *testing.T) {
 	srv := testServerHelper(t, "correct-password", portReg)
 
 	// Make 3 failed attempts (below the threshold of 5)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		clientCfg := &gossh.ClientConfig{
-			User: "clawbench",
+			User: sshUser,
 			Auth: []gossh.AuthMethod{
 				gossh.Password("wrong-password"),
 			},
 			HostKeyCallback: gossh.InsecureIgnoreHostKey(),
 			Timeout:         5 * time.Second,
 		}
-		gossh.Dial("tcp", srv.addr, clientCfg)
+		_, _ = gossh.Dial("tcp", srv.addr, clientCfg)
 	}
 
 	// Successful login should reset the counter
-	client := testSSHClient(t, srv.addr, "clawbench", "correct-password")
-	client.Close()
+	client := testSSHClient(t, srv.addr, "correct-password")
+	_ = client.Close()
 
 	// Now 3 more failures should NOT trigger block (counter was reset)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		clientCfg := &gossh.ClientConfig{
-			User: "clawbench",
+			User: sshUser,
 			Auth: []gossh.AuthMethod{
 				gossh.Password("wrong-password"),
 			},
 			HostKeyCallback: gossh.InsecureIgnoreHostKey(),
 			Timeout:         5 * time.Second,
 		}
-		gossh.Dial("tcp", srv.addr, clientCfg)
+		_, _ = gossh.Dial("tcp", srv.addr, clientCfg)
 	}
 
 	// Should still be able to connect with correct password
-	client2 := testSSHClient(t, srv.addr, "clawbench", "correct-password")
-	client2.Close()
+	client2 := testSSHClient(t, srv.addr, "correct-password")
+	_ = client2.Close()
 }
 
 // --- IPv6 / JoinHostPort Tests ---
@@ -765,17 +772,17 @@ func TestSSHServer_JoinHostPort_LocalhostTarget(t *testing.T) {
 	// This tests the fix from fmt.Sprintf("127.0.0.1:%d") → net.JoinHostPort.
 	portReg := newTestRegistry(t)
 	echoPort := startEchoServer(t)
-	portReg.RegisterPort(echoPort, "", "echo", "http")
+	_, _ = portReg.RegisterPort(echoPort, "", "echo", "http")
 
 	srv := testServerHelper(t, "test-password", portReg)
-	client := testSSHClient(t, srv.addr, "clawbench", "test-password")
+	client := testSSHClient(t, srv.addr, "test-password")
 
 	// Connect using "localhost" as the target — should be normalized to 127.0.0.1
 	conn, err := client.Dial("tcp", fmt.Sprintf("localhost:%d", echoPort))
 	if err != nil {
 		t.Fatalf("expected port forwarding via localhost to work, got: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	testMsg := []byte("hello via localhost")
 	_, err = conn.Write(testMsg)
@@ -784,12 +791,12 @@ func TestSSHServer_JoinHostPort_LocalhostTarget(t *testing.T) {
 	}
 
 	buf := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read: %v", err)
 	}
-	if string(buf[:n]) != string(testMsg) {
+	if !bytes.Equal(buf[:n], testMsg) {
 		t.Errorf("echo mismatch: got %q, want %q", string(buf[:n]), string(testMsg))
 	}
 }

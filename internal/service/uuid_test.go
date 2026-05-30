@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"testing"
@@ -33,7 +34,7 @@ func setupUUIDTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(uuidTestSchema); err != nil {
+	if _, err := db.ExecContext(context.Background(), uuidTestSchema); err != nil {
 		t.Fatalf("failed to create tables: %v", err)
 	}
 	origDB := DB
@@ -43,7 +44,7 @@ func setupUUIDTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	})
 	return db
 }
@@ -51,7 +52,7 @@ func setupUUIDTestDB(t *testing.T) *sql.DB {
 func TestGenerateUUID_NoPrefix(t *testing.T) {
 	setupUUIDTestDB(t)
 
-	id := generateUUID("", "chat_sessions", "id")
+	id := generateUUID("")
 	assert.NotEmpty(t, id)
 	assert.Len(t, id, 36) // 32 hex + 4 dashes
 	assert.Equal(t, 4, strings.Count(id, "-"))
@@ -60,7 +61,7 @@ func TestGenerateUUID_NoPrefix(t *testing.T) {
 func TestGenerateUUID_WithPrefix(t *testing.T) {
 	setupUUIDTestDB(t)
 
-	id := generateUUID("prefix-", "chat_sessions", "id")
+	id := generateUUID("prefix-")
 	assert.NotEmpty(t, id)
 	assert.True(t, strings.HasPrefix(id, "prefix-"))
 }
@@ -69,8 +70,8 @@ func TestGenerateUUID_UniqueIDs(t *testing.T) {
 	setupUUIDTestDB(t)
 
 	ids := make(map[string]bool)
-	for i := 0; i < 100; i++ {
-		id := generateUUID("", "chat_sessions", "id")
+	for range 100 {
+		id := generateUUID("")
 		assert.NotEmpty(t, id)
 		assert.False(t, ids[id], "generated duplicate ID: %s", id)
 		ids[id] = true
@@ -81,13 +82,13 @@ func TestGenerateUUID_ConflictResolution(t *testing.T) {
 	db := setupUUIDTestDB(t)
 
 	// Insert an ID into the table
-	id1 := generateUUID("", "chat_sessions", "id")
+	id1 := generateUUID("")
 	assert.NotEmpty(t, id1)
-	_, err := db.Exec("INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, '/', 'test', 'test')", id1)
+	_, err := db.ExecContext(context.Background(), "INSERT INTO chat_sessions (id, project_path, backend, title) VALUES (?, '/', 'test', 'test')", id1)
 	assert.NoError(t, err)
 
 	// Next ID should be different
-	id2 := generateUUID("", "chat_sessions", "id")
+	id2 := generateUUID("")
 	assert.NotEmpty(t, id2)
 	assert.NotEqual(t, id1, id2)
 }
@@ -95,7 +96,7 @@ func TestGenerateUUID_ConflictResolution(t *testing.T) {
 func TestGenerateUUID_ValidUUIDv4Format(t *testing.T) {
 	setupUUIDTestDB(t)
 
-	id := generateUUID("", "chat_sessions", "id")
+	id := generateUUID("")
 	assert.NotEmpty(t, id)
 
 	// UUID v4: the 13th char (after removing prefix) should be '4'

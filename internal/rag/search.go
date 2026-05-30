@@ -12,9 +12,12 @@ import (
 type SearchMode string
 
 const (
-	SearchModeHybrid SearchMode = "hybrid" // Vector + FTS with RRF fusion
-	SearchModeVector SearchMode = "vector" // Vector similarity only
-	SearchModeFTS    SearchMode = "fts"    // Full-text search only (BM25)
+	// SearchModeHybrid uses vector + FTS with RRF fusion.
+	SearchModeHybrid SearchMode = "hybrid"
+	// SearchModeVector uses vector similarity only.
+	SearchModeVector SearchMode = "vector"
+	// SearchModeFTS uses full-text search only (BM25).
+	SearchModeFTS SearchMode = "fts"
 )
 
 // SearchParams holds the parameters for a RAG search request.
@@ -23,8 +26,8 @@ type SearchParams struct {
 	Limit            int    `json:"limit"`
 	ProjectPath      string `json:"project"`
 	Backend          string `json:"backend"`
-	Role             string `json:"role"`                // Filter by role: "user" or "assistant"
-	SessionID        string `json:"session_id"`          // Limit search to this session
+	Role             string `json:"role"`               // Filter by role: "user" or "assistant"
+	SessionID        string `json:"session_id"`         // Limit search to this session
 	ExcludeSessionID string `json:"exclude_session_id"` // Exclude this session from results (e.g., current session)
 	FromTime         string `json:"from"`
 	ToTime           string `json:"to"`
@@ -41,7 +44,7 @@ type SearchResult struct {
 //   - Hybrid (vector + FTS with RRF) when both embedding API and FTS are available
 //   - Vector-only when embedding API is available but FTS is not
 //   - FTS-only when embedding API is unavailable
-func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, params SearchParams, defaultLimit int, searchPoolSize int) (*SearchResult, error) {
+func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, params SearchParams, defaultLimit, searchPoolSize int) (*SearchResult, error) { //nolint:revive // stutter ok: rag.RAGSearch is the established API name
 	if params.Query == "" {
 		return &SearchResult{Mode: SearchModeFTS}, nil
 	}
@@ -60,17 +63,55 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 		poolSize = 20
 	}
 
-	// Determine search strategy using cached embedder health state
-	// (avoids per-request HTTP probe — indexer refreshes on every polling cycle)
+	embedderHealthy := resolveEmbedderHealth(ctx, embedder)
+	ftsAvailable := store.ftsAvailable
+
+	hits, mode, err := executeSearchStrategy(ctx, store, embedder, params, limit, poolSize, embedderHealthy, ftsAvailable)
+	if err != nil {
+		return nil, fmt.Errorf("search: %w", err)
+	}
+
+	// Enrich hits with session titles from SQLite
+	sessionIDs := make(map[string]bool)
+	for _, h := range hits {
+		sessionIDs[h.SessionID] = true
+	}
+
+	// Fetch session titles in batch
+	titles := getSessionTitles(sessionIDs)
+	for i := range hits {
+		if title, ok := titles[hits[i].SessionID]; ok {
+			hits[i].SessionTitle = title
+		}
+	}
+
+	slog.Info(
+		"rag search completed",
+		slog.String("query", params.Query),
+		slog.String("mode", string(mode)),
+		slog.Int("results", len(hits)),
+		slog.Int("limit", limit),
+	)
+
+	return &SearchResult{
+		Results: hits,
+		Total:   len(hits),
+		Mode:    mode,
+	}, nil
+}
+
+func resolveEmbedderHealth(ctx context.Context, embedder *EmbeddingClient) bool {
+	// Use cached embedder health state (indexer refreshes on every polling cycle)
 	embedderHealthy := EmbedderHealthy()
 	// If no cached state and embedder is available, do a fresh probe
 	if !embedderHealthy && embedder != nil {
 		reachable, modelAvailable, _ := embedder.IsHealthy(ctx)
 		embedderHealthy = reachable && modelAvailable
 	}
+	return embedderHealthy
+}
 
-	ftsAvailable := store.ftsAvailable
-
+func executeSearchStrategy(ctx context.Context, store *Store, embedder *EmbeddingClient, params SearchParams, limit, poolSize int, embedderHealthy, ftsAvailable bool) ([]SearchHit, SearchMode, error) {
 	var hits []SearchHit
 	var mode SearchMode
 	var err error
@@ -96,7 +137,7 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 		var queryEmbedding []float64
 		queryEmbedding, err = embedder.Embed(ctx, params.Query)
 		if err != nil {
-			return nil, fmt.Errorf("embed query: %w", err)
+			return nil, mode, fmt.Errorf("embed query: %w", err)
 		}
 		hits, err = store.SearchSimple(queryEmbedding, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
 
@@ -104,41 +145,12 @@ func RAGSearch(ctx context.Context, store *Store, embedder *EmbeddingClient, par
 		// FTS-only (embedding API unavailable or no embedding)
 		mode = SearchModeFTS
 		if !ftsAvailable {
-			return nil, fmt.Errorf("no search available: embedding API not reachable and FTS not loaded")
+			return nil, mode, fmt.Errorf("no search available: embedding API not reachable and FTS not loaded")
 		}
 		hits, err = store.SearchFTS(params.Query, limit, params.ProjectPath, params.Backend, params.Role, params.SessionID, params.ExcludeSessionID, params.FromTime, params.ToTime)
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("search: %w", err)
-	}
-
-	// Enrich hits with session titles from SQLite
-	sessionIDs := make(map[string]bool)
-	for _, h := range hits {
-		sessionIDs[h.SessionID] = true
-	}
-
-	// Fetch session titles in batch
-	titles := getSessionTitles(sessionIDs)
-	for i := range hits {
-		if title, ok := titles[hits[i].SessionID]; ok {
-			hits[i].SessionTitle = title
-		}
-	}
-
-	slog.Info("rag search completed",
-		slog.String("query", params.Query),
-		slog.String("mode", string(mode)),
-		slog.Int("results", len(hits)),
-		slog.Int("limit", limit),
-	)
-
-	return &SearchResult{
-		Results: hits,
-		Total:   len(hits),
-		Mode:    mode,
-	}, nil
+	return hits, mode, err
 }
 
 // getSessionTitles fetches session titles for a set of session IDs from SQLite.

@@ -24,8 +24,7 @@ func ServeRecentProjects(w http.ResponseWriter, r *http.Request) {
 			model.WriteError(w, model.Internal(fmt.Errorf("failed to load recent projects")))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(paths)
+		writeJSON(w, http.StatusOK, paths)
 
 	case http.MethodPost:
 		var req struct {
@@ -39,8 +38,7 @@ func ServeRecentProjects(w http.ResponseWriter, r *http.Request) {
 			model.WriteError(w, model.Internal(fmt.Errorf("failed to save recent project")))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 
 	case http.MethodDelete:
 		var req struct {
@@ -54,8 +52,7 @@ func ServeRecentProjects(w http.ResponseWriter, r *http.Request) {
 			model.WriteError(w, model.Internal(fmt.Errorf("failed to remove recent project")))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 
 	default:
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
@@ -82,18 +79,17 @@ func ServeProjectSet(w http.ResponseWriter, r *http.Request) {
 			} else if len(model.RootPaths) > 0 {
 				projectPath = model.RootPaths[0]
 			}
-			http.SetCookie(w, &http.Cookie{
-				Name:     "clawbench_project",
-				Value:    url.QueryEscape(projectPath),
-				Path:     "/",
-				MaxAge:   7 * 24 * 3600,
-				HttpOnly: true,
-				Secure:   r.TLS != nil,
-				SameSite: http.SameSiteLaxMode,
-			})
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"path": projectPath, "homeDir": platform.UserHomeDir()})
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // local network only, no HTTPS; Secure flag would prevent functionality
+			Name:     "clawbench_project",
+			Value:    url.QueryEscape(projectPath),
+			Path:     "/",
+			MaxAge:   7 * 24 * 3600,
+			HttpOnly: true,
+			Secure:   r.TLS != nil,
+			SameSite: http.SameSiteLaxMode,
+		})
+		writeJSON(w, http.StatusOK, map[string]string{jsonKeyPath: projectPath, "homeDir": platform.UserHomeDir()})
 
 	case http.MethodPost:
 		var req struct {
@@ -106,27 +102,14 @@ func ServeProjectSet(w http.ResponseWriter, r *http.Request) {
 
 		// Resolve path and validate against root paths
 		rawPath := req.Path
-		var absPath string
-		if rawPath == "" || rawPath == "/" {
-			if len(model.RootPaths) > 0 {
-				absPath = model.RootPaths[0]
-			}
-		} else if filepath.IsAbs(rawPath) {
-			absPath = rawPath
-			if !isPathUnderAnyRoot(absPath) {
-				writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
-				return
-			}
-		} else {
-			// Relative path — resolve from first root
-			if len(model.RootPaths) > 0 {
-				relPath := strings.TrimPrefix(rawPath, "/")
-				absPath, _ = filepath.Abs(filepath.Join(model.RootPaths[0], relPath))
-			}
-			if !isPathUnderAnyRoot(absPath) {
-				writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
-				return
-			}
+		absPath, ok := resolveProjectSetPath(rawPath)
+		if !ok {
+			writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
+			return
+		}
+		if absPath == "" {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidPath")
+			return
 		}
 
 		info, err := os.Stat(absPath)
@@ -136,7 +119,7 @@ func ServeProjectSet(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Clear chat session cookie when switching project
-		http.SetCookie(w, &http.Cookie{
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // local network only, no HTTPS; Secure flag would prevent functionality
 			Name:     "chat_session_id",
 			Value:    "",
 			Path:     "/",
@@ -145,7 +128,7 @@ func ServeProjectSet(w http.ResponseWriter, r *http.Request) {
 			SameSite: http.SameSiteLaxMode,
 		})
 
-		http.SetCookie(w, &http.Cookie{
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // local network only, no HTTPS; Secure flag would prevent functionality
 			Name:     "clawbench_project",
 			Value:    url.QueryEscape(absPath),
 			Path:     "/",
@@ -154,24 +137,50 @@ func ServeProjectSet(w http.ResponseWriter, r *http.Request) {
 			Secure:   r.TLS != nil,
 			SameSite: http.SameSiteLaxMode,
 		})
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"ok": "true", "path": absPath})
+		writeJSON(w, http.StatusOK, map[string]string{"ok": "true", jsonKeyPath: absPath})
 
 	default:
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 	}
 }
 
+// resolveProjectSetPath resolves a raw path for project setting.
+// Returns (absPath, true) if valid, ("", false) if access denied.
+func resolveProjectSetPath(rawPath string) (string, bool) {
+	switch {
+	case rawPath == "" || rawPath == "/":
+		if len(model.RootPaths) > 0 {
+			return model.RootPaths[0], true
+		}
+		return "", false
+	case filepath.IsAbs(rawPath):
+		if !isPathUnderAnyRoot(rawPath) {
+			return "", false
+		}
+		return rawPath, true
+	default:
+		if len(model.RootPaths) == 0 {
+			return "", false
+		}
+		relPath := strings.TrimPrefix(rawPath, "/")
+		absPath, _ := filepath.Abs(filepath.Join(model.RootPaths[0], relPath))
+		if !isPathUnderAnyRoot(absPath) {
+			return "", false
+		}
+		return absPath, true
+	}
+}
+
 // ServeRoots returns the filesystem root paths and configuration limits as JSON.
 // On Linux/macOS, roots is ["/"]. On Windows, roots is the list of available drives.
-func ServeRoots(w http.ResponseWriter, r *http.Request) {
+func ServeRoots(w http.ResponseWriter, _ *http.Request) {
 	roots := model.RootPaths
 	if len(roots) == 0 {
 		slog.Warn("no root paths configured")
 		roots = []string{platform.UserHomeDir()}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"roots":                  roots,
 		"uploadMaxSizeMB":        model.UploadMaxSizeMB,
 		"uploadMaxFiles":         model.UploadMaxFiles,

@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -14,34 +15,34 @@ import (
 
 	"clawbench/internal/model"
 
-	_ "github.com/marcboeker/go-duckdb"
+	_ "github.com/marcboeker/go-duckdb" // DuckDB driver for database/sql
 )
 
 // Store manages the DuckDB connection and vector storage operations.
 type Store struct {
 	db             *sql.DB
 	dbPath         string
-	embeddingDim   int        // adaptive embedding dimension
-	ftsAvailable   bool       // Whether FTS extension loaded successfully
-	ftsDirty       bool       // Whether FTS index needs rebuild after data changes
-	ftsLastRebuild time.Time  // Last time FTS index was rebuilt (for debounce)
+	embeddingDim   int       // adaptive embedding dimension
+	ftsAvailable   bool      // Whether FTS extension loaded successfully
+	ftsDirty       bool      // Whether FTS index needs rebuild after data changes
+	ftsLastRebuild time.Time // Last time FTS index was rebuilt (for debounce)
 }
 
 // Chunk represents a text chunk with its embedding and metadata.
 type Chunk struct {
-	ID                  int64     `json:"id"`
-	SessionID           string    `json:"session_id"`
-	MessageID           int64     `json:"message_id"`
-	ChunkText           string    `json:"chunk_text"`
-	ChunkTextSegmented  string    `json:"chunk_text_segmented"` // gse-segmented text for FTS
-	ChunkIndex          int       `json:"chunk_index"`
-	TokenCount          int       `json:"token_count"`
-	Embedding           []float64 `json:"embedding"`
-	HasEmbedding        bool      `json:"has_embedding"`
-	ProjectPath         string    `json:"project_path"`
-	Backend             string    `json:"backend"`
-	Role                string    `json:"role"`
-	CreatedAt           time.Time `json:"created_at"`
+	ID                 int64     `json:"id"`
+	SessionID          string    `json:"session_id"`
+	MessageID          int64     `json:"message_id"`
+	ChunkText          string    `json:"chunk_text"`
+	ChunkTextSegmented string    `json:"chunk_text_segmented"` // gse-segmented text for FTS
+	ChunkIndex         int       `json:"chunk_index"`
+	TokenCount         int       `json:"token_count"`
+	Embedding          []float64 `json:"embedding"`
+	HasEmbedding       bool      `json:"has_embedding"`
+	ProjectPath        string    `json:"project_path"`
+	Backend            string    `json:"backend"`
+	Role               string    `json:"role"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 // SearchHit represents a search result with similarity score.
@@ -61,7 +62,7 @@ type SearchHit struct {
 // NewStore creates a new DuckDB store at the given path.
 func NewStore(dbPath string) (*Store, error) {
 	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create rag db directory: %w", err)
 	}
 
@@ -72,7 +73,7 @@ func NewStore(dbPath string) (*Store, error) {
 
 	s := &Store{db: db, dbPath: dbPath}
 	if err := s.initSchema(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to init duckdb schema: %w", err)
 	}
 
@@ -104,8 +105,9 @@ func InitStore() (*Store, error) {
 }
 
 func (s *Store) initSchema() error {
+	ctx := context.Background()
 	// Create metadata table first
-	_, err := s.db.Exec(`
+	_, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS rag_metadata (
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -121,7 +123,7 @@ func (s *Store) initSchema() error {
 
 	dimSQL := fmt.Sprintf("FLOAT[%d]", dim)
 
-	_, err = s.db.Exec(fmt.Sprintf(`
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`
 		CREATE SEQUENCE IF NOT EXISTS chat_chunks_id_seq;
 		CREATE TABLE IF NOT EXISTS chat_chunks (
 			id INTEGER PRIMARY KEY,
@@ -149,15 +151,15 @@ func (s *Store) initSchema() error {
 	}
 
 	// Migrate existing databases: add new columns if they don't exist
-	s.db.Exec("ALTER TABLE chat_chunks ADD COLUMN chunk_text_segmented TEXT")
+	_, _ = s.db.ExecContext(ctx, "ALTER TABLE chat_chunks ADD COLUMN chunk_text_segmented TEXT")
 	// DuckDB does not support ADD COLUMN with NOT NULL DEFAULT constraints,
 	// so add as nullable, then set default and backfill.
-	if _, err := s.db.Exec("ALTER TABLE chat_chunks ADD COLUMN has_embedding BOOLEAN"); err == nil {
+	if _, err := s.db.ExecContext(ctx, "ALTER TABLE chat_chunks ADD COLUMN has_embedding BOOLEAN"); err == nil {
 		// Column was just added (didn't exist before), set default value
-		s.db.Exec("UPDATE chat_chunks SET has_embedding = false WHERE has_embedding IS NULL")
+		_, _ = s.db.ExecContext(ctx, "UPDATE chat_chunks SET has_embedding = false WHERE has_embedding IS NULL")
 	}
 	// Mark existing rows with embeddings as having embedding
-	s.db.Exec("UPDATE chat_chunks SET has_embedding = true WHERE embedding IS NOT NULL AND (has_embedding IS NULL OR has_embedding = false)")
+	_, _ = s.db.ExecContext(ctx, "UPDATE chat_chunks SET has_embedding = true WHERE embedding IS NOT NULL AND (has_embedding IS NULL OR has_embedding = false)")
 
 	// Sync sequence to max(id) so next insert doesn't violate primary key.
 	// This can happen when the table was created with auto-increment IDs
@@ -165,9 +167,9 @@ func (s *Store) initSchema() error {
 	// DuckDB doesn't support ALTER SEQUENCE RESTART or subqueries in CREATE SEQUENCE,
 	// so we query the max id and drop+recreate the sequence with the correct start value.
 	var maxID int
-	if err := s.db.QueryRow("SELECT COALESCE(MAX(id), 0) FROM chat_chunks").Scan(&maxID); err == nil && maxID > 0 {
-		s.db.Exec("DROP SEQUENCE IF EXISTS chat_chunks_id_seq")
-		s.db.Exec(fmt.Sprintf("CREATE SEQUENCE chat_chunks_id_seq START WITH %d", maxID+1))
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) FROM chat_chunks").Scan(&maxID); err == nil && maxID > 0 {
+		_, _ = s.db.ExecContext(ctx, "DROP SEQUENCE IF EXISTS chat_chunks_id_seq")
+		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("CREATE SEQUENCE chat_chunks_id_seq START WITH %d", maxID+1))
 	}
 
 	return nil
@@ -175,7 +177,7 @@ func (s *Store) initSchema() error {
 
 // initFTS loads the DuckDB FTS extension.
 func (s *Store) initFTS() error {
-	_, err := s.db.Exec("INSTALL fts; LOAD fts;")
+	_, err := s.db.ExecContext(context.Background(), "INSTALL fts; LOAD fts;")
 	if err != nil {
 		return fmt.Errorf("load fts extension: %w", err)
 	}
@@ -189,8 +191,8 @@ func (s *Store) CreateFTSIndex() error {
 		return fmt.Errorf("FTS not available")
 	}
 	// Drop existing index first (FTS doesn't auto-update)
-	s.db.Exec("PRAGMA drop_fts_index('chat_chunks')")
-	_, err := s.db.Exec(`
+	_, _ = s.db.ExecContext(context.Background(), "PRAGMA drop_fts_index('chat_chunks')")
+	_, err := s.db.ExecContext(context.Background(), `
 		PRAGMA create_fts_index(
 			'chat_chunks', 'id', 'chunk_text_segmented',
 			stemmer = 'none',
@@ -243,12 +245,15 @@ func (s *Store) InsertChunks(chunks []Chunk) error {
 			embeddingSQL = "NULL"
 		}
 
+		//nolint:gosec // table/column names are constants, not user input
 		sqlStr := fmt.Sprintf(`
 			INSERT INTO chat_chunks (id, session_id, message_id, chunk_text, chunk_text_segmented,
 				chunk_index, token_count, embedding, has_embedding, project_path, backend, role, created_at)
 			VALUES (nextval('chat_chunks_id_seq'), ?, ?, ?, ?, ?, ?, %s, ?, ?, ?, ?, ?)`,
 			embeddingSQL)
-		_, err := s.db.Exec(sqlStr,
+		_, err := s.db.ExecContext(
+			context.Background(),
+			sqlStr,
 			c.SessionID, c.MessageID, c.ChunkText, c.ChunkTextSegmented,
 			c.ChunkIndex, c.TokenCount,
 			c.HasEmbedding,
@@ -275,6 +280,7 @@ func (s *Store) SearchSimple(queryEmbedding []float64, limit int, projectPath, b
 		return nil, fmt.Errorf("query embedding validation: %w", err)
 	}
 
+	//nolint:gosec // table/column names are constants, not user input
 	query := fmt.Sprintf(`
 		SELECT id,
 		       chunk_text,
@@ -322,11 +328,11 @@ func (s *Store) SearchSimple(queryEmbedding []float64, limit int, projectPath, b
 	query += " ORDER BY score DESC LIMIT ?"
 	args = append(args, limit)
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.QueryContext(context.Background(), query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var hits []SearchHit
 	for rows.Next() {
@@ -399,11 +405,11 @@ func (s *Store) SearchFTS(queryText string, limit int, projectPath, backend, rol
 	query += " ORDER BY score DESC LIMIT ?"
 	args = append(args, limit)
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.QueryContext(context.Background(), query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("fts search query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var hits []SearchHit
 	for rows.Next() {
@@ -429,13 +435,13 @@ func (s *Store) SearchHybrid(queryEmbedding []float64, queryText string, poolSiz
 
 	// If one source fails completely, fall back to the other
 	if vecErr != nil && ftsErr != nil {
-		return nil, fmt.Errorf("both search sources failed: vector=%v, fts=%v", vecErr, ftsErr)
+		return nil, fmt.Errorf("both search sources failed: vector=%w, fts=%w", vecErr, ftsErr)
 	}
 	if vecErr != nil {
-		return ftsHits, nil
+		return ftsHits, nil //nolint:nilerr // intentional fallback: return FTS results when vector search fails
 	}
 	if ftsErr != nil {
-		return vecHits, nil
+		return vecHits, nil //nolint:nilerr // intentional fallback: return vector results when FTS search fails
 	}
 
 	// RRF fusion: score = sum(1 / (k + rank_i)) for each source
@@ -487,11 +493,11 @@ func (s *Store) SearchHybrid(queryEmbedding []float64, queryText string, poolSiz
 // PendingEmbeddingCount returns the number of chunks that need embedding backfill.
 func (s *Store) PendingEmbeddingCount() (int, error) {
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM chat_chunks WHERE COALESCE(has_embedding, false) = false").Scan(&count)
+	err := s.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM chat_chunks WHERE COALESCE(has_embedding, false) = false").Scan(&count)
 	return count, err
 }
 
-// GetPendingEmbeddings returns chunks that need embedding backfill.
+// PendingChunk represents a chunk that needs embedding backfill.
 type PendingChunk struct {
 	ID        int64
 	ChunkText string
@@ -499,11 +505,11 @@ type PendingChunk struct {
 
 // GetPendingEmbeddings returns chunk IDs and texts that need embedding backfill.
 func (s *Store) GetPendingEmbeddings(limit int) ([]PendingChunk, error) {
-	rows, err := s.db.Query("SELECT id, chunk_text FROM chat_chunks WHERE COALESCE(has_embedding, false) = false ORDER BY created_at DESC LIMIT ?", limit)
+	rows, err := s.db.QueryContext(context.Background(), "SELECT id, chunk_text FROM chat_chunks WHERE COALESCE(has_embedding, false) = false ORDER BY created_at DESC LIMIT ?", limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var pending []PendingChunk
 	for rows.Next() {
@@ -526,7 +532,7 @@ func (s *Store) GetPendingEmbeddings(limit int) ([]PendingChunk, error) {
 func (s *Store) UpdateEmbedding(chunkID int64, embedding []float64) error {
 	// Read the existing row
 	var c Chunk
-	err := s.db.QueryRow(`
+	err := s.db.QueryRowContext(context.Background(), `
 		SELECT id, session_id, message_id, chunk_text, chunk_text_segmented,
 			chunk_index, token_count, has_embedding,
 			project_path, backend, role, created_at
@@ -540,7 +546,7 @@ func (s *Store) UpdateEmbedding(chunkID int64, embedding []float64) error {
 	}
 
 	// Delete the old row
-	_, err = s.db.Exec("DELETE FROM chat_chunks WHERE id = ?", chunkID)
+	_, err = s.db.ExecContext(context.Background(), "DELETE FROM chat_chunks WHERE id = ?", chunkID)
 	if err != nil {
 		return fmt.Errorf("delete chunk for backfill: %w", err)
 	}
@@ -550,11 +556,12 @@ func (s *Store) UpdateEmbedding(chunkID int64, embedding []float64) error {
 	if err != nil {
 		return fmt.Errorf("embedding validation for update: %w", err)
 	}
-	_, err = s.db.Exec(fmt.Sprintf(`
+	_, err = s.db.ExecContext(
+		context.Background(), fmt.Sprintf(`
 		INSERT INTO chat_chunks (id, session_id, message_id, chunk_text, chunk_text_segmented,
 			chunk_index, token_count, embedding, has_embedding, project_path, backend, role, created_at)
 		VALUES (%d, ?, ?, ?, ?, ?, ?, %s, ?, ?, ?, ?, ?)`,
-		chunkID, embeddingLiteral),
+			chunkID, embeddingLiteral),
 		c.SessionID, c.MessageID, c.ChunkText, c.ChunkTextSegmented,
 		c.ChunkIndex, c.TokenCount,
 		true, // has_embedding = true now
@@ -571,9 +578,9 @@ func (s *Store) UpdateEmbedding(chunkID int64, embedding []float64) error {
 // CheckDimensionMismatch checks if existing embeddings have a different dimension
 // than the store's configured dimension. Returns the existing dimension (0 if no data)
 // and whether there is a mismatch.
-func (s *Store) CheckDimensionMismatch() (int, bool, error) {
+func (s *Store) CheckDimensionMismatch() (existingDim int, mismatch bool, err error) {
 	var dim int
-	err := s.db.QueryRow(`
+	err = s.db.QueryRowContext(context.Background(), `
 		SELECT CASE
 			WHEN COUNT(*) = 0 THEN 0
 			ELSE ANY_VALUE(array_length(embedding))
@@ -613,7 +620,7 @@ func (s *Store) loadEmbeddingDim() {
 // readMetadata reads a string value from rag_metadata.
 func (s *Store) readMetadata(key string) string {
 	var value string
-	err := s.db.QueryRow("SELECT value FROM rag_metadata WHERE key = ?", key).Scan(&value)
+	err := s.db.QueryRowContext(context.Background(), "SELECT value FROM rag_metadata WHERE key = ?", key).Scan(&value)
 	if err != nil {
 		return ""
 	}
@@ -635,7 +642,7 @@ func (s *Store) readMetadataInt(key string, fallback int) int {
 
 // writeMetadata persists a key-value pair to rag_metadata.
 func (s *Store) writeMetadata(key, value string) {
-	_, err := s.db.Exec("INSERT INTO rag_metadata (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = ?", key, value, value)
+	_, err := s.db.ExecContext(context.Background(), "INSERT INTO rag_metadata (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = ?", key, value, value)
 	if err != nil {
 		slog.Warn("rag: failed to write metadata", slog.String("key", key), slog.String("err", err.Error()))
 	}
@@ -644,7 +651,7 @@ func (s *Store) writeMetadata(key, value string) {
 // ResetTable drops and recreates the chat_chunks table.
 // Used when embedding dimension changes after a model switch.
 func (s *Store) ResetTable() error {
-	_, err := s.db.Exec("DROP TABLE IF EXISTS chat_chunks")
+	_, err := s.db.ExecContext(context.Background(), "DROP TABLE IF EXISTS chat_chunks")
 	if err != nil {
 		return err
 	}
@@ -655,7 +662,7 @@ func (s *Store) ResetTable() error {
 // ChunkCount returns the total number of chunks in the store.
 func (s *Store) ChunkCount() (int, error) {
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM chat_chunks").Scan(&count)
+	err := s.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM chat_chunks").Scan(&count)
 	return count, err
 }
 
@@ -677,7 +684,7 @@ func (s *Store) DeleteChunksBySessionIDs(sessionIDs []string) (int64, error) {
 		args[i] = id
 	}
 
-	result, err := s.db.Exec("DELETE FROM chat_chunks WHERE session_id IN ("+placeholders+")", args...)
+	result, err := s.db.ExecContext(context.Background(), "DELETE FROM chat_chunks WHERE session_id IN ("+placeholders+")", args...)
 	if err != nil {
 		return 0, fmt.Errorf("delete chunks by session ids: %w", err)
 	}
@@ -700,7 +707,7 @@ func (s *Store) Close() error {
 // RecoverFromCorruption attempts to recover from a corrupted DuckDB file
 // by deleting it and recreating from scratch.
 func (s *Store) RecoverFromCorruption() error {
-	s.db.Close()
+	_ = s.db.Close()
 	slog.Warn("deleting corrupted rag.duckdb for recovery", slog.String("path", s.dbPath))
 	if err := os.Remove(s.dbPath); err != nil {
 		return fmt.Errorf("remove corrupted db: %w", err)

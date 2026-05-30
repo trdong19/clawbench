@@ -95,16 +95,17 @@ func ServeFileEditLine(w http.ResponseWriter, r *http.Request) {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "LineNumberOutOfRange")
 		return
 	}
-	if req.Delete {
+	switch {
+	case req.Delete:
 		lines = append(lines[:req.LineNum-1], lines[req.LineNum:]...)
-	} else if req.InsertAbove {
+	case req.InsertAbove:
 		lines = append(lines[:req.LineNum-1], append([]string{""}, lines[req.LineNum-1:]...)...)
-	} else if req.InsertBelow {
+	case req.InsertBelow:
 		lines = append(lines[:req.LineNum], append([]string{""}, lines[req.LineNum:]...)...)
-	} else {
+	default:
 		lines[req.LineNum-1] = req.Content
 	}
-	if err := os.WriteFile(absPath, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+	if err := os.WriteFile(absPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil { //nolint:gosec // intentionally permissive for user-accessible files/directories
 		model.WriteError(w, model.Internal(fmt.Errorf("cannot write file")))
 		return
 	}
@@ -155,6 +156,50 @@ func ServeFileDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // ServeFileBatchDelete handles deleting multiple files/directories in a single request.
+// resolveBatchDeletePath resolves a single path for batch delete, returning the
+// absolute path or an error message.
+func resolveBatchDeletePath(p string, r *http.Request) (absPath, errMsg string) {
+	if filepath.IsAbs(p) {
+		ap, err := filepath.Abs(p)
+		if err != nil || !isPathUnderAnyRoot(ap) {
+			return "", p + ": access denied"
+		}
+		return ap, ""
+	}
+	projectPath := middleware.GetProjectFromCookie(r)
+	if projectPath == "" {
+		return "", p + ": no project"
+	}
+	baseAbs, err := filepath.Abs(projectPath)
+	if err != nil {
+		return "", p + ": access denied"
+	}
+	ap, ok := model.ValidatePath(baseAbs, p)
+	if !ok || !isPathUnderAnyRoot(ap) {
+		return "", p + ": access denied"
+	}
+	return ap, ""
+}
+
+// deletePath removes a file or directory at absPath, returning an error message on failure.
+func deletePath(p, absPath string) string {
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return p + ": not found"
+	}
+	if info.IsDir() {
+		if err := safeRemoveAll(absPath); err != nil {
+			return p + ": delete failed: " + err.Error()
+		}
+	} else {
+		if err := os.Remove(absPath); err != nil {
+			return p + ": delete failed: " + err.Error()
+		}
+	}
+	return ""
+}
+
+// ServeFileBatchDelete handles batch deletion of multiple files/directories.
 func ServeFileBatchDelete(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -174,54 +219,19 @@ func ServeFileBatchDelete(w http.ResponseWriter, r *http.Request) {
 	deleted := 0
 	var errs []string
 	for _, p := range req.Paths {
-		// Resolve each path: absolute validated directly, relative resolved against project cookie
-		var absPath string
-		if filepath.IsAbs(p) {
-			ap, err := filepath.Abs(p)
-			if err != nil || !isPathUnderAnyRoot(ap) {
-				errs = append(errs, p+": access denied")
-				continue
-			}
-			absPath = ap
-		} else {
-			projectPath := middleware.GetProjectFromCookie(r)
-			if projectPath == "" {
-				errs = append(errs, p+": no project")
-				continue
-			}
-			baseAbs, err := filepath.Abs(projectPath)
-			if err != nil {
-				errs = append(errs, p+": access denied")
-				continue
-			}
-			ap, ok := model.ValidatePath(baseAbs, p)
-			if !ok || !isPathUnderAnyRoot(ap) {
-				errs = append(errs, p+": access denied")
-				continue
-			}
-			absPath = ap
-		}
-
-		info, err := os.Stat(absPath)
-		if err != nil {
-			errs = append(errs, p+": not found")
+		absPath, errMsg := resolveBatchDeletePath(p, r)
+		if errMsg != "" {
+			errs = append(errs, errMsg)
 			continue
 		}
-		if info.IsDir() {
-			if err := safeRemoveAll(absPath); err != nil {
-				errs = append(errs, p+": delete failed: "+err.Error())
-				continue
-			}
-		} else {
-			if err := os.Remove(absPath); err != nil {
-				errs = append(errs, p+": delete failed: "+err.Error())
-				continue
-			}
+		if delErr := deletePath(p, absPath); delErr != "" {
+			errs = append(errs, delErr)
+			continue
 		}
 		deleted++
 	}
 
-	result := map[string]interface{}{"ok": true, "deleted": deleted}
+	result := map[string]interface{}{"ok": true, jsonKeyDeleted: deleted}
 	if len(errs) > 0 {
 		result["errors"] = errs
 	}
@@ -256,7 +266,7 @@ func ServeFileCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.WriteFile(absPath, []byte{}, 0644); err != nil {
+	if err := os.WriteFile(absPath, []byte{}, 0o644); err != nil { //nolint:gosec // intentionally permissive for user-accessible files/directories
 		model.WriteError(w, model.Internal(fmt.Errorf("create file failed: %w", err)))
 		return
 	}
@@ -287,7 +297,7 @@ func ServeDirCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.MkdirAll(absPath, 0755); err != nil {
+	if err := os.MkdirAll(absPath, 0o755); err != nil { //nolint:gosec // intentionally permissive for user-accessible files/directories
 		model.WriteError(w, model.Internal(fmt.Errorf("create directory failed: %w", err)))
 		return
 	}
@@ -300,7 +310,8 @@ func ServeDirCreate(w http.ResponseWriter, r *http.Request) {
 // Returns the absolute path of the item to create, or empty string on error (response already written).
 func validateCreatePath(w http.ResponseWriter, r *http.Request, dirPath, name string) string {
 	var absDir string
-	if dirPath == "" {
+	switch {
+	case dirPath == "":
 		// No directory specified — use project root from cookie
 		projectPath, ok := requireProject(w, r)
 		if !ok {
@@ -312,14 +323,14 @@ func validateCreatePath(w http.ResponseWriter, r *http.Request, dirPath, name st
 			writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
 			return ""
 		}
-	} else if filepath.IsAbs(dirPath) {
+	case filepath.IsAbs(dirPath):
 		// Absolute directory path — validate against root paths
 		if !isPathUnderAnyRoot(dirPath) {
 			writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
 			return ""
 		}
 		absDir = dirPath
-	} else {
+	default:
 		// Relative directory path — resolve against projectPath
 		projectPath, ok := requireProject(w, r)
 		if !ok {
@@ -455,13 +466,13 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	dstFile, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer func() { _ = dstFile.Close() }()
 
 	_, err = dstFile.ReadFrom(srcFile)
 	return err
@@ -469,13 +480,15 @@ func copyFile(src, dst string) error {
 
 // copyDir copies a directory recursively from src to dst.
 // Symlinks whose targets escape root paths are skipped to prevent data exfiltration.
+//
+//nolint:gocognit // TODO: refactor to reduce complexity
 func copyDir(src, dst string) error {
 	srcInfo, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(dst, srcInfo.Mode()); err != nil {
+	if err = os.MkdirAll(dst, srcInfo.Mode()); err != nil { //nolint:gocritic // sloppyReassign: intentional to avoid shadowing err from line above
 		return err
 	}
 
@@ -549,7 +562,7 @@ func safeRemoveAll(dir string) error {
 			if linkErr == nil && !isPathUnderAnyRoot(target) {
 				// Symlink escapes root paths — remove just the symlink, don't follow it
 				slog.Warn("safeRemoveAll: symlink escapes root paths, removing symlink only", "path", path, "target", target)
-				os.Remove(path)
+				_ = os.Remove(path) //nolint:gosec // paths validated by IsPathUnderAnyRoot before walking
 				if info.IsDir() {
 					return filepath.SkipDir
 				}
@@ -567,15 +580,11 @@ func safeRemoveAll(dir string) error {
 	// Remove paths from deepest to shallowest (bottom-up)
 	for i := len(paths) - 1; i >= 0; i-- {
 		p := paths[i]
-		info, statErr := os.Lstat(p)
+		_, statErr := os.Lstat(p)
 		if statErr != nil {
 			continue // already gone
 		}
-		if info.IsDir() {
-			os.Remove(p) // directory should be empty now
-		} else {
-			os.Remove(p)
-		}
+		_ = os.Remove(p)
 	}
 	return nil
 }

@@ -18,7 +18,7 @@ func TestExtractTextFromContent_UserMessage(t *testing.T) {
 
 func TestExtractTextFromContent_AssistantTextOnly(t *testing.T) {
 	content := `{"blocks":[{"type":"text","text":"Here is the answer."}]}`
-	text := ExtractTextFromContent(content, "assistant")
+	text := ExtractTextFromContent(content, testRoleAssistant)
 	assert.Equal(t, "Here is the answer.", text)
 }
 
@@ -29,7 +29,7 @@ func TestExtractTextFromContent_AssistantMixedBlocks(t *testing.T) {
 		{"type":"tool_use","name":"Read","id":"toolu_1","input":{"file_path":"/etc/config"},"done":true},
 		{"type":"text","text":"The config shows XYZ."}
 	]}`
-	text := ExtractTextFromContent(content, "assistant")
+	text := ExtractTextFromContent(content, testRoleAssistant)
 	assert.Equal(t, "Let me read that file.\n\nThe config shows XYZ.", text)
 }
 
@@ -37,12 +37,12 @@ func TestExtractTextFromContent_AssistantOnlyToolUse(t *testing.T) {
 	content := `{"blocks":[
 		{"type":"tool_use","name":"Write","id":"toolu_1","input":{"file_path":"/tmp/test","content":"hello"},"done":true}
 	]}`
-	text := ExtractTextFromContent(content, "assistant")
+	text := ExtractTextFromContent(content, testRoleAssistant)
 	assert.Equal(t, "", text)
 }
 
 func TestExtractTextFromContent_InvalidJSON(t *testing.T) {
-	text := ExtractTextFromContent("not json at all", "assistant")
+	text := ExtractTextFromContent("not json at all", testRoleAssistant)
 	assert.Equal(t, "not json at all", text)
 }
 
@@ -77,7 +77,7 @@ func TestChunkText_EmptyText(t *testing.T) {
 func TestChunkText_LongText(t *testing.T) {
 	// Generate a long text that should be split
 	longText := ""
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		longText += "This is sentence number " + string(rune('0'+i%10)) + " in the test. "
 	}
 	// Should produce multiple chunks with chunkSize=50
@@ -112,8 +112,8 @@ func TestInit_CreatesStoreAndEmbedder(t *testing.T) {
 	model.BinDir = t.TempDir()
 
 	cfg := model.RAGConfig{
-		BaseURL:      "http://localhost:11434",
-		Model:        "bge-m3",
+		BaseURL:      testOllamaURL,
+		Model:        testModelBgeM3,
 		ChunkSize:    512,
 		ChunkOverlap: 64,
 	}
@@ -124,7 +124,7 @@ func TestInit_CreatesStoreAndEmbedder(t *testing.T) {
 	assert.NotNil(t, GlobalEmbedder, "GlobalEmbedder should be initialized")
 
 	// Cleanup
-	GlobalStore.Close()
+	_ = GlobalStore.Close()
 	GlobalStore = nil
 	GlobalEmbedder = nil
 }
@@ -143,8 +143,8 @@ func TestInit_DimensionMismatchResetsTable(t *testing.T) {
 
 	// First init creates store with 1024-dim chunks
 	cfg := model.RAGConfig{
-		BaseURL: "http://localhost:11434",
-		Model:   "bge-m3",
+		BaseURL: testOllamaURL,
+		Model:   testModelBgeM3,
 	}
 	err := Init(cfg)
 	require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestInit_DimensionMismatchResetsTable(t *testing.T) {
 	count, _ := GlobalStore.ChunkCount()
 	assert.Equal(t, 1, count)
 
-	GlobalStore.Close()
+	_ = GlobalStore.Close()
 	GlobalStore = nil
 	GlobalEmbedder = nil
 
@@ -164,7 +164,7 @@ func TestInit_DimensionMismatchResetsTable(t *testing.T) {
 	count, _ = GlobalStore.ChunkCount()
 	assert.Equal(t, 1, count, "matching dimension should not reset")
 
-	GlobalStore.Close()
+	_ = GlobalStore.Close()
 	GlobalStore = nil
 	GlobalEmbedder = nil
 }
@@ -183,7 +183,7 @@ func TestStartIndexer_NilStoreSkips(t *testing.T) {
 	GlobalEmbedder = nil
 
 	// Should not panic when store/embedder are nil
-	StartIndexer(model.RAGConfig{PollInterval: "10s"})
+	StartIndexer(model.RAGConfig{PollInterval: testPollInterval10s})
 	assert.Nil(t, GlobalIndexer, "should not create indexer with nil store")
 }
 
@@ -216,8 +216,8 @@ func TestShutdown_Idempotent(t *testing.T) {
 	model.BinDir = t.TempDir()
 
 	err := Init(model.RAGConfig{
-		BaseURL: "http://localhost:11434",
-		Model:   "bge-m3",
+		BaseURL: testOllamaURL,
+		Model:   testModelBgeM3,
 	})
 	require.NoError(t, err)
 
@@ -235,10 +235,10 @@ func TestSearchParams_JSONRoundTrip(t *testing.T) {
 		Query:            "test query",
 		Limit:            10,
 		ProjectPath:      "/project",
-		Backend:          "claude",
-		Role:             "assistant",
-		SessionID:        "sess-1",
-		ExcludeSessionID: "sess-2",
+		Backend:          testBackendClaude,
+		Role:             testRoleAssistant,
+		SessionID:        testSession1,
+		ExcludeSessionID: testSession2,
 		FromTime:         "2024-01-01",
 		ToTime:           "2024-12-31",
 	}
@@ -325,7 +325,7 @@ func TestStartCleanupWorker_WithRetention(t *testing.T) {
 	assert.NotNil(t, GlobalCleanupWorker, "should start cleanup worker with positive retention")
 
 	GlobalCleanupWorker.Stop()
-	GlobalStore.Close()
+	_ = GlobalStore.Close()
 	GlobalStore = origStore
 	GlobalCleanupWorker = nil
 }
@@ -345,8 +345,8 @@ func TestInit_SegmenterWarningContinues(t *testing.T) {
 	model.BinDir = t.TempDir()
 
 	cfg := model.RAGConfig{
-		BaseURL: "http://localhost:11434",
-		Model:   "bge-m3",
+		BaseURL: testOllamaURL,
+		Model:   testModelBgeM3,
 	}
 
 	// Init should succeed even if segmenter is not available
@@ -354,7 +354,7 @@ func TestInit_SegmenterWarningContinues(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, GlobalStore)
 
-	GlobalStore.Close()
+	_ = GlobalStore.Close()
 	GlobalStore = nil
 	GlobalEmbedder = nil
 }
