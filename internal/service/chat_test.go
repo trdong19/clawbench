@@ -128,7 +128,7 @@ func helperCreateSession(t *testing.T, projectPath, backend, title string) strin
 }
 
 // helperCreateScheduledSession creates a scheduled session and asserts success.
-func helperCreateScheduledSession(t *testing.T, projectPath, _, title string) string { //nolint:unparam // backend kept for API compatibility with continue_conversation_test.go
+func helperCreateScheduledSession(t *testing.T, projectPath, _, title string) string { //nolint:unparam // backend param kept for readability
 	t.Helper()
 	id, err := service.CreateSession(projectPath, "claude", title, "", "", "default", "scheduled")
 	assert.NoError(t, err)
