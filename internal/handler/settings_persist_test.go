@@ -18,9 +18,10 @@ import (
 
 // setupPersistTestEnv sets up a test environment with BinDir configured
 // so that writeConfigYAML actually writes to disk.
-func setupPersistTestEnv(t *testing.T) (env *testEnv, teardown func()) { //nolint:unparam // result 0 used indirectly via patchAndReadConfig
+func setupPersistTestEnv(t *testing.T) (env *testEnv, cleanup func()) { //nolint:unparam // env used indirectly via patchAndReadConfig
 	t.Helper()
-	env, teardown = setupTestEnv(t)
+	var baseTeardown func()
+	env, baseTeardown = setupTestEnv(t)
 
 	// Set BinDir to a temp directory so config.yaml gets written there
 	origBinDir := model.BinDir
@@ -32,13 +33,13 @@ func setupPersistTestEnv(t *testing.T) (env *testEnv, teardown func()) { //nolin
 
 	origConfig := model.ConfigInstance
 
-	cleanup := func() {
+	cleanup = func() {
 		model.BinDir = origBinDir
 		model.ConfigInstance = origConfig
-		teardown()
+		baseTeardown()
 	}
 
-	return env, cleanup
+	return
 }
 
 // patchAndReadConfig sends a PATCH request and reads back config.yaml to verify persistence.
