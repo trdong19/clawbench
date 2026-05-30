@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,7 +18,7 @@ import (
 
 // helperCreateScheduledTaskForHandler creates a task + session + execution + messages
 // and returns the task and execution ID for handler testing.
-func helperCreateScheduledTaskForHandler(t *testing.T, env *testEnv, s *service.Scheduler) (int64, int64) {
+func helperCreateScheduledTaskForHandler(t *testing.T, env *testEnv, s *service.Scheduler) (taskID, execID int64) {
 	t.Helper()
 	// Create a scheduled task
 	task := &model.ScheduledTask{
@@ -43,7 +44,7 @@ func helperCreateScheduledTaskForHandler(t *testing.T, env *testEnv, s *service.
 	require.NoError(t, err)
 
 	// Create an execution
-	execID, err := service.AddTaskExecution(task.ID, sessID, "auto")
+	execID, err = service.AddTaskExecution(task.ID, sessID, "auto")
 	require.NoError(t, err)
 
 	// Mark as completed (UpdateExecutionStatus takes sessionID, not execID)
@@ -88,7 +89,7 @@ func TestContinueConversation_GET_AlreadyContinued(t *testing.T) {
 	taskID, execID := helperCreateScheduledTaskForHandler(t, env, s)
 
 	// Continue first via service
-	_, _, err := service.ContinueFromExecution(execID, env.ProjectDir)
+	_, _, err := service.ContinueFromExecution(context.TODO(), execID, env.ProjectDir)
 	require.NoError(t, err)
 
 	req := newRequest(t, http.MethodGet, fmt.Sprintf("/api/tasks/%d/executions/%d/continue", taskID, execID), nil)
@@ -141,7 +142,7 @@ func TestContinueConversation_POST_AlreadyExists(t *testing.T) {
 	taskID, execID := helperCreateScheduledTaskForHandler(t, env, s)
 
 	// Continue first
-	_, _, err := service.ContinueFromExecution(execID, env.ProjectDir)
+	_, _, err := service.ContinueFromExecution(context.TODO(), execID, env.ProjectDir)
 	require.NoError(t, err)
 
 	req := newRequest(t, http.MethodPost, fmt.Sprintf("/api/tasks/%d/executions/%d/continue", taskID, execID), nil)

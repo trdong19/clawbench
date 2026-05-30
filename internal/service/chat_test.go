@@ -128,9 +128,9 @@ func helperCreateSession(t *testing.T, projectPath, backend, title string) strin
 }
 
 // helperCreateScheduledSession creates a scheduled session and asserts success.
-func helperCreateScheduledSession(t *testing.T, _ /* backend */, title string) string {
+func helperCreateScheduledSession(t *testing.T, projectPath, _, title string) string { //nolint:unparam // backend kept for API compatibility with continue_conversation_test.go
 	t.Helper()
-	id, err := service.CreateSession("/project", "claude", title, "", "", "default", "scheduled")
+	id, err := service.CreateSession(projectPath, "claude", title, "", "", "default", "scheduled")
 	assert.NoError(t, err)
 	assert.NotEmpty(t, id)
 	return id
@@ -1419,7 +1419,7 @@ func TestGetSessions_FiltersBySessionType(t *testing.T) {
 	// Create a chat session and a scheduled session
 	chatSID := helperCreateSession(t, "/project", "claude", "Chat Session")
 	_ = chatSID
-	schedSID := helperCreateScheduledSession(t, "claude", "Scheduled Session")
+	schedSID := helperCreateScheduledSession(t, "/project", "claude", "Scheduled Session")
 	_ = schedSID
 
 	sessions, err := service.GetSessions("/project", "claude")
@@ -1433,7 +1433,7 @@ func TestGetSessionCount_ExcludesScheduledSessions(t *testing.T) {
 	setupDB(t)
 
 	helperCreateSession(t, "/project", "claude", "Chat Session")
-	helperCreateScheduledSession(t, "claude", "Scheduled Session")
+	helperCreateScheduledSession(t, "/project", "claude", "Scheduled Session")
 
 	count, err := service.GetSessionCount("/project")
 	assert.NoError(t, err)
@@ -1456,7 +1456,7 @@ func TestGetSessions_AllBackendsFiltersBySessionType(t *testing.T) {
 	setupDB(t)
 
 	helperCreateSession(t, "/project", "claude", "Chat")
-	helperCreateScheduledSession(t, "claude", "Scheduled")
+	helperCreateScheduledSession(t, "/project", "claude", "Scheduled")
 	helperCreateSession(t, "/project", "codebuddy", "Chat CB")
 
 	// Only chat sessions should appear
@@ -1700,7 +1700,7 @@ func TestGetSessionsPaged_ExcludesScheduledSessions(t *testing.T) {
 	setupDB(t)
 
 	helperCreateSession(t, "/project", "claude", "Chat")
-	helperCreateScheduledSession(t, "claude", "Scheduled")
+	helperCreateScheduledSession(t, "/project", "claude", "Scheduled")
 
 	sessions, _, err := service.GetSessionsPaged("/project", "", 10, "", "")
 	assert.NoError(t, err)

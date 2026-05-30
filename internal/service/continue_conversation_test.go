@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
@@ -19,7 +20,7 @@ func TestContinueFromExecution_CheckNotContinued(t *testing.T) {
 	sessID := helperCreateScheduledSession(t, "/project", "claude", "Daily Review")
 	execID := helperCreateTaskExecution(t, taskID, sessID, "completed")
 
-	exists, sessionID, err := service.CheckContinueSession(execID)
+	exists, sessionID, err := service.CheckContinueSession(context.TODO(), execID)
 	assert.NoError(t, err)
 	assert.False(t, exists)
 	assert.Empty(t, sessionID)
@@ -33,12 +34,12 @@ func TestContinueFromExecution_CheckAlreadyContinued(t *testing.T) {
 	execID := helperCreateTaskExecution(t, taskID, sessID, "completed")
 
 	// Continue the execution
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 	assert.NotEmpty(t, newSessID)
 
 	// Check should now find it
-	exists, foundSessID, err := service.CheckContinueSession(execID)
+	exists, foundSessID, err := service.CheckContinueSession(context.TODO(), execID)
 	assert.NoError(t, err)
 	assert.True(t, exists)
 	assert.Equal(t, newSessID, foundSessID)
@@ -59,7 +60,7 @@ func TestContinueFromExecution_NormalFlow(t *testing.T) {
 	_, err = service.AddChatMessage("/project", "claude", sessID, "assistant", "Code looks good", nil, false, "")
 	assert.NoError(t, err)
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 	assert.NotEmpty(t, newSessID)
 
@@ -111,12 +112,12 @@ func TestContinueFromExecution_AlreadyContinued(t *testing.T) {
 	sessID := helperCreateScheduledSession(t, "/project", "claude", "Task")
 	execID := helperCreateTaskExecution(t, taskID, sessID, "completed")
 
-	newSessID1, alreadyExists1, err := service.ContinueFromExecution(execID, "/project")
+	newSessID1, alreadyExists1, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 	assert.False(t, alreadyExists1)
 
 	// Second call should return the same session with alreadyExists=true
-	newSessID2, alreadyExists2, err := service.ContinueFromExecution(execID, "/project")
+	newSessID2, alreadyExists2, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 	assert.Equal(t, newSessID1, newSessID2)
 	assert.True(t, alreadyExists2)
@@ -131,7 +132,7 @@ func TestContinueFromExecution_DeletedThenRecontinue(t *testing.T) {
 	sessID := helperCreateScheduledSession(t, "/project", "claude", "Task")
 	execID := helperCreateTaskExecution(t, taskID, sessID, "completed")
 
-	newSessID1, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID1, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	// Delete the continued session
@@ -139,7 +140,7 @@ func TestContinueFromExecution_DeletedThenRecontinue(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Should be able to continue again
-	newSessID2, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID2, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 	assert.NotEqual(t, newSessID1, newSessID2) // Different session ID
 }
@@ -161,7 +162,7 @@ func TestContinueFromExecution_SessionCountLimit(t *testing.T) {
 	sessID := helperCreateScheduledSession(t, "/project", "claude", "Task")
 	execID := helperCreateTaskExecution(t, taskID, sessID, "completed")
 
-	_, _, err := service.ContinueFromExecution(execID, "/project")
+	_, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "session limit")
 }
@@ -175,7 +176,7 @@ func TestContinueFromExecution_RunningExecution(t *testing.T) {
 	sessID := helperCreateScheduledSession(t, "/project", "claude", "Task")
 	execID := helperCreateTaskExecution(t, taskID, sessID, "running")
 
-	_, _, err := service.ContinueFromExecution(execID, "/project")
+	_, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "running")
 }
@@ -197,7 +198,7 @@ func TestContinueFromExecution_SkipsStreamingMessages(t *testing.T) {
 	_, err = service.AddChatMessage("/project", "claude", sessID, "assistant", "streaming...", nil, true, "")
 	assert.NoError(t, err)
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	msgs, err := service.GetChatHistory("/project", "claude", newSessID)
@@ -225,7 +226,7 @@ func TestContinueFromExecution_SkipsDeletedMessages(t *testing.T) {
 	_, err = service.AddChatMessage("/project", "claude", sessID, "user", "active msg", nil, false, "")
 	assert.NoError(t, err)
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	msgs, err := service.GetChatHistory("/project", "claude", newSessID)
@@ -257,7 +258,7 @@ func TestContinueFromExecution_CopiesChatMessageSummaries(t *testing.T) {
 	err = service.SaveSummary("task_execution", execID, "Task completed successfully")
 	assert.NoError(t, err)
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	// The new assistant message should have a summary
@@ -290,7 +291,7 @@ func TestContinueFromExecution_SoftDeletedSource(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Should still be able to continue (source metadata still readable)
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 	assert.NotEmpty(t, newSessID)
 
@@ -308,7 +309,7 @@ func TestContinueFromExecution_SoftDeletedSource(t *testing.T) {
 func TestContinueFromExecution_ExecutionNotFound(t *testing.T) {
 	setupDB(t)
 
-	_, _, err := service.ContinueFromExecution(99999, "/project")
+	_, _, err := service.ContinueFromExecution(context.TODO(), 99999, "/project")
 	assert.Error(t, err)
 }
 
@@ -322,7 +323,7 @@ func TestContinueFromExecution_ProjectMismatch(t *testing.T) {
 	execID := helperCreateTaskExecution(t, taskID, sessID, "completed")
 
 	// Wrong project path
-	_, _, err := service.ContinueFromExecution(execID, "/other-project")
+	_, _, err := service.ContinueFromExecution(context.TODO(), execID, "/other-project")
 	assert.Error(t, err)
 }
 
@@ -335,7 +336,7 @@ func TestContinueFromExecution_FieldInheritance(t *testing.T) {
 	sessID := helperCreateScheduledSessionWithDetails(t, "/project", "codebuddy", "Task", "cb-agent", "gpt-4o", "medium")
 	execID := helperCreateTaskExecution(t, taskID, sessID, "completed")
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	info, err := service.GetSessionInfo(newSessID)
@@ -364,7 +365,7 @@ func TestContinueFromExecution_OriginalSessionUnaffected(t *testing.T) {
 	_, err := service.AddChatMessage("/project", "claude", sessID, "user", "prompt", nil, false, "")
 	assert.NoError(t, err)
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	// Original session should still be scheduled type
@@ -400,7 +401,7 @@ func TestContinueFromExecution_NoMessages(t *testing.T) {
 	execID := helperCreateTaskExecution(t, taskID, sessID, "completed")
 
 	// No messages added — should still create the session
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 	assert.NotEmpty(t, newSessID)
 
@@ -412,6 +413,8 @@ func TestContinueFromExecution_NoMessages(t *testing.T) {
 // ========== Test Helpers ==========
 
 // helperCreateScheduledTask creates a scheduled task and returns its ID.
+//
+//nolint:unparam // test helper
 func helperCreateScheduledTask(t *testing.T, projectPath, name, agentID string) int64 {
 	t.Helper()
 	result, err := service.DB.Exec(
@@ -457,7 +460,7 @@ func helperCreateScheduledSessionWithDetails(t *testing.T, projectPath, backend,
 func TestCheckContinueSession_ExecutionNotFound(t *testing.T) {
 	setupDB(t)
 
-	exists, sessionID, err := service.CheckContinueSession(99999)
+	exists, sessionID, err := service.CheckContinueSession(context.TODO(), 99999)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 	assert.False(t, exists)
@@ -481,7 +484,7 @@ func TestContinueFromExecution_SourceSessionNotFound(t *testing.T) {
 	assert.NoError(t, err)
 	execID, _ := result.LastInsertId()
 
-	_, _, err = service.ContinueFromExecution(execID, "/project")
+	_, _, err = service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "source session")
 }
@@ -502,7 +505,7 @@ func TestContinueFromExecution_TaskNotFound(t *testing.T) {
 	assert.NoError(t, err)
 	execID, _ := result.LastInsertId()
 
-	_, _, err = service.ContinueFromExecution(execID, "/project")
+	_, _, err = service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "task")
 }
@@ -530,7 +533,7 @@ func TestContinueFromExecution_InsertSessionFails(t *testing.T) {
 	t.Cleanup(func() { model.SessionMaxCount = origMax })
 
 	// This should succeed (no limit)
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 	assert.NotEmpty(t, newSessID)
 }
@@ -550,7 +553,7 @@ func TestContinueFromExecution_CopiesFiles(t *testing.T) {
 	_, err := service.AddChatMessage("/project", "claude", sessID, "user", "check this file", []string{"/project/main.go"}, false, "")
 	assert.NoError(t, err)
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	msgs, err := service.GetChatHistory("/project", "claude", newSessID)
@@ -573,7 +576,7 @@ func TestCheckContinueSession_DBError(t *testing.T) {
 	// Close DB to force errors
 	origDB.Close()
 
-	_, _, err := service.CheckContinueSession(1)
+	_, _, err := service.CheckContinueSession(context.TODO(), 1)
 	assert.Error(t, err)
 
 	// Restore for cleanup — use a fresh in-memory DB so CloseDB doesn't panic
@@ -590,7 +593,7 @@ func TestContinueFromExecution_DBError(t *testing.T) {
 	// Close DB to force errors
 	service.DB.Close()
 
-	_, _, err := service.ContinueFromExecution(1, "/project")
+	_, _, err := service.ContinueFromExecution(context.TODO(), 1, "/project")
 	assert.Error(t, err)
 
 	// Restore for cleanup
@@ -615,7 +618,7 @@ func TestContinueFromExecution_DedupError(t *testing.T) {
 	// (this is simpler than closing DB mid-query)
 	service.DB.Exec("DELETE FROM scheduled_tasks WHERE id = ?", taskID)
 
-	_, _, err := service.ContinueFromExecution(execID, "/project")
+	_, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "task")
 }
@@ -640,7 +643,7 @@ func TestContinueFromExecution_SessionCountDBError(t *testing.T) {
 	// Actually, the simplest way is to close DB
 	service.DB.Close()
 
-	_, _, err := service.ContinueFromExecution(execID, "/project")
+	_, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 
 	// Restore
@@ -663,7 +666,7 @@ func TestCheckContinueSession_DedupDBError(t *testing.T) {
 	// Close DBRead to force a non-ErrNoRows error on the dedup query
 	service.DBRead.Close()
 
-	_, _, err := service.CheckContinueSession(execID)
+	_, _, err := service.CheckContinueSession(context.TODO(), execID)
 	assert.Error(t, err)
 
 	// Restore
@@ -690,7 +693,7 @@ func TestContinueFromExecution_QueryMessagesError(t *testing.T) {
 	// Drop chat_history to force query failure at step 9
 	service.DB.Exec("DROP TABLE chat_history")
 
-	_, _, err = service.ContinueFromExecution(execID, "/project")
+	_, _, err = service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 }
 
@@ -708,7 +711,7 @@ func TestContinueFromExecution_SourceSessionDBError(t *testing.T) {
 	// Drop chat_sessions to force a DB error
 	service.DB.Exec("DROP TABLE chat_sessions")
 
-	_, _, err := service.ContinueFromExecution(execID, "/project")
+	_, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 }
 
@@ -730,7 +733,7 @@ func TestContinueFromExecution_TaskQueryDBError(t *testing.T) {
 	// Drop scheduled_tasks to force a DB error
 	service.DB.Exec("DROP TABLE scheduled_tasks")
 
-	_, _, err = service.ContinueFromExecution(execID, "/project")
+	_, _, err = service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.Error(t, err)
 }
 
@@ -751,7 +754,7 @@ func TestContinueFromExecution_CopiesMessagesWithNullCreatedAt(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	// Verify messages were copied by querying directly (GetChatHistory can't handle NULL created_at)
@@ -779,7 +782,7 @@ func TestContinueFromExecution_NoSummaryForMessage(t *testing.T) {
 	_, err = service.AddChatMessage("/project", "claude", sessID, "assistant", "no summary reply", nil, false, "")
 	assert.NoError(t, err)
 
-	newSessID, _, err := service.ContinueFromExecution(execID, "/project")
+	newSessID, _, err := service.ContinueFromExecution(context.TODO(), execID, "/project")
 	assert.NoError(t, err)
 
 	msgs, err := service.GetChatHistory("/project", "claude", newSessID)
