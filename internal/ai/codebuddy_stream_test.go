@@ -87,15 +87,18 @@ func TestCodebuddyStream_CommandArgsWithSystemPrompt(t *testing.T) {
 
 	args := buildCodebuddyStreamArgs(req)
 
-	hasSystemPrompt := false
+	hasSystemPromptFile := false
 	for i, a := range args {
-		if a == "--system-prompt" && i+1 < len(args) && args[i+1] == req.SystemPrompt {
-			hasSystemPrompt = true
+		if a == "--system-prompt-file" && i+1 < len(args) && args[i+1] != "" {
+			hasSystemPromptFile = true
 		}
 	}
-	if !hasSystemPrompt {
-		t.Error("expected --system-prompt in args when SystemPrompt is set")
+	if !hasSystemPromptFile {
+		t.Error("expected --system-prompt-file in args when SystemPrompt is set")
 	}
+
+	// Clean up temp file created by writeSystemPromptFile
+	cleanupSystemPromptFile()
 }
 
 func TestCodebuddyStream_CommandArgsWithoutSystemPrompt(t *testing.T) {
@@ -108,8 +111,8 @@ func TestCodebuddyStream_CommandArgsWithoutSystemPrompt(t *testing.T) {
 	args := buildCodebuddyStreamArgs(req)
 
 	for i, a := range args {
-		if a == "--system-prompt" {
-			t.Errorf("--system-prompt should NOT be in args when SystemPrompt is empty, but found at index %d", i)
+		if a == "--system-prompt" || a == "--system-prompt-file" {
+			t.Errorf("--system-prompt/--system-prompt-file should NOT be in args when SystemPrompt is empty, but found at index %d", i)
 		}
 	}
 }
