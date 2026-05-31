@@ -59,6 +59,9 @@
     <div v-if="msg.role === 'assistant' && !msg.streaming && (msgText || msg.blocks?.length)" class="chat-meta-bar">
       <span class="chat-meta-info">
         <span v-if="msg.metadata?.wallMs" class="chat-meta-duration">{{ formatDuration(msg.metadata.wallMs) }}</span>
+        <span v-if="msg.metadata?.inputTokens || msg.metadata?.outputTokens" class="chat-meta-tokens">
+          · {{ msg.metadata?.inputTokens?.toLocaleString() || 0 }}→{{ msg.metadata?.outputTokens?.toLocaleString() || 0 }} tok
+        </span>
       </span>
       <div class="chat-meta-actions">
         <SummaryToggle v-if="msg.summary && !msg.streaming" mode="button" :showing-summary="msg.showingSummary" i18n-prefix="chat.message" @toggle="$emit('toggle-summary', msg.id)" />
@@ -374,6 +377,11 @@ const { getAgentIcon, getAgentName } = chatSession
 
 .chat-meta-duration {
     font-variant-numeric: tabular-nums;
+}
+
+.chat-meta-tokens {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
 }
 
 /* Chat Info Button */

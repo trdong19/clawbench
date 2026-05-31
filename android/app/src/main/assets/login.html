@@ -619,10 +619,12 @@
   function showFormPanel() {
     document.getElementById('serverListOverlay').classList.remove('visible');
     document.getElementById('serverFormOverlay').classList.add('visible');
+    document.getElementById('serverFormPanel').classList.add('visible');
   }
 
   function closeForm() {
     document.getElementById('serverFormOverlay').classList.remove('visible');
+    document.getElementById('serverFormPanel').classList.remove('visible');
     openServerList();
   }
 
