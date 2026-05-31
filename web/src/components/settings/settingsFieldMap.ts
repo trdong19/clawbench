@@ -179,6 +179,9 @@ export const categoryItems: Record<string, ItemSpec[]> = {
     { labelKey: 'settings.items.androidLogCapture', descriptionKey: 'settings.items.androidLogCaptureDesc', key: 'androidLogCapture', type: 'switch', source: 'local' },
     { labelKey: 'settings.items.reconfigureServer', descriptionKey: 'settings.items.reconfigureServerDesc', key: 'reconfigureServer', type: 'action', source: 'local' },
   ],
+  servers: [
+    { labelKey: 'settings.items.serverSwitch', descriptionKey: 'settings.items.serverSwitchDesc', key: 'serverSwitch', type: 'action', source: 'local' },
+  ],
   security: [
     { labelKey: 'settings.items.changePassword', descriptionKey: 'settings.items.changePasswordDesc', key: 'changePassword', type: 'action', source: 'local' },
   ],

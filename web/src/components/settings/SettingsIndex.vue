@@ -30,6 +30,7 @@ import {
   Bell,
   Shield,
   Smartphone,
+  Server,
   Info,
   ChevronRight,
 } from 'lucide-vue-next'
@@ -54,6 +55,7 @@ const categoryDefs = computed(() => [
   { id: 'rag', icon: Brain },
   { id: 'portForward', icon: ArrowLeftRight },
   { id: 'push', icon: Bell },
+  { id: 'servers', icon: Server },
   { id: 'security', icon: Shield },
   ...(isAppMode.value ? [{ id: 'android', icon: Smartphone }] : []),
   { id: 'about', icon: Info },

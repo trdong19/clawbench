@@ -24,6 +24,11 @@
       @close="showPasswordDialog = false"
       @changed="handlePasswordChanged"
     />
+    <!-- Server switch dialog -->
+    <ServerSwitchDialog
+      v-if="showServerDialog"
+      @close="showServerDialog = false"
+    />
   </div>
 </template>
 
@@ -32,6 +37,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import SettingsItem from './SettingsItem.vue'
 import PasswordChangeDialog from './PasswordChangeDialog.vue'
+import ServerSwitchDialog from './ServerSwitchDialog.vue'
 import { useSettingsConfig } from '@/composables/useSettingsConfig'
 import { useAgents } from '@/composables/useAgents'
 import { useToast } from '@/composables/useToast'
@@ -57,6 +63,7 @@ const { pushRegistered } = useGlobalEvents()
 
 const openEditorKey = ref<string | null>(null)
 const showPasswordDialog = ref(false)
+const showServerDialog = ref(false)
 
 // Load agents when chat category is shown (for default_agent options)
 watch(() => props.categoryId, (id) => {
@@ -208,6 +215,9 @@ function handleClick(item: any) {
   }
   if (item.key === 'changePassword') {
     showPasswordDialog.value = true
+  }
+  if (item.key === 'serverSwitch') {
+    showServerDialog.value = true
   }
 }
 
