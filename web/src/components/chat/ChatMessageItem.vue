@@ -60,7 +60,7 @@
       <span class="chat-meta-info">
         <span v-if="msg.metadata?.wallMs" class="chat-meta-duration">{{ formatDuration(msg.metadata.wallMs) }}</span>
         <span v-if="msg.metadata?.inputTokens || msg.metadata?.outputTokens" class="chat-meta-tokens">
-          · {{ msg.metadata?.inputTokens?.toLocaleString() || 0 }}→{{ msg.metadata?.outputTokens?.toLocaleString() || 0 }} tok
+          · 输入{{ formatTokens(msg.metadata?.inputTokens) }} 输出{{ formatTokens(msg.metadata?.outputTokens) }} 令牌
         </span>
       </span>
       <div class="chat-meta-actions">
@@ -110,6 +110,12 @@ import ContentBlocks from './ContentBlocks.vue'
 import FileAttachmentList from './FileAttachmentList.vue'
 import SummaryToggle from '@/components/common/SummaryToggle.vue'
 
+const formatTokens = (n) => {
+  if (!n || n <= 0) return '0'
+  if (n >= 10000) return (n / 10000).toFixed(n >= 100000 ? 0 : 1) + 'w'
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k'
+  return String(n)
+}
 
 const { t } = useI18n()
 
