@@ -215,6 +215,9 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			default:
 			}
 		}
+
+		// Clean up temporary system prompt file (created by writeSystemPromptFile)
+		cleanupSystemPromptFile()
 	}()
 
 	return ch, nil

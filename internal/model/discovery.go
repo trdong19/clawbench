@@ -600,6 +600,70 @@ func LoadClaudeModelOverrides() map[string]string {
 	return cfg.ModelOverrides
 }
 
+// LoadClaudeCCSwitchOverrides reads ~/.claude/settings.json and extracts
+// CC Switch model mappings from the env section. CC Switch uses:
+//
+//	ANTHROPIC_DEFAULT_SONNET_MODEL      → "claude-sonnet-4-6"   (Claude model ID)
+//	ANTHROPIC_DEFAULT_SONNET_MODEL_NAME → "mimo-v2.5-pro"      (actual model name)
+//
+// Returns a map of Claude model ID → actual model name (e.g. "claude-sonnet-4-6" → "mimo-v2.5-pro").
+func LoadClaudeCCSwitchOverrides() map[string]string {
+	path := filepath.Join(claudeConfigDir(), "settings.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	if len(cfg.Env) == 0 {
+		return nil
+	}
+
+	overrides := make(map[string]string)
+	for _, family := range []string{"SONNET", "OPUS", "HAIKU"} {
+		modelID := cfg.Env["ANTHROPIC_DEFAULT_"+family+"_MODEL"]
+		modelName := cfg.Env["ANTHROPIC_DEFAULT_"+family+"_MODEL_NAME"]
+		if modelID != "" && modelName != "" {
+			overrides[modelID] = modelName
+			slog.Debug("cc-switch model override", "claude_id", modelID, "actual_name", modelName)
+		}
+	}
+	if len(overrides) == 0 {
+		return nil
+	}
+	return overrides
+}
+
+// extractPrintableStrings extracts printable ASCII strings from binary data,
+// mimicking the Unix `strings` command. This is used on Windows where
+// the `strings` utility is not available.
+func extractPrintableStrings(data []byte) []byte {
+	const minLen = 4
+	var result []byte
+	var current []byte
+
+	for _, b := range data {
+		if b >= 0x20 && b < 0x7f {
+			current = append(current, b)
+		} else {
+			if len(current) >= minLen {
+				result = append(result, current...)
+				result = append(result, '\n')
+			}
+			current = current[:0]
+		}
+	}
+	if len(current) >= minLen {
+		result = append(result, current...)
+		result = append(result, '\n')
+	}
+	return result
+}
+
 // claudeIsDateStamped returns true if the model ID contains an 8-digit date segment
 // like "claude-opus-4-20250514", which are snapshot aliases we want to skip.
 func claudeIsDateStamped(modelID string) bool {
@@ -621,13 +685,25 @@ func DiscoverClaudeModels() []AgentModel {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	var out []byte
+	if runtime.GOOS == "windows" {
+		// Windows: read binary directly and scan for printable strings
+		data, err := os.ReadFile(path)
+		if err != nil {
+			slog.Debug("claude model discovery: failed to read binary", "error", err)
+			return nil
+		}
+		out = extractPrintableStrings(data)
+	} else {
+		// Unix: use the `strings` command
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	out, err := exec.CommandContext(ctx, "strings", path).Output()
-	if err != nil {
-		slog.Debug("claude model discovery: strings command failed", "error", err)
-		return nil
+		out, err = exec.CommandContext(ctx, "strings", path).Output()
+		if err != nil {
+			slog.Debug("claude model discovery: strings command failed", "error", err)
+			return nil
+		}
 	}
 
 	// Extract unique model IDs matching the pattern
@@ -680,11 +756,15 @@ func DiscoverClaudeModels() []AgentModel {
 		models[0].Default = true
 	}
 
-	// Apply model name overrides from ~/.claude/settings.json
-	// When modelOverrides maps a Claude model ID to another name (e.g. "MiniMax-M2.7"),
-	// we replace the display name so the user sees which underlying model is actually used.
-	// The model ID is NOT changed — CLI invocation always uses the original Claude model ID.
-	if overrides := LoadClaudeModelOverrides(); len(overrides) > 0 {
+	// Apply model name overrides — CC Switch takes priority over standard overrides
+	if overrides := LoadClaudeCCSwitchOverrides(); len(overrides) > 0 {
+		for i := range models {
+			if name, ok := overrides[models[i].ID]; ok {
+				slog.Debug("cc-switch model override applied", "id", models[i].ID, "name", name)
+				models[i].Name = name
+			}
+		}
+	} else if overrides := LoadClaudeModelOverrides(); len(overrides) > 0 {
 		for i := range models {
 			if name, ok := overrides[models[i].ID]; ok {
 				slog.Debug("claude model override applied", "id", models[i].ID, "name", name)

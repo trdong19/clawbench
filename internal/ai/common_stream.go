@@ -3,7 +3,40 @@ package ai
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 )
+
+// systemPromptTempFile holds the path to the temporary system prompt file
+// created by writeSystemPromptFile. It is cleaned up after command execution.
+var systemPromptTempFile string
+
+// writeSystemPromptFile writes the system prompt to a temp file and returns
+// the file path. On Windows, passing multi-line strings as CLI arguments
+// breaks CreateProcess parsing — writing to a file avoids this entirely.
+func writeSystemPromptFile(prompt string) (string, error) {
+	dir := os.TempDir()
+	f, err := os.CreateTemp(dir, "clawbench-sysprompt-*.txt")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.WriteString(prompt); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	f.Close()
+	systemPromptTempFile = f.Name()
+	return f.Name(), nil
+}
+
+// cleanupSystemPromptFile removes the temporary system prompt file.
+func cleanupSystemPromptFile() {
+	if systemPromptTempFile != "" {
+		os.Remove(systemPromptTempFile)
+		systemPromptTempFile = ""
+	}
+}
 
 // buildBaseStreamArgs builds the shared base arguments for Claude-family CLI backends.
 // It constructs the common argument list for --print / --output-format stream-json.
@@ -29,7 +62,17 @@ func buildBaseStreamArgs(req ChatRequest, extraFlags func(ChatRequest) []string)
 	args = append(args, "--dangerously-skip-permissions")
 
 	if req.SystemPrompt != "" {
-		args = append(args, "--system-prompt", req.SystemPrompt)
+		// Write system prompt to a temp file and use --system-prompt-file
+		// to avoid Windows CreateProcess command-line parsing issues with
+		// newlines (\r\n or \n) inside quoted arguments.
+		if fpath, err := writeSystemPromptFile(req.SystemPrompt); err == nil {
+			args = append(args, "--system-prompt-file", fpath)
+		} else {
+			// Fallback: strip newlines (loses formatting but avoids crash)
+			sp := strings.ReplaceAll(req.SystemPrompt, "\r", "")
+			sp = strings.ReplaceAll(sp, "\n", " ")
+			args = append(args, "--system-prompt", sp)
+		}
 	}
 
 	// Pass model name if per-request override is set
