@@ -61,6 +61,7 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -90,6 +91,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String PREFS_NAME = "clawbench_prefs";
     private static final String KEY_SERVER_URL = "server_url";
     private static final String KEY_SSH_PASSWORD = "ssh_password";
+    private static final String KEY_SERVER_LIST = "server_list";
+    private static final String KEY_ACTIVE_SERVER_ID = "active_server_id";
     private static final String TAG = "ClawBench";
     private static final String LOGIN_HTML_URL = "file:///android_asset/login.html";
 
@@ -222,6 +225,9 @@ public class MainActivity extends AppCompatActivity {
         restoreBackgroundServiceIfNeeded();
 
         setupWebView();
+
+        // Migrate old single-server config to multi-server list (backward compat)
+        migrateToServerList();
 
         // Auto-connect if there's a saved URL (user has configured before).
         // This preserves the original behavior: returning users go straight
@@ -588,6 +594,48 @@ public class MainActivity extends AppCompatActivity {
         } else {
             // No network — go back to login page with error
             showLoginPage("网络不可用，请检查网络连接。");
+        }
+    }
+
+    /**
+     * Connect to a server by its ID from the multi-server list.
+     * Stops the existing BackgroundService (SSH tunnel), updates active_server_id,
+     * refreshes lastConnectedAt, and delegates to connectToServer().
+     */
+    private void connectToServerById(String id) {
+        try {
+            String serverListJson = prefs.getString(KEY_SERVER_LIST, "[]");
+            org.json.JSONArray arr = new org.json.JSONArray(serverListJson);
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject server = arr.getJSONObject(i);
+                if (id.equals(server.getString("id"))) {
+                    String url = server.getString("protocol") + "://"
+                               + server.getString("host") + ":"
+                               + server.getInt("port");
+                    String password = server.optString("password", "");
+
+                    // Stop existing SSH tunnel before switching
+                    BackgroundService.stop(this);
+                    forwardedPorts.clear();
+
+                    // Update active server ID
+                    prefs.edit().putString(KEY_ACTIVE_SERVER_ID, id).apply();
+
+                    // Update lastConnectedAt
+                    server.put("lastConnectedAt", System.currentTimeMillis());
+                    arr.put(i, server);
+                    prefs.edit().putString(KEY_SERVER_LIST, arr.toString()).apply();
+
+                    // Connect
+                    connectToServer(url, password);
+                    return;
+                }
+            }
+            AppLog.w(TAG, "connectToServerById: server not found: " + id);
+            showLoginPage("服务器不存在。");
+        } catch (Exception e) {
+            AppLog.e(TAG, "connectToServerById failed", e);
+            showLoginPage("连接失败: " + e.getMessage());
         }
     }
 
@@ -1328,6 +1376,47 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // --- Multi-Server Migration ---
+
+    /**
+     * Migrate old single-server config (server_url + ssh_password) to the new
+     * multi-server list format (server_list JSON array + active_server_id).
+     * Idempotent: skips if server_list already exists.
+     */
+    private void migrateToServerList() {
+        if (prefs.contains(KEY_SERVER_LIST)) return; // already migrated
+
+        String oldUrl = prefs.getString(KEY_SERVER_URL, "");
+        String oldPassword = prefs.getString(KEY_SSH_PASSWORD, "");
+        if (oldUrl.isEmpty()) return; // first install, nothing to migrate
+
+        try {
+            Uri parsed = Uri.parse(oldUrl);
+            org.json.JSONObject server = new org.json.JSONObject();
+            server.put("id", UUID.randomUUID().toString());
+            server.put("name", "我的服务器");
+            server.put("protocol", parsed.getScheme() != null ? parsed.getScheme() : "https");
+            server.put("host", parsed.getHost() != null ? parsed.getHost() : "");
+            server.put("port", parsed.getPort() > 0 ? parsed.getPort() : 20000);
+            server.put("password", oldPassword);
+            server.put("notes", "");
+            server.put("tagColor", "#58a6ff");
+            server.put("lastConnectedAt", System.currentTimeMillis());
+            server.put("isDefault", true);
+
+            org.json.JSONArray arr = new org.json.JSONArray();
+            arr.put(server);
+            prefs.edit()
+                    .putString(KEY_SERVER_LIST, arr.toString())
+                    .putString(KEY_ACTIVE_SERVER_ID, server.getString("id"))
+                    .apply();
+
+            AppLog.i(TAG, "Migrated old server config to multi-server list");
+        } catch (Exception e) {
+            AppLog.w(TAG, "Failed to migrate server config", e);
+        }
+    }
+
     // --- JavaScript Interface ---
 
     public static class WebAppInterface {
@@ -1494,14 +1583,34 @@ public class MainActivity extends AppCompatActivity {
         /**
          * Get the saved server configuration as JSON.
          * Used by the static login page to pre-fill the form fields.
+         * Priority: active server from server_list > old single-server config.
          * Returns: {"protocol":"https|http", "host":"...", "port":"...", "password":"..."}
          */
         @JavascriptInterface
         public String getSavedServerConfig() {
             try {
+                org.json.JSONObject config = new org.json.JSONObject();
+
+                // Try active server from multi-server list first
+                String activeId = activity.prefs.getString(KEY_ACTIVE_SERVER_ID, "");
+                if (!activeId.isEmpty()) {
+                    String serverListJson = activity.prefs.getString(KEY_SERVER_LIST, "[]");
+                    org.json.JSONArray arr = new org.json.JSONArray(serverListJson);
+                    for (int i = 0; i < arr.length(); i++) {
+                        org.json.JSONObject s = arr.getJSONObject(i);
+                        if (activeId.equals(s.getString("id"))) {
+                            config.put("protocol", s.optString("protocol", "https"));
+                            config.put("host", s.optString("host", ""));
+                            config.put("port", String.valueOf(s.optInt("port", 20000)));
+                            config.put("password", s.optString("password", ""));
+                            return config.toString();
+                        }
+                    }
+                }
+
+                // Fallback to old single-server config
                 String savedUrl = activity.prefs.getString(KEY_SERVER_URL, "");
                 String savedPassword = activity.prefs.getString(KEY_SSH_PASSWORD, "");
-                org.json.JSONObject config = new org.json.JSONObject();
                 if (!savedUrl.isEmpty()) {
                     Uri parsed = Uri.parse(savedUrl);
                     config.put("protocol", parsed.getScheme() != null ? parsed.getScheme() : "https");
@@ -1526,6 +1635,155 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void showServerDialog() {
             activity.runOnUiThread(() -> activity.showServerDialog());
+        }
+
+        // --- Multi-Server Methods ---
+
+        /**
+         * Get the full server list as a JSON array string.
+         * Each element: {id, name, protocol, host, port, password, notes, tagColor, lastConnectedAt, isDefault}
+         */
+        @JavascriptInterface
+        public String getServerList() {
+            return activity.prefs.getString(KEY_SERVER_LIST, "[]");
+        }
+
+        /**
+         * Get a single server by ID as a JSON object string.
+         * Returns "{}" if not found.
+         */
+        @JavascriptInterface
+        public String getServer(String id) {
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(activity.prefs.getString(KEY_SERVER_LIST, "[]"));
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject s = arr.getJSONObject(i);
+                    if (id.equals(s.getString("id"))) {
+                        return s.toString();
+                    }
+                }
+            } catch (Exception e) {
+                AppLog.w(TAG, "getServer failed", e);
+            }
+            return "{}";
+        }
+
+        /**
+         * Save a server (add new or update existing).
+         * Accepts a JSON string with server info. If the ID already exists, updates it;
+         * otherwise appends to the list. If isDefault is true, clears default on others.
+         */
+        @JavascriptInterface
+        public void saveServer(String serverJson) {
+            try {
+                org.json.JSONObject newServer = new org.json.JSONObject(serverJson);
+                String id = newServer.getString("id");
+
+                org.json.JSONArray arr = new org.json.JSONArray(activity.prefs.getString(KEY_SERVER_LIST, "[]"));
+
+                // If setting as default, clear default on all others
+                boolean isDefault = newServer.optBoolean("isDefault", false);
+
+                // Check if update or add
+                boolean found = false;
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject s = arr.getJSONObject(i);
+                    if (id.equals(s.getString("id"))) {
+                        // Preserve lastConnectedAt from old record if new one is 0
+                        if (newServer.optLong("lastConnectedAt", 0) == 0) {
+                            newServer.put("lastConnectedAt", s.optLong("lastConnectedAt", 0));
+                        }
+                        arr.put(i, newServer);
+                        found = true;
+                    } else if (isDefault) {
+                        s.put("isDefault", false);
+                        arr.put(i, s);
+                    }
+                }
+                if (!found) {
+                    if (isDefault) {
+                        for (int i = 0; i < arr.length(); i++) {
+                            org.json.JSONObject s = arr.getJSONObject(i);
+                            s.put("isDefault", false);
+                            arr.put(i, s);
+                        }
+                    }
+                    arr.put(newServer);
+                }
+
+                activity.prefs.edit().putString(KEY_SERVER_LIST, arr.toString()).apply();
+                AppLog.i(TAG, "Server saved: " + newServer.optString("name"));
+            } catch (Exception e) {
+                AppLog.e(TAG, "saveServer failed", e);
+            }
+        }
+
+        /**
+         * Delete a server by ID.
+         * If the deleted server was the active one, clears active_server_id and server_url.
+         */
+        @JavascriptInterface
+        public void deleteServer(String id) {
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(activity.prefs.getString(KEY_SERVER_LIST, "[]"));
+                org.json.JSONArray newArr = new org.json.JSONArray();
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject s = arr.getJSONObject(i);
+                    if (!id.equals(s.getString("id"))) {
+                        newArr.put(s);
+                    }
+                }
+                android.content.SharedPreferences.Editor editor = activity.prefs.edit();
+                editor.putString(KEY_SERVER_LIST, newArr.toString());
+
+                // If deleting the active server, clear active state
+                String activeId = activity.prefs.getString(KEY_ACTIVE_SERVER_ID, "");
+                if (id.equals(activeId)) {
+                    editor.putString(KEY_ACTIVE_SERVER_ID, "");
+                    editor.putString(KEY_SERVER_URL, "");
+                }
+                editor.apply();
+
+                AppLog.i(TAG, "Server deleted: " + id);
+            } catch (Exception e) {
+                AppLog.e(TAG, "deleteServer failed", e);
+            }
+        }
+
+        /**
+         * Connect to a server by its ID.
+         * Updates active_server_id, lastConnectedAt, and delegates to connectToServer().
+         */
+        @JavascriptInterface
+        public void connectToServerById(String id) {
+            activity.runOnUiThread(() -> activity.connectToServerById(id));
+        }
+
+        /**
+         * Get the currently active server ID.
+         */
+        @JavascriptInterface
+        public String getActiveServerId() {
+            return activity.prefs.getString(KEY_ACTIVE_SERVER_ID, "");
+        }
+
+        /**
+         * Set a server as the default.
+         * Clears isDefault on all others, sets it on the specified one.
+         */
+        @JavascriptInterface
+        public void setDefaultServer(String id) {
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(activity.prefs.getString(KEY_SERVER_LIST, "[]"));
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject s = arr.getJSONObject(i);
+                    s.put("isDefault", id.equals(s.getString("id")));
+                    arr.put(i, s);
+                }
+                activity.prefs.edit().putString(KEY_SERVER_LIST, arr.toString()).apply();
+            } catch (Exception e) {
+                AppLog.e(TAG, "setDefaultServer failed", e);
+            }
         }
 
         /**

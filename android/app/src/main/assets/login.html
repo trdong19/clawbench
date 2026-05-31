@@ -17,6 +17,7 @@
     --accent-hover: #79b8ff;
     --border-color: #30363d;
     --color-red: #dc2626;
+    --color-green: #3fb950;
   }
 
   body {
@@ -33,7 +34,6 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* Decorative background — matches LoginView.vue */
   .bg-gradient {
     position: fixed;
     inset: 0;
@@ -68,7 +68,6 @@
     gap: 36px;
   }
 
-  /* Brand section */
   .brand {
     text-align: center;
     display: flex;
@@ -107,28 +106,10 @@
     50% { opacity: 0.8; transform: scale(1.04); }
   }
 
-  .title {
-    font-size: 26px;
-    font-weight: 700;
-    color: var(--text-primary);
-    letter-spacing: -0.02em;
-    margin-bottom: 8px;
-  }
+  .title { font-size: 26px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; margin-bottom: 8px; }
+  .slogan { font-size: 18px; font-weight: 500; color: var(--accent-color); margin-bottom: 4px; letter-spacing: 0.08em; }
+  .subtitle { font-size: 13px; color: var(--text-muted); }
 
-  .slogan {
-    font-size: 18px;
-    font-weight: 500;
-    color: var(--accent-color);
-    margin-bottom: 4px;
-    letter-spacing: 0.08em;
-  }
-
-  .subtitle {
-    font-size: 13px;
-    color: var(--text-muted);
-  }
-
-  /* Form card — matches LoginView.vue .login-form-card */
   .form-card {
     width: 100%;
     background: var(--bg-secondary);
@@ -138,196 +119,185 @@
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
   }
 
-  .field-group {
-    margin-bottom: 16px;
-  }
+  .field-group { margin-bottom: 16px; }
+  .field-group:last-of-type { margin-bottom: 0; }
+  .field-label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
 
-  .field-group:last-of-type {
-    margin-bottom: 0;
-  }
+  .protocol-group { display: flex; gap: 20px; margin-bottom: 16px; }
+  .protocol-group label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text-primary); cursor: pointer; }
+  .protocol-group input[type="radio"] { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border: 2px solid var(--border-color); border-radius: 50%; position: relative; cursor: pointer; transition: border-color 0.2s; }
+  .protocol-group input[type="radio"]:checked { border-color: var(--accent-color); }
+  .protocol-group input[type="radio"]:checked::after { content: ''; position: absolute; top: 3px; left: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-color); }
 
-  .field-label {
-    display: block;
-    font-size: 12px;
-    color: var(--text-muted);
-    margin-bottom: 6px;
-  }
+  .host-row { display: flex; align-items: center; gap: 4px; }
+  .host-row input:first-child { flex: 1; }
+  .host-row .colon { color: var(--text-muted); font-size: 18px; line-height: 44px; }
+  .host-row input:last-child { width: 90px; flex-shrink: 0; }
 
-  /* Protocol radio */
-  .protocol-group {
-    display: flex;
-    gap: 20px;
-    margin-bottom: 16px;
+  input[type="text"], input[type="number"], input[type="password"], input[type="url"] {
+    width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--border-color);
+    border-radius: 8px; font-size: 15px; background: var(--bg-primary); color: var(--text-primary);
+    outline: none; transition: border-color 0.2s, box-shadow 0.2s;
   }
+  input::placeholder { color: var(--text-hint); }
+  input:focus { border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.12); }
 
-  .protocol-group label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 14px;
-    color: var(--text-primary);
-    cursor: pointer;
-  }
-
-  .protocol-group input[type="radio"] {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
-    border: 2px solid var(--border-color);
-    border-radius: 50%;
-    position: relative;
-    cursor: pointer;
-    transition: border-color 0.2s;
-  }
-
-  .protocol-group input[type="radio"]:checked {
-    border-color: var(--accent-color);
-  }
-
-  .protocol-group input[type="radio"]:checked::after {
-    content: '';
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--accent-color);
-  }
-
-  /* Host + Port row */
-  .host-row {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .host-row input:first-child {
-    flex: 1;
-  }
-
-  .host-row .colon {
-    color: var(--text-muted);
-    font-size: 18px;
-    line-height: 44px;
-  }
-
-  .host-row input:last-child {
-    width: 90px;
-    flex-shrink: 0;
-  }
-
-  /* Input fields — matches LoginView.vue input style */
-  input[type="text"],
-  input[type="number"],
-  input[type="password"],
-  input[type="url"] {
-    width: 100%;
-    height: 44px;
-    padding: 0 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    font-size: 15px;
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    outline: none;
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-
-  input::placeholder {
-    color: var(--text-hint);
-  }
-
-  input:focus {
-    border-color: var(--accent-color);
-    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.12);
-  }
-
-  /* Connect button — matches LoginView.vue .login-btn */
   .connect-btn {
-    width: 100%;
-    height: 46px;
-    margin-top: 20px;
-    border: none;
-    border-radius: 10px;
-    background: var(--accent-color);
-    color: #fff;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
+    width: 100%; height: 46px; margin-top: 20px; border: none; border-radius: 10px;
+    background: var(--accent-color); color: #fff; font-size: 15px; font-weight: 600;
+    cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
     transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
-    -webkit-user-select: none;
-    user-select: none;
+    -webkit-user-select: none; user-select: none;
   }
+  .connect-btn:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 4px 14px rgba(88, 166, 255, 0.3); }
+  .connect-btn:active:not(:disabled) { transform: scale(0.98); }
+  .connect-btn:disabled { opacity: 0.6; cursor: default; }
 
-  .connect-btn:hover:not(:disabled) {
-    background: var(--accent-hover);
-    box-shadow: 0 4px 14px rgba(88, 166, 255, 0.3);
-  }
+  .spinner { width: 16px; height: 16px; border: 2px solid rgba(255, 255, 255, 0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
-  .connect-btn:active:not(:disabled) {
-    transform: scale(0.98);
-  }
-
-  .connect-btn:disabled {
-    opacity: 0.6;
-    cursor: default;
-  }
-
-  /* Spinner */
-  .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  /* Error — matches LoginView.vue .error */
   .error {
-    margin-top: 14px;
-    padding: 10px 14px;
-    border-radius: 8px;
-    background: rgba(220, 38, 38, 0.08);
-    border: 1px solid rgba(220, 38, 38, 0.2);
-    color: var(--color-red);
-    font-size: 13px;
-    display: none;
-    align-items: center;
-    gap: 8px;
+    margin-top: 14px; padding: 10px 14px; border-radius: 8px;
+    background: rgba(220, 38, 38, 0.08); border: 1px solid rgba(220, 38, 38, 0.2);
+    color: var(--color-red); font-size: 13px; display: none; align-items: center; gap: 8px;
+  }
+  .error.visible { display: flex; }
+  .error svg { flex-shrink: 0; }
+
+  .version { margin-top: 8px; font-size: 11px; color: var(--text-hint); text-align: center; }
+
+  /* Server list entry button */
+  .server-list-entry {
+    width: 100%; margin-top: 16px; padding: 14px 16px;
+    background: var(--bg-primary); border: 1px solid var(--border-color);
+    border-radius: 10px; color: var(--text-muted); font-size: 14px;
+    cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .server-list-entry:hover { border-color: var(--accent-color); color: var(--text-primary); }
+  .server-list-entry .entry-left { display: flex; align-items: center; gap: 8px; }
+  .server-list-entry .entry-right { color: var(--text-hint); font-size: 12px; }
+
+  /* ===== Server List Panel ===== */
+  .panel-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100;
+    display: none; align-items: center; justify-content: center;
+  }
+  .panel-overlay.visible { display: flex; }
+
+  .panel {
+    width: 100%; max-width: 400px; max-height: 85vh;
+    background: var(--bg-primary); border: 1px solid var(--border-color);
+    border-radius: 14px; display: flex; flex-direction: column; overflow: hidden;
+    margin: 0 16px;
   }
 
-  .error.visible {
-    display: flex;
-  }
-
-  .error svg {
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
   }
+  .panel-header h2 { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+  .panel-back { background: none; border: none; color: var(--accent-color); font-size: 15px; cursor: pointer; padding: 4px 0; }
 
-  /* Version footer */
-  .version {
-    margin-top: 8px;
-    font-size: 11px;
-    color: var(--text-hint);
-    text-align: center;
+  .panel-body { flex: 1; overflow-y: auto; padding: 0; }
+
+  /* Server list items */
+  .server-item {
+    display: flex; align-items: center; padding: 14px 20px;
+    border-bottom: 1px solid var(--border-color); cursor: pointer;
+    transition: background 0.15s; gap: 12px;
+  }
+  .server-item:active { background: rgba(88, 166, 255, 0.08); }
+  .server-item .tag-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .server-item .server-info { flex: 1; min-width: 0; }
+  .server-item .server-name { font-size: 15px; font-weight: 500; color: var(--text-primary); display: flex; align-items: center; gap: 6px; }
+  .server-item .server-name .default-badge { font-size: 10px; color: var(--accent-color); background: rgba(88,166,255,0.12); padding: 1px 6px; border-radius: 4px; }
+  .server-item .server-addr { font-size: 12px; color: var(--text-muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .server-item .server-time { font-size: 11px; color: var(--text-hint); flex-shrink: 0; }
+  .server-item .server-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .server-item .action-btn {
+    background: none; border: 1px solid var(--border-color); color: var(--text-muted);
+    font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .server-item .action-btn:hover { border-color: var(--accent-color); color: var(--accent-color); }
+  .server-item .action-btn.delete:hover { border-color: var(--color-red); color: var(--color-red); }
+
+  .panel-footer {
+    padding: 16px 20px; border-top: 1px solid var(--border-color); flex-shrink: 0;
   }
 
-  /* Safe area padding for notch devices */
+  .add-server-btn {
+    width: 100%; height: 42px; border: 1px dashed var(--border-color);
+    border-radius: 10px; background: none; color: var(--accent-color);
+    font-size: 14px; font-weight: 500; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .add-server-btn:hover { border-color: var(--accent-color); background: rgba(88,166,255,0.06); }
+
+  /* ===== Server Form Panel ===== */
+  .form-panel { display: none; }
+  .form-panel.visible { display: flex; }
+
+  .form-panel .panel-body { padding: 20px; }
+
+  .form-field { margin-bottom: 14px; }
+  .form-field label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+  .form-field input, .form-field textarea {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--border-color);
+    border-radius: 8px; font-size: 14px; background: var(--bg-secondary);
+    color: var(--text-primary); outline: none; transition: border-color 0.2s;
+  }
+  .form-field input:focus, .form-field textarea:focus { border-color: var(--accent-color); }
+  .form-field textarea { resize: vertical; min-height: 60px; font-family: inherit; }
+
+  /* Color picker */
+  .color-picker { display: flex; gap: 12px; flex-wrap: wrap; }
+  .color-option {
+    width: 32px; height: 32px; border-radius: 50%; border: 3px solid transparent;
+    cursor: pointer; transition: border-color 0.2s, transform 0.15s;
+    position: relative;
+  }
+  .color-option:hover { transform: scale(1.15); }
+  .color-option.selected { border-color: var(--text-primary); }
+  .color-option.selected::after {
+    content: '✓'; position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+    color: #fff; font-size: 14px; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  }
+
+  .form-actions { display: flex; gap: 10px; margin-top: 20px; }
+  .form-actions button {
+    flex: 1; height: 42px; border-radius: 10px; font-size: 14px;
+    font-weight: 600; cursor: pointer; border: none;
+    transition: background 0.2s, transform 0.1s;
+  }
+  .form-actions button:active { transform: scale(0.97); }
+  .btn-save { background: var(--accent-color); color: #fff; }
+  .btn-save:hover { background: var(--accent-hover); }
+  .btn-cancel { background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border-color) !important; }
+  .btn-cancel:hover { color: var(--text-primary); }
+
+  .default-toggle {
+    display: flex; align-items: center; gap: 10px; margin-top: 4px;
+    font-size: 14px; color: var(--text-primary); cursor: pointer;
+  }
+  .default-toggle input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none; width: 20px; height: 20px;
+    border: 2px solid var(--border-color); border-radius: 4px;
+    background: var(--bg-secondary); cursor: pointer; position: relative;
+    transition: border-color 0.2s, background 0.2s; flex-shrink: 0;
+  }
+  .default-toggle input[type="checkbox"]:checked { border-color: var(--accent-color); background: var(--accent-color); }
+  .default-toggle input[type="checkbox"]:checked::after {
+    content: '✓'; position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center; color: #fff; font-size: 13px; font-weight: 700;
+  }
+
   @supports (padding: env(safe-area-inset-bottom)) {
-    .content {
-      padding-bottom: env(safe-area-inset-bottom);
-    }
+    .content { padding-bottom: env(safe-area-inset-bottom); }
   }
 </style>
 </head>
@@ -335,8 +305,8 @@
   <div class="bg-gradient"></div>
   <div class="bg-grid"></div>
 
-  <div class="content">
-    <!-- Brand -->
+  <!-- ===== Login Page ===== -->
+  <div class="content" id="loginContent">
     <div class="brand">
       <div class="logo-wrapper">
         <img class="logo" src="logo.png" alt="ClawBench">
@@ -347,25 +317,15 @@
       <p class="subtitle">为移动端打造的 AI 工作台</p>
     </div>
 
-    <!-- Form -->
     <div class="form-card">
       <form id="connectForm" onsubmit="return false;">
-        <!-- Protocol -->
         <div class="field-group">
           <span class="field-label">协议</span>
           <div class="protocol-group">
-            <label>
-              <input type="radio" name="protocol" value="https" checked>
-              HTTPS
-            </label>
-            <label>
-              <input type="radio" name="protocol" value="http">
-              HTTP
-            </label>
+            <label><input type="radio" name="protocol" value="https" checked> HTTPS</label>
+            <label><input type="radio" name="protocol" value="http"> HTTP</label>
           </div>
         </div>
-
-        <!-- Host + Port -->
         <div class="field-group">
           <span class="field-label">服务器地址</span>
           <div class="host-row">
@@ -374,43 +334,121 @@
             <input type="number" id="port" value="20000" inputmode="numeric">
           </div>
         </div>
-
-        <!-- Password -->
         <div class="field-group">
           <span class="field-label">登录密码</span>
           <input type="password" id="password" placeholder="SSH / Web 认证密码">
         </div>
-
-        <!-- Connect -->
         <button type="submit" class="connect-btn" id="connectBtn">
           <span id="btnText">连 接</span>
         </button>
-
-        <!-- Error -->
         <div class="error" id="errorMsg">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="15" y1="9" x2="9" y2="15"/>
-            <line x1="9" y1="9" x2="15" y2="15"/>
+            <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
           </svg>
           <span id="errorText"></span>
         </div>
       </form>
+
+      <!-- Server list entry -->
+      <div class="server-list-entry" id="serverListEntry" onclick="openServerList()">
+        <div class="entry-left">📋 服务器列表</div>
+        <div class="entry-right" id="serverCount">0 个服务器 ›</div>
+      </div>
     </div>
 
     <div class="version" id="version"></div>
   </div>
 
+  <!-- ===== Server List Panel ===== -->
+  <div class="panel-overlay" id="serverListOverlay">
+    <div class="panel">
+      <div class="panel-header">
+        <button class="panel-back" onclick="closeServerList()">← 返回</button>
+        <h2>服务器列表</h2>
+        <span style="width:40px"></span>
+      </div>
+      <div class="panel-body" id="serverListBody">
+        <!-- Dynamically populated -->
+      </div>
+      <div class="panel-footer">
+        <button class="add-server-btn" onclick="openAddForm()">＋ 添加服务器</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Server Form Panel ===== -->
+  <div class="panel-overlay" id="serverFormOverlay">
+    <div class="panel form-panel" id="serverFormPanel">
+      <div class="panel-header">
+        <button class="panel-back" onclick="closeForm()">← 返回</button>
+        <h2 id="formTitle">添加服务器</h2>
+        <span style="width:40px"></span>
+      </div>
+      <div class="panel-body">
+        <div class="form-field">
+          <label>名称</label>
+          <input type="text" id="formName" placeholder="例如：公司服务器">
+        </div>
+        <div class="form-field">
+          <label>协议</label>
+          <div class="protocol-group" style="margin-bottom:0">
+            <label><input type="radio" name="formProtocol" value="https" checked> HTTPS</label>
+            <label><input type="radio" name="formProtocol" value="http"> HTTP</label>
+          </div>
+        </div>
+        <div class="form-field">
+          <label>服务器地址</label>
+          <input type="text" id="formHost" placeholder="192.168.1.100" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="form-field">
+          <label>端口</label>
+          <input type="number" id="formPort" value="20000" inputmode="numeric">
+        </div>
+        <div class="form-field">
+          <label>登录密码</label>
+          <input type="password" id="formPassword" placeholder="SSH / Web 认证密码">
+        </div>
+        <div class="form-field">
+          <label>备注</label>
+          <textarea id="formNotes" placeholder="可选备注信息"></textarea>
+        </div>
+        <div class="form-field">
+          <label>标签颜色</label>
+          <div class="color-picker" id="colorPicker">
+            <div class="color-option selected" data-color="#58a6ff" style="background:#58a6ff"></div>
+            <div class="color-option" data-color="#3fb950" style="background:#3fb950"></div>
+            <div class="color-option" data-color="#d29922" style="background:#d29922"></div>
+            <div class="color-option" data-color="#f85149" style="background:#f85149"></div>
+            <div class="color-option" data-color="#bc8cff" style="background:#bc8cff"></div>
+            <div class="color-option" data-color="#8b949e" style="background:#8b949e"></div>
+          </div>
+        </div>
+        <div class="form-field">
+          <label class="default-toggle">
+            <input type="checkbox" id="formDefault"> 设为默认服务器
+          </label>
+        </div>
+      </div>
+      <div class="panel-footer">
+        <div class="form-actions">
+          <button class="btn-cancel" onclick="closeForm()">取消</button>
+          <button class="btn-save" onclick="saveServerForm()">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 <script>
   var connecting = false;
+  var editingServerId = null;
+  var TAG_COLORS = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#8b949e'];
 
-  // Pre-fill from saved values
+  // ===== Init =====
   window.addEventListener('DOMContentLoaded', function() {
     try {
       var saved = JSON.parse(AndroidNative.getSavedServerConfig());
       if (saved.protocol) {
-        var radios = document.querySelectorAll('input[name="protocol"]');
-        radios.forEach(function(r) { r.checked = (r.value === saved.protocol); });
+        document.querySelectorAll('input[name="protocol"]').forEach(function(r) { r.checked = (r.value === saved.protocol); });
       }
       if (saved.host) document.getElementById('host').value = saved.host;
       if (saved.port) document.getElementById('port').value = saved.port;
@@ -421,22 +459,22 @@
       var ver = AndroidNative.getAppVersion();
       if (ver) document.getElementById('version').textContent = 'v' + ver;
     } catch(e) {}
+
+    updateServerCount();
+    setupColorPicker();
   });
 
+  // ===== Login Form =====
   function showError(msg) {
     var el = document.getElementById('errorMsg');
     document.getElementById('errorText').textContent = msg;
     el.classList.add('visible');
   }
-
-  function hideError() {
-    document.getElementById('errorMsg').classList.remove('visible');
-  }
+  function hideError() { document.getElementById('errorMsg').classList.remove('visible'); }
 
   function setConnecting(loading) {
     connecting = loading;
     var btn = document.getElementById('connectBtn');
-    var btnText = document.getElementById('btnText');
     if (loading) {
       btn.disabled = true;
       btn.innerHTML = '<div class="spinner"></div><span>认证中...</span>';
@@ -449,47 +487,205 @@
   document.getElementById('connectForm').addEventListener('submit', function(e) {
     e.preventDefault();
     if (connecting) return;
-
     hideError();
-
     var host = document.getElementById('host').value.trim();
     var port = document.getElementById('port').value.trim();
     var password = document.getElementById('password').value;
     var protocol = document.querySelector('input[name="protocol"]:checked').value;
-
-    if (!host) {
-      showError('请输入服务器地址');
-      document.getElementById('host').focus();
-      return;
-    }
-
-    if (!port) {
-      port = (protocol === 'https') ? '443' : '80';
-    }
-
+    if (!host) { showError('请输入服务器地址'); document.getElementById('host').focus(); return; }
+    if (!port) port = (protocol === 'https') ? '443' : '80';
     var url = protocol + '://' + host + ':' + port;
     if (url.endsWith('/')) url = url.substring(0, url.length - 1);
-
     setConnecting(true);
-
-    try {
-      AndroidNative.connectToServer(url, password);
-    } catch(e) {
-      showError('连接失败: ' + e.message);
-      setConnecting(false);
-    }
+    try { AndroidNative.connectToServer(url, password); } catch(e) { showError('连接失败: ' + e.message); setConnecting(false); }
   });
 
-  // Called by native code on connection failure
-  function onConnectError(msg) {
-    setConnecting(false);
-    showError(msg || '无法连接到服务器，请检查地址和网络。');
+  function onConnectError(msg) { setConnecting(false); showError(msg || '无法连接到服务器，请检查地址和网络。'); }
+  function onConnectSuccess() { setConnecting(false); }
+
+  // ===== Server List =====
+  function updateServerCount() {
+    try {
+      var list = JSON.parse(AndroidNative.getServerList());
+      document.getElementById('serverCount').textContent = list.length + ' 个服务器 ›';
+    } catch(e) { document.getElementById('serverCount').textContent = '0 个服务器 ›'; }
   }
 
-  // Called by native code on connection success (not strictly needed,
-  // since the WebView will navigate away from this page)
-  function onConnectSuccess() {
-    setConnecting(false);
+  function openServerList() {
+    renderServerList();
+    document.getElementById('serverListOverlay').classList.add('visible');
+  }
+
+  function closeServerList() {
+    document.getElementById('serverListOverlay').classList.remove('visible');
+    updateServerCount();
+  }
+
+  function renderServerList() {
+    var body = document.getElementById('serverListBody');
+    try {
+      var list = JSON.parse(AndroidNative.getServerList());
+      if (list.length === 0) {
+        body.innerHTML = '<div style="padding:40px 20px;text-align:center;color:var(--text-hint);font-size:14px;">暂无保存的服务器<br><span style="font-size:12px">点击下方按钮添加</span></div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < list.length; i++) {
+        var s = list[i];
+        var addr = s.protocol + '://' + s.host + ':' + s.port;
+        var timeText = formatTime(s.lastConnectedAt);
+        var defaultBadge = s.isDefault ? '<span class="default-badge">默认</span>' : '';
+        html += '<div class="server-item" data-id="' + escapeHtml(s.id) + '">'
+              +   '<div class="tag-dot" style="background:' + escapeHtml(s.tagColor || '#58a6ff') + '"></div>'
+              +   '<div class="server-info" onclick="connectById(\'' + escapeHtml(s.id) + '\')">'
+              +     '<div class="server-name">' + escapeHtml(s.name) + defaultBadge + '</div>'
+              +     '<div class="server-addr">' + escapeHtml(addr) + '</div>'
+              +   '</div>'
+              +   '<div class="server-time">' + timeText + '</div>'
+              +   '<div class="server-actions">'
+              +     '<button class="action-btn" onclick="openEditForm(\'' + escapeHtml(s.id) + '\');event.stopPropagation();">编辑</button>'
+              +     '<button class="action-btn delete" onclick="deleteServer(\'' + escapeHtml(s.id) + '\');event.stopPropagation();">删除</button>'
+              +   '</div>'
+              + '</div>';
+      }
+      body.innerHTML = html;
+    } catch(e) {
+      body.innerHTML = '<div style="padding:40px 20px;text-align:center;color:var(--text-hint);font-size:14px;">加载失败</div>';
+    }
+  }
+
+  function connectById(id) {
+    closeServerList();
+    setConnecting(true);
+    try { AndroidNative.connectToServerById(id); } catch(e) { showError('连接失败: ' + e.message); setConnecting(false); }
+  }
+
+  function deleteServer(id) {
+    try { AndroidNative.deleteServer(id); } catch(e) {}
+    renderServerList();
+    updateServerCount();
+  }
+
+  // ===== Server Form =====
+  function setupColorPicker() {
+    var options = document.querySelectorAll('.color-option');
+    for (var i = 0; i < options.length; i++) {
+      options[i].addEventListener('click', function() {
+        for (var j = 0; j < options.length; j++) options[j].classList.remove('selected');
+        this.classList.add('selected');
+      });
+    }
+  }
+
+  function openAddForm() {
+    editingServerId = null;
+    document.getElementById('formTitle').textContent = '添加服务器';
+    document.getElementById('formName').value = '';
+    document.querySelector('input[name="formProtocol"][value="https"]').checked = true;
+    document.getElementById('formHost').value = '';
+    document.getElementById('formPort').value = '20000';
+    document.getElementById('formPassword').value = '';
+    document.getElementById('formNotes').value = '';
+    document.getElementById('formDefault').checked = false;
+    var options = document.querySelectorAll('.color-option');
+    for (var i = 0; i < options.length; i++) options[i].classList.remove('selected');
+    options[0].classList.add('selected');
+    showFormPanel();
+  }
+
+  function openEditForm(id) {
+    try {
+      var server = JSON.parse(AndroidNative.getServer(id));
+      editingServerId = id;
+      document.getElementById('formTitle').textContent = '编辑服务器';
+      document.getElementById('formName').value = server.name || '';
+      var proto = server.protocol || 'https';
+      document.querySelector('input[name="formProtocol"][value="' + proto + '"]').checked = true;
+      document.getElementById('formHost').value = server.host || '';
+      document.getElementById('formPort').value = server.port || 20000;
+      document.getElementById('formPassword').value = server.password || '';
+      document.getElementById('formNotes').value = server.notes || '';
+      document.getElementById('formDefault').checked = !!server.isDefault;
+      var color = server.tagColor || '#58a6ff';
+      var options = document.querySelectorAll('.color-option');
+      for (var i = 0; i < options.length; i++) {
+        options[i].classList.remove('selected');
+        if (options[i].getAttribute('data-color') === color) options[i].classList.add('selected');
+      }
+      showFormPanel();
+    } catch(e) {}
+  }
+
+  function showFormPanel() {
+    document.getElementById('serverListOverlay').classList.remove('visible');
+    document.getElementById('serverFormOverlay').classList.add('visible');
+  }
+
+  function closeForm() {
+    document.getElementById('serverFormOverlay').classList.remove('visible');
+    openServerList();
+  }
+
+  function saveServerForm() {
+    var name = document.getElementById('formName').value.trim();
+    var host = document.getElementById('formHost').value.trim();
+    if (!name) { alert('请输入服务器名称'); return; }
+    if (!host) { alert('请输入服务器地址'); return; }
+
+    var protocol = document.querySelector('input[name="formProtocol"]:checked').value;
+    var port = parseInt(document.getElementById('formPort').value) || 20000;
+    var password = document.getElementById('formPassword').value;
+    var notes = document.getElementById('formNotes').value.trim();
+    var isDefault = document.getElementById('formDefault').checked;
+    var selectedColor = '#58a6ff';
+    var colorOpts = document.querySelectorAll('.color-option');
+    for (var i = 0; i < colorOpts.length; i++) {
+      if (colorOpts[i].classList.contains('selected')) { selectedColor = colorOpts[i].getAttribute('data-color'); break; }
+    }
+
+    var server = {
+      id: editingServerId || generateUUID(),
+      name: name,
+      protocol: protocol,
+      host: host,
+      port: port,
+      password: password,
+      notes: notes,
+      tagColor: selectedColor,
+      lastConnectedAt: 0,
+      isDefault: isDefault
+    };
+
+    try { AndroidNative.saveServer(JSON.stringify(server)); } catch(e) { alert('保存失败: ' + e.message); return; }
+    closeForm();
+    updateServerCount();
+  }
+
+  // ===== Utils =====
+  function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  function escapeHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function formatTime(ts) {
+    if (!ts || ts === 0) return '从未连接';
+    var diff = Date.now() - ts;
+    var mins = Math.floor(diff / 60000);
+    if (mins < 1) return '刚刚';
+    if (mins < 60) return mins + '分钟前';
+    var hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + '小时前';
+    var days = Math.floor(hours / 24);
+    if (days < 30) return days + '天前';
+    var d = new Date(ts);
+    return (d.getMonth()+1) + '月' + d.getDate() + '日';
   }
 </script>
 </body>
