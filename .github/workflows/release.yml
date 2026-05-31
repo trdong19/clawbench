@@ -92,7 +92,7 @@ jobs:
 
       - name: Package Linux
         run: |
-          mkdir -p pkg-linux/clawbench
+          mkdir -p pkg-linux/clawbench/.clawbench
           cp clawbench-linux pkg-linux/clawbench/clawbench
           cp -r public pkg-linux/clawbench/public
           cp -r config pkg-linux/clawbench/config
@@ -139,14 +139,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path .clawbench/pi
           $url = "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-windows-x64.zip"
           Invoke-WebRequest -Uri $url -OutFile pi-download.zip
-          Expand-Archive -Path pi-download.zip -DestinationPath pi-download
-          Copy-Item -Recurse pi-download\pi\* .clawbench\pi\
-          Remove-Item -Recurse -Force pi-download, pi-download.zip
+          Expand-Archive -Path pi-download.zip -DestinationPath .clawbench\pi
+          Remove-Item -Force pi-download.zip
 
       - name: Package Windows
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path pkg-windows/clawbench
+          New-Item -ItemType Directory -Force -Path pkg-windows/clawbench/.clawbench
           Copy-Item clawbench.exe pkg-windows/clawbench/
           Copy-Item -Recurse public pkg-windows/clawbench/public
           Copy-Item -Recurse config pkg-windows/clawbench/config
@@ -193,7 +192,7 @@ jobs:
 
       - name: Package macOS arm64
         run: |
-          mkdir -p pkg-mac-arm64/clawbench
+          mkdir -p pkg-mac-arm64/clawbench/.clawbench
           cp clawbench-darwin-arm64 pkg-mac-arm64/clawbench/clawbench
           cp -r public pkg-mac-arm64/clawbench/public
           cp -r config pkg-mac-arm64/clawbench/config
@@ -244,7 +243,7 @@ jobs:
 
       - name: Package macOS amd64
         run: |
-          mkdir -p pkg-mac-amd64/clawbench
+          mkdir -p pkg-mac-amd64/clawbench/.clawbench
           cp clawbench-darwin-amd64 pkg-mac-amd64/clawbench/clawbench
           cp -r public pkg-mac-amd64/clawbench/public
           cp -r config pkg-mac-amd64/clawbench/config
