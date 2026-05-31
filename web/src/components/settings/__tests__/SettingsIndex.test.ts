@@ -22,6 +22,7 @@ const i18n = createI18n({
           rag: 'RAG记忆',
           portForward: '端口转发',
           push: '推送',
+          servers: '服务器',
           security: '安全',
           android: 'Android',
           about: '关于',
@@ -46,6 +47,7 @@ const globalStubs = {
   'lucide-bell': true,
   'lucide-shield': true,
   'lucide-smartphone': true,
+  'lucide-server': true,
   'lucide-info': true,
 }
 
@@ -62,12 +64,12 @@ function mountIndex() {
 }
 
 describe('SettingsIndex', () => {
-  it('renders 12 category rows in web mode (no Android)', () => {
+  it('renders 13 category rows in web mode (no Android)', () => {
     isAppModeRef.value = false
     const wrapper = mountIndex()
 
     const rows = wrapper.findAll('.settings-index__row')
-    expect(rows.length).toBe(12)
+    expect(rows.length).toBe(13)
   })
 
   it('renders category labels in web mode', () => {
@@ -81,6 +83,7 @@ describe('SettingsIndex', () => {
     expect(labels).toContain('文件')
     expect(labels).toContain('端口转发')
     expect(labels).toContain('推送')
+    expect(labels).toContain('服务器')
     expect(labels).toContain('安全')
     expect(labels).toContain('关于')
   })
@@ -102,7 +105,7 @@ describe('SettingsIndex', () => {
 
     const expectedIds = [
       'appearance', 'project', 'chat', 'files', 'terminal',
-      'tts', 'summarization', 'rag', 'portForward', 'push', 'security', 'about',
+      'tts', 'summarization', 'rag', 'portForward', 'push', 'servers', 'security', 'about',
     ]
 
     const rows = wrapper.findAll('.settings-index__row')
@@ -117,7 +120,7 @@ describe('SettingsIndex', () => {
     const wrapper = mountIndex()
 
     const rows = wrapper.findAll('.settings-index__row')
-    expect(rows.length).toBe(13)
+    expect(rows.length).toBe(14)
 
     const labels = wrapper.findAll('.settings-index__label').map(el => el.text())
     expect(labels).toContain('Android')
