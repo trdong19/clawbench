@@ -94,8 +94,15 @@ export function renderMarkdown(
         postProcess
     } = options
 
-    // 1. 解析Markdown
-    let html = marked.parse((content || '').trim())
+    // 1. 解析Markdown（外部链接新窗口打开）
+    const renderer = new marked.Renderer()
+    renderer.link = function({ href, text }: { href: string; text: string }) {
+        if (href.startsWith('http://') || href.startsWith('https://')) {
+            return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`
+        }
+        return `<a href="${href}">${text}</a>`
+    }
+    let html = marked.use({ renderer }).parse((content || '').trim())
 
     // 2. 渲染KaTeX数学公式（字符串级别，不能改用DOM级渲染，见 renderKatexInString 注释）
     html = renderKatexInString(html)
