@@ -184,7 +184,13 @@ function switchTo(s: ServerInfo) {
     servers.value[idx].lastConnectedAt = Date.now()
     saveServers()
   }
-  // Navigate to the new server
+  // In Android app mode, use native bridge to switch within the app
+  const an = (window as any).AndroidNative
+  if (an && typeof an.connectToServer === 'function') {
+    an.connectToServer(url, s.password || '')
+    return
+  }
+  // Web mode: navigate directly
   window.location.href = url
 }
 
