@@ -90,7 +90,7 @@ func setupTestDBForTTS(t *testing.T) (*sql.DB, func()) {
 
 // setupTestDBForQuickSend creates an in-memory SQLite database with the chat_quick_send table
 // for testing ChatQuickSend CRUD functions.
-func setupTestDBForQuickSend(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForQuickSend(t *testing.T) func() {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -122,9 +122,9 @@ func setupTestDBForQuickSend(t *testing.T) (*sql.DB, func()) {
 	teardown := func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
-	return db, teardown
+	return teardown
 }
 
 // ---------- Schema: session_type, task_executions columns, new indexes ----------
@@ -203,6 +203,7 @@ func getTableColumns(t *testing.T, db *sql.DB, table string) map[string]bool {
 		assert.NoError(t, rows.Scan(&cid, &name, &typ, &notNull, &dfltVal, &pk))
 		cols[name] = true
 	}
+	assert.NoError(t, rows.Err())
 	return cols
 }
 
@@ -259,6 +260,7 @@ func getIndexes(t *testing.T, db *sql.DB) map[string]bool {
 		assert.NoError(t, rows.Scan(&name))
 		indexes[name] = true
 	}
+	assert.NoError(t, rows.Err())
 	return indexes
 }
 
@@ -407,6 +409,7 @@ func TestInitDB_CleansOrphanedStreamingJSON(t *testing.T) {
 
 	rows, err := db.Query("SELECT id, content FROM chat_history WHERE streaming = 1")
 	assert.NoError(t, err)
+	defer func() { _ = rows.Close() }()
 
 	type orphanMsg struct {
 		id      int64
@@ -418,7 +421,7 @@ func TestInitDB_CleansOrphanedStreamingJSON(t *testing.T) {
 		assert.NoError(t, rows.Scan(&m.id, &m.content))
 		orphans = append(orphans, m)
 	}
-	rows.Close()
+	assert.NoError(t, rows.Err())
 	assert.Len(t, orphans, 1)
 
 	m := orphans[0]
@@ -463,6 +466,7 @@ func TestInitDB_CleansOrphanedStreamingPlain(t *testing.T) {
 
 	rows, err := db.Query("SELECT id, content FROM chat_history WHERE streaming = 1")
 	assert.NoError(t, err)
+	defer func() { _ = rows.Close() }()
 
 	type orphanMsg struct {
 		id      int64
@@ -474,7 +478,7 @@ func TestInitDB_CleansOrphanedStreamingPlain(t *testing.T) {
 		assert.NoError(t, rows.Scan(&m.id, &m.content))
 		orphans = append(orphans, m)
 	}
-	rows.Close()
+	assert.NoError(t, rows.Err())
 	assert.Len(t, orphans, 1)
 
 	m := orphans[0]
@@ -589,6 +593,7 @@ func orphanCleanup(t *testing.T, db *sql.DB, isServerStartup bool) {
 		assert.NoError(t, rows.Scan(&m.id, &m.content))
 		orphans = append(orphans, m)
 	}
+	assert.NoError(t, rows.Err())
 
 	for _, m := range orphans {
 		var contentMap map[string]any
@@ -665,7 +670,7 @@ func TestSaveTTSSummary_Upsert(t *testing.T) {
 // ---------- ChatQuickSend CRUD ----------
 
 func TestGetChatQuickSend_Empty(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	items, err := GetChatQuickSend()
@@ -674,7 +679,7 @@ func TestGetChatQuickSend_Empty(t *testing.T) {
 }
 
 func TestAddChatQuickSend_Single(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	id, err := AddChatQuickSend("▶️ 继续", "继续")
@@ -691,7 +696,7 @@ func TestAddChatQuickSend_Single(t *testing.T) {
 }
 
 func TestAddChatQuickSend_MultipleAutoIncrement(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	id1, _ := AddChatQuickSend("继续", "继续")
@@ -711,7 +716,7 @@ func TestAddChatQuickSend_MultipleAutoIncrement(t *testing.T) {
 }
 
 func TestUpdateChatQuickSend(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	AddChatQuickSend("继续", "继续")
@@ -726,7 +731,7 @@ func TestUpdateChatQuickSend(t *testing.T) {
 }
 
 func TestUpdateChatQuickSend_Nonexistent(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	err := UpdateChatQuickSend(999, "x", "y")
@@ -734,7 +739,7 @@ func TestUpdateChatQuickSend_Nonexistent(t *testing.T) {
 }
 
 func TestDeleteChatQuickSend(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	AddChatQuickSend("继续", "继续")
@@ -749,7 +754,7 @@ func TestDeleteChatQuickSend(t *testing.T) {
 }
 
 func TestDeleteChatQuickSend_Nonexistent(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	err := DeleteChatQuickSend(999)
@@ -757,7 +762,7 @@ func TestDeleteChatQuickSend_Nonexistent(t *testing.T) {
 }
 
 func TestReorderChatQuickSend(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	AddChatQuickSend("继续", "继续") // id=1, sort_order=0
@@ -779,7 +784,7 @@ func TestReorderChatQuickSend(t *testing.T) {
 }
 
 func TestReorderChatQuickSend_EmptyIDs(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	AddChatQuickSend("继续", "继续")
@@ -792,7 +797,7 @@ func TestReorderChatQuickSend_EmptyIDs(t *testing.T) {
 }
 
 func TestReorderChatQuickSend_PartialIDs(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	AddChatQuickSend("继续", "继续") // id=1
@@ -812,7 +817,7 @@ func TestReorderChatQuickSend_PartialIDs(t *testing.T) {
 }
 
 func TestGetChatQuickSend_OrderedBySortOrder(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	AddChatQuickSend("A", "a") // sort=0
@@ -1013,7 +1018,7 @@ func TestSchema_ForwardedPortsMigration_HostColumnFromOldSchema(t *testing.T) {
 
 	// Step 1: Create DB with old schema (no host column, uses port as primary key)
 	dbDir := filepath.Join(tmpDir, ".clawbench")
-	assert.NoError(t, os.MkdirAll(dbDir, 0755))
+	assert.NoError(t, os.MkdirAll(dbDir, 0o755))
 	db, err := sql.Open("sqlite", filepath.Join(dbDir, "ClawBench.db"))
 	assert.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -1148,6 +1153,7 @@ func TestSchema_ForwardedPortsMigration_HostColumnFromOldSchema(t *testing.T) {
 		assert.Equal(t, "", host, "host should default to empty string after migration")
 		count++
 	}
+	assert.NoError(t, rows.Err())
 	assert.Equal(t, 2, count, "should have 2 rows after migration")
 }
 
@@ -1155,7 +1161,7 @@ func TestSchema_ForwardedPortsMigration_HostColumnFromOldSchema(t *testing.T) {
 
 // setupTestDBForSummaries creates an in-memory SQLite database with the summaries table
 // for testing SaveSummary and GetSummary.
-func setupTestDBForSummaries(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForSummaries(t *testing.T) func() {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -1187,13 +1193,13 @@ func setupTestDBForSummaries(t *testing.T) (*sql.DB, func()) {
 	teardown := func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
-	return db, teardown
+	return teardown
 }
 
 func TestGetSummary_NotFound(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	summary, found := GetSummary("chat_message", 42)
@@ -1202,7 +1208,7 @@ func TestGetSummary_NotFound(t *testing.T) {
 }
 
 func TestSaveSummary_AndGetSummary(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	err := SaveSummary("chat_message", 123, "This is a summary")
@@ -1214,7 +1220,7 @@ func TestSaveSummary_AndGetSummary(t *testing.T) {
 }
 
 func TestSaveSummary_ShortText(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	// Short text: save empty string
@@ -1227,7 +1233,7 @@ func TestSaveSummary_ShortText(t *testing.T) {
 }
 
 func TestSaveSummary_DifferentTargetTypes(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	// Same target_id, different target_type → different rows
@@ -1247,7 +1253,7 @@ func TestSaveSummary_DifferentTargetTypes(t *testing.T) {
 }
 
 func TestSaveSummary_Upsert(t *testing.T) {
-	_, teardown := setupTestDBForSummaries(t)
+	teardown := setupTestDBForSummaries(t)
 	defer teardown()
 
 	err := SaveSummary("chat_message", 789, "version 1")
@@ -1265,7 +1271,7 @@ func TestSaveSummary_Upsert(t *testing.T) {
 
 // setupTestDBForNewTTSSummaries creates an in-memory SQLite database with the new tts_summaries table
 // for testing GetTTSSummary and SaveTTSSummary with message_id.
-func setupTestDBForNewTTSSummaries(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForNewTTSSummaries(t *testing.T) func() {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -1296,13 +1302,13 @@ func setupTestDBForNewTTSSummaries(t *testing.T) (*sql.DB, func()) {
 	teardown := func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
-	return db, teardown
+	return teardown
 }
 
 func TestGetTTSSummaryByMessageID_NotFound(t *testing.T) {
-	_, teardown := setupTestDBForNewTTSSummaries(t)
+	teardown := setupTestDBForNewTTSSummaries(t)
 	defer teardown()
 
 	summary, found := GetTTSSummaryByMessageID(42)
@@ -1311,7 +1317,7 @@ func TestGetTTSSummaryByMessageID_NotFound(t *testing.T) {
 }
 
 func TestSaveTTSSummaryByMessageID_AndGet(t *testing.T) {
-	_, teardown := setupTestDBForNewTTSSummaries(t)
+	teardown := setupTestDBForNewTTSSummaries(t)
 	defer teardown()
 
 	err := SaveTTSSummaryByMessageID(123, "TTS summary for message 123")
@@ -1323,7 +1329,7 @@ func TestSaveTTSSummaryByMessageID_AndGet(t *testing.T) {
 }
 
 func TestSaveTTSSummaryByMessageID_Upsert(t *testing.T) {
-	_, teardown := setupTestDBForNewTTSSummaries(t)
+	teardown := setupTestDBForNewTTSSummaries(t)
 	defer teardown()
 
 	err := SaveTTSSummaryByMessageID(456, "version 1")
@@ -1351,7 +1357,7 @@ func TestInitDB_TTSSummariesMigrationFromOldSchema(t *testing.T) {
 
 	// First: create a DB with the old schema (cache_key column)
 	dbPath := filepath.Join(tmpDir, ".clawbench", "clawbench.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	os.MkdirAll(filepath.Dir(dbPath), 0o755)
 
 	db, err := sql.Open("sqlite", dbPath)
 	assert.NoError(t, err)
@@ -1424,7 +1430,7 @@ func TestSchema_ExternalSessionIDBackfill_FillsEmpty(t *testing.T) {
 
 	// Step 1: Create DB with schema that has external_session_id column
 	dbDir := filepath.Join(tmpDir, ".clawbench")
-	assert.NoError(t, os.MkdirAll(dbDir, 0755))
+	assert.NoError(t, os.MkdirAll(dbDir, 0o755))
 	db, err := sql.Open("sqlite", filepath.Join(dbDir, "ClawBench.db"))
 	assert.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -1570,7 +1576,7 @@ func TestSchema_ExternalSessionIDBackfill_PreservesAlreadySet(t *testing.T) {
 	defer func() { DB = origDB; DBRead = origDBRead }()
 
 	dbDir := filepath.Join(tmpDir, ".clawbench")
-	assert.NoError(t, os.MkdirAll(dbDir, 0755))
+	assert.NoError(t, os.MkdirAll(dbDir, 0o755))
 	db, err := sql.Open("sqlite", filepath.Join(dbDir, "ClawBench.db"))
 	assert.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -1732,7 +1738,7 @@ func TestSchema_DropHistoryDeletedColumn_FromOldSchema(t *testing.T) {
 
 	// Step 1: Create DB with old schema that includes chat_history.deleted
 	dbDir := filepath.Join(tmpDir, ".clawbench")
-	assert.NoError(t, os.MkdirAll(dbDir, 0755))
+	assert.NoError(t, os.MkdirAll(dbDir, 0o755))
 	db, err := sql.Open("sqlite", filepath.Join(dbDir, "ClawBench.db"))
 	assert.NoError(t, err)
 	db.SetMaxOpenConns(1)
@@ -1882,7 +1888,7 @@ func TestSchema_DropHistoryDeletedColumn_Idempotent(t *testing.T) {
 // ---------- QuickCommand CRUD ----------
 
 // setupTestDBForQuickCommands creates an in-memory SQLite database with the terminal_quick_commands table
-func setupTestDBForQuickCommands(t *testing.T) (*sql.DB, func()) {
+func setupTestDBForQuickCommands(t *testing.T) func() {
 	t.Helper()
 	origDB := DB
 	origDBRead := DBRead
@@ -1918,13 +1924,13 @@ func setupTestDBForQuickCommands(t *testing.T) (*sql.DB, func()) {
 	teardown := func() {
 		DB = origDB
 		DBRead = origDBRead
-		db.Close()
+		_ = db.Close()
 	}
-	return db, teardown
+	return teardown
 }
 
 func TestGetQuickCommands_Empty(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	cmds, err := GetQuickCommands()
@@ -1933,7 +1939,7 @@ func TestGetQuickCommands_Empty(t *testing.T) {
 }
 
 func TestAddQuickCommand(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	id, err := AddQuickCommand("▶️ Run", "go test ./...", false, true)
@@ -1950,7 +1956,7 @@ func TestAddQuickCommand(t *testing.T) {
 }
 
 func TestAddQuickCommand_Hidden(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	id, err := AddQuickCommand("Secret", "secret-cmd", true, false)
@@ -1966,7 +1972,7 @@ func TestAddQuickCommand_Hidden(t *testing.T) {
 }
 
 func TestAddQuickCommand_AutoExecuteClearsPrevious(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	// Add first auto_execute command
@@ -1992,8 +1998,199 @@ func TestAddQuickCommand_AutoExecuteClearsPrevious(t *testing.T) {
 	assert.Equal(t, 1, autoExecCount)
 }
 
+// ---------- Auto-execute clearing logic ----------
+
+// TestAutoExecute_InsertClearsOthers verifies that inserting a quick command
+// with auto_execute=true clears auto_execute on all other commands.
+func TestAutoExecute_InsertClearsOthers(t *testing.T) {
+	teardown := setupTestDBForQuickCommands(t)
+	defer teardown()
+
+	// Insert task A with auto_execute=true
+	idA, err := AddQuickCommand("Command A", "cmd-a", false, true)
+	assert.NoError(t, err)
+	assert.True(t, idA > 0)
+
+	// Verify A has auto_execute=true
+	cmds, _ := GetQuickCommands()
+	assert.Len(t, cmds, 1)
+	assert.True(t, cmds[0].AutoExecute, "first command should have auto_execute=true after insert")
+
+	// Insert task B with auto_execute=true — should clear A's auto_execute
+	idB, err := AddQuickCommand("Command B", "cmd-b", false, true)
+	assert.NoError(t, err)
+	assert.True(t, idB > 0)
+
+	cmds, _ = GetQuickCommands()
+	assert.Len(t, cmds, 2)
+
+	// Find A and B by ID and verify only B has auto_execute=true
+	for _, c := range cmds {
+		if c.ID == idA {
+			assert.False(t, c.AutoExecute, "command A should have auto_execute=false after B is inserted with auto_execute=true")
+		}
+		if c.ID == idB {
+			assert.True(t, c.AutoExecute, "command B should have auto_execute=true after insert")
+		}
+	}
+}
+
+// TestAutoExecute_UpdateClearsOthers verifies that updating a quick command
+// to auto_execute=true clears auto_execute on all other commands.
+func TestAutoExecute_UpdateClearsOthers(t *testing.T) {
+	teardown := setupTestDBForQuickCommands(t)
+	defer teardown()
+
+	// Insert task A with auto_execute=true
+	idA, err := AddQuickCommand("Command A", "cmd-a", false, true)
+	assert.NoError(t, err)
+
+	// Insert task B with auto_execute=false
+	idB, err := AddQuickCommand("Command B", "cmd-b", false, false)
+	assert.NoError(t, err)
+
+	// Verify A has auto_execute=true
+	cmds, _ := GetQuickCommands()
+	for _, c := range cmds {
+		if c.ID == idA {
+			assert.True(t, c.AutoExecute, "command A should have auto_execute=true")
+		}
+	}
+
+	// Update B to auto_execute=true — should clear A's auto_execute
+	err = UpdateQuickCommand(idB, "Command B", "cmd-b", false, true)
+	assert.NoError(t, err)
+
+	cmds, _ = GetQuickCommands()
+	for _, c := range cmds {
+		if c.ID == idA {
+			assert.False(t, c.AutoExecute, "command A should have auto_execute=false after B is updated to auto_execute=true")
+		}
+		if c.ID == idB {
+			assert.True(t, c.AutoExecute, "command B should have auto_execute=true after update")
+		}
+	}
+}
+
+// TestAutoExecute_InsertFalseDoesNotClear verifies that inserting a quick command
+// with auto_execute=false does NOT clear other commands' auto_execute.
+func TestAutoExecute_InsertFalseDoesNotClear(t *testing.T) {
+	teardown := setupTestDBForQuickCommands(t)
+	defer teardown()
+
+	// Insert task A with auto_execute=true
+	idA, err := AddQuickCommand("Command A", "cmd-a", false, true)
+	assert.NoError(t, err)
+
+	// Insert task B with auto_execute=false — should NOT clear A's auto_execute
+	_, err = AddQuickCommand("Command B", "cmd-b", false, false)
+	assert.NoError(t, err)
+
+	cmds, _ := GetQuickCommands()
+	assert.Len(t, cmds, 2)
+
+	for _, c := range cmds {
+		if c.ID == idA {
+			assert.True(t, c.AutoExecute, "command A should still have auto_execute=true when B is inserted with auto_execute=false")
+		}
+	}
+}
+
+// TestAutoExecute_UpdateFalseDoesNotClear verifies that updating a quick command
+// to auto_execute=false does NOT clear other commands' auto_execute.
+func TestAutoExecute_UpdateFalseDoesNotClear(t *testing.T) {
+	teardown := setupTestDBForQuickCommands(t)
+	defer teardown()
+
+	// Insert A with auto_execute=true and B with auto_execute=true (clears A)
+	idA, _ := AddQuickCommand("Command A", "cmd-a", false, true)
+	idB, _ := AddQuickCommand("Command B", "cmd-b", false, true)
+
+	// Now B has auto_execute=true, A has auto_execute=false
+	// Update B to auto_execute=false — should NOT affect A
+	err := UpdateQuickCommand(idB, "Command B", "cmd-b-updated", false, false)
+	assert.NoError(t, err)
+
+	cmds, _ := GetQuickCommands()
+	for _, c := range cmds {
+		if c.ID == idA {
+			assert.False(t, c.AutoExecute, "command A should still have auto_execute=false")
+		}
+		if c.ID == idB {
+			assert.False(t, c.AutoExecute, "command B should have auto_execute=false after update")
+		}
+	}
+}
+
+// TestAutoExecute_UpdateSelfTrueNoOp verifies that updating a command that
+// already has auto_execute=true to auto_execute=true again is a no-op —
+// it should still be the only auto_execute command.
+func TestAutoExecute_UpdateSelfTrueNoOp(t *testing.T) {
+	teardown := setupTestDBForQuickCommands(t)
+	defer teardown()
+
+	idA, _ := AddQuickCommand("Command A", "cmd-a", false, true)
+	AddQuickCommand("Command B", "cmd-b", false, false)
+
+	// Update A (already auto_execute=true) to auto_execute=true again
+	err := UpdateQuickCommand(idA, "Command A Updated", "cmd-a-upd", false, true)
+	assert.NoError(t, err)
+
+	cmds, _ := GetQuickCommands()
+	autoExecCount := 0
+	for _, c := range cmds {
+		if c.AutoExecute {
+			autoExecCount++
+			assert.Equal(t, idA, c.ID, "only command A should have auto_execute=true")
+		}
+	}
+	assert.Equal(t, 1, autoExecCount, "exactly one command should have auto_execute=true")
+}
+
+// TestAutoExecute_ReorderRollbackOnError verifies that the reorder transaction
+// rolls back if one of the updates fails (e.g., referencing a non-existent ID
+// in a constrained context). Since the current schema allows updating
+// non-existent IDs silently, we test that reorder with valid IDs succeeds
+// and empty reorder is a no-op.
+func TestAutoExecute_ReorderValidIDs(t *testing.T) {
+	teardown := setupTestDBForQuickCommands(t)
+	defer teardown()
+
+	id1, _ := AddQuickCommand("A", "a", false, false) // sort_order=0
+	id2, _ := AddQuickCommand("B", "b", false, false) // sort_order=1
+	id3, _ := AddQuickCommand("C", "c", false, false) // sort_order=2
+
+	// Reverse order
+	err := ReorderQuickCommands([]int64{id3, id2, id1})
+	assert.NoError(t, err)
+
+	cmds, _ := GetQuickCommands()
+	assert.Equal(t, "C", cmds[0].Label)
+	assert.Equal(t, 0, cmds[0].SortOrder)
+	assert.Equal(t, "B", cmds[1].Label)
+	assert.Equal(t, 1, cmds[1].SortOrder)
+	assert.Equal(t, "A", cmds[2].Label)
+	assert.Equal(t, 2, cmds[2].SortOrder)
+}
+
+// TestAutoExecute_ReorderEmptyIDs verifies that reordering with an empty
+// ID list is a no-op (the transaction commits with zero updates).
+func TestAutoExecute_ReorderEmptyIDs(t *testing.T) {
+	teardown := setupTestDBForQuickCommands(t)
+	defer teardown()
+
+	AddQuickCommand("A", "a", false, true)
+
+	err := ReorderQuickCommands([]int64{})
+	assert.NoError(t, err)
+
+	cmds, _ := GetQuickCommands()
+	assert.Len(t, cmds, 1)
+	assert.True(t, cmds[0].AutoExecute, "auto_execute should be preserved after empty reorder")
+}
+
 func TestUpdateQuickCommand(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	AddQuickCommand("Old Label", "old cmd", false, false)
@@ -2011,7 +2208,7 @@ func TestUpdateQuickCommand(t *testing.T) {
 }
 
 func TestUpdateQuickCommand_Nonexistent(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	err := UpdateQuickCommand(999, "x", "y", false, false)
@@ -2019,7 +2216,7 @@ func TestUpdateQuickCommand_Nonexistent(t *testing.T) {
 }
 
 func TestDeleteQuickCommand(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	AddQuickCommand("A", "a", false, false)
@@ -2035,7 +2232,7 @@ func TestDeleteQuickCommand(t *testing.T) {
 }
 
 func TestDeleteQuickCommand_Nonexistent(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	err := DeleteQuickCommand(999)
@@ -2043,7 +2240,7 @@ func TestDeleteQuickCommand_Nonexistent(t *testing.T) {
 }
 
 func TestReorderQuickCommands(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	AddQuickCommand("A", "a", false, false) // id=1, sort=0
@@ -2065,7 +2262,7 @@ func TestReorderQuickCommands(t *testing.T) {
 }
 
 func TestReorderChatQuickSend_EmptyList(t *testing.T) {
-	_, teardown := setupTestDBForQuickSend(t)
+	teardown := setupTestDBForQuickSend(t)
 	defer teardown()
 
 	err := ReorderChatQuickSend([]int64{})
@@ -2075,7 +2272,7 @@ func TestReorderChatQuickSend_EmptyList(t *testing.T) {
 // ---------- ReorderQuickCommands empty IDs ----------
 
 func TestReorderQuickCommands_EmptyIDs(t *testing.T) {
-	_, teardown := setupTestDBForQuickCommands(t)
+	teardown := setupTestDBForQuickCommands(t)
 	defer teardown()
 
 	AddQuickCommand("A", "a", false, false)

@@ -56,11 +56,11 @@ func TestHTTPDo_Success(t *testing.T) {
 		assert.Equal(t, http.MethodPost, r.Method)
 
 		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		assert.Equal(t, "value", body["key"])
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": "response"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": "response"})
 	}))
 	defer server.Close()
 
@@ -83,7 +83,7 @@ func TestHTTPDo_NonJSONResponse(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("not json"))
+		_, _ = w.Write([]byte("not json"))
 	}))
 	defer server.Close()
 
@@ -105,11 +105,11 @@ func TestOutputJSON(t *testing.T) {
 
 	outputJSON(map[string]any{"key": "value"})
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	_, _ = buf.ReadFrom(r)
 	output := strings.TrimSpace(buf.String())
 
 	var result map[string]any
@@ -125,13 +125,13 @@ func TestOutputError(t *testing.T) {
 
 	code := outputError("something went wrong")
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = old
 
 	assert.Equal(t, 1, code)
 
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	_, _ = buf.ReadFrom(r)
 	output := strings.TrimSpace(buf.String())
 
 	var result map[string]any
@@ -194,13 +194,13 @@ func TestHTTPDoWithProject_SetsCookie(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}))
 	defer server.Close()
 
 	// We can't easily override apiURL() to point to our test server,
 	// so we test the cookie-setting logic by constructing a request manually
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/test", nil)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/test", http.NoBody)
 	assert.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{
@@ -210,7 +210,7 @@ func TestHTTPDoWithProject_SetsCookie(t *testing.T) {
 
 	resp, err := httpClient.Do(req)
 	assert.NoError(t, err)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	assert.NotNil(t, receivedCookie, "clawbench_project cookie should be set")
 	if receivedCookie != nil {
