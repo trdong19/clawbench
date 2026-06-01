@@ -111,6 +111,18 @@ func ServeSetupModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Custom URL mode: always return empty model list — the user's custom
+	// endpoint may host entirely different models from the known provider's,
+	// so auto-fetching is unreliable. Let the user enter model IDs manually.
+	if req.CustomURL != "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"models":               []map[string]any{},
+			"summarize_model_hint": "",
+			"error":                "Custom URL mode: please enter model IDs manually.",
+		})
+		return
+	}
+
 	// Anthropic-format providers: return KnownModels
 	if len(spec.KnownModels) > 0 && spec.ModelsEndpoint == "" {
 		models := make([]map[string]any, 0, len(spec.KnownModels))
@@ -147,6 +159,27 @@ func ServeSetupModels(w http.ResponseWriter, r *http.Request) {
 	models, err := fetchModelsFromEndpoint(modelsEndpoint, req.APIKey)
 	if err != nil {
 		slog.Warn("failed to fetch models from endpoint", "provider", req.Provider, "endpoint", modelsEndpoint, "error", err)
+		// Fallback to KnownModels if available
+		if len(spec.KnownModels) > 0 {
+			fallbackModels := make([]map[string]any, 0, len(spec.KnownModels))
+			for _, m := range spec.KnownModels {
+				fallbackModels = append(fallbackModels, map[string]any{
+					"id":                m.ID,
+					"name":              m.Name,
+					"created":           0,
+					"context_length":    m.ContextLength,
+					"max_output_tokens": m.MaxOutputTokens,
+					"supports_thinking": m.SupportsThinking,
+					"cost_tier":         m.CostTier,
+				})
+			}
+			hint := model.GetSummarizeModelHint(spec.KnownModels, nil)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"models":               fallbackModels,
+				"summarize_model_hint": hint,
+			})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"models":               []map[string]any{},
 			"summarize_model_hint": "",
@@ -178,7 +211,7 @@ type setupVerifyRequest struct {
 // (OpenAI or Anthropic protocol based on URL path). This avoids shelling out
 // to Pi CLI which doesn't natively support arbitrary custom endpoints.
 // For built-in providers: uses the embedded Pi CLI as before.
-func ServeSetupVerify(w http.ResponseWriter, r *http.Request) {
+func ServeSetupVerify(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo // multi-step verify with custom URL + CLI paths
 	if r.Method != http.MethodPost {
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 		return
@@ -194,14 +227,37 @@ func ServeSetupVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Custom URL mode: default provider to "openai" (OpenAI-compatible API format)
+	// Normalize: frontend sends "_custom" for custom URL mode — treat as empty
+	if req.Provider == "_custom" {
+		req.Provider = ""
+	}
+
+	// Custom URL mode: derive provider from api_format
 	if req.Provider == "" {
-		req.Provider = "openai"
+		// Validate custom URL format (auto-detects api_format from URL path)
+		if req.CustomURL != "" {
+			if errKey := validateCustomURL(req.CustomURL, req.APIFormat); errKey != "" {
+				writeLocalizedErrorf(w, r, http.StatusBadRequest, errKey)
+				return
+			}
+			req.APIFormat = detectAPIFormat(req.CustomURL, req.APIFormat)
+		}
+		if req.APIFormat == "anthropic" {
+			req.Provider = "anthropic"
+		} else {
+			req.Provider = "openai"
+		}
 	}
 
 	spec := model.FindProviderSpec(req.Provider)
 	if spec == nil {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "ProviderNotFound")
+		return
+	}
+
+	// Custom URL mode: verify via direct HTTP request (fast, no CLI dependency)
+	if req.CustomURL != "" {
+		verifyCustomURLHTTP(w, r, req)
 		return
 	}
 
@@ -352,7 +408,13 @@ func ServeSetupComplete(w http.ResponseWriter, r *http.Request) { //nolint:gocyc
 	}
 
 	// 3. Encrypt and store API key
-	if err := service.SaveAgentAPIKey(tx, req.AgentID, req.Provider, req.CustomURL, req.APIKey); err != nil {
+	// For custom URL mode: store provider as agent ID so injectAgentAPIKey
+	// knows to use --provider {agentID} instead of a built-in provider name.
+	apiKeyProvider := req.Provider
+	if req.CustomURL != "" {
+		apiKeyProvider = req.AgentID
+	}
+	if err := service.SaveAgentAPIKey(tx, req.AgentID, apiKeyProvider, req.CustomURL, req.APIKey); err != nil {
 		slog.Error("failed to save API key", "agent_id", req.AgentID, "error", err)
 		writeLocalizedErrorf(w, r, http.StatusInternalServerError, "InternalError")
 		return
@@ -671,6 +733,36 @@ func fetchModelsFromEndpoint(endpoint, apiKey string) ([]model.ModelInfo, error)
 	}
 
 	return models, nil
+}
+
+// verifyCustomURLHTTP verifies a custom URL endpoint via direct HTTP request.
+func verifyCustomURLHTTP(w http.ResponseWriter, r *http.Request, req setupVerifyRequest) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	var verifyErr error
+	switch req.APIFormat {
+	case "anthropic":
+		verifyErr = verifyAnthropicHTTP(ctx, req.CustomURL, req.APIKey, req.Model)
+	default: // openai
+		verifyErr = verifyOpenAIHTTP(ctx, req.CustomURL, req.APIKey, req.Model)
+	}
+
+	if verifyErr != nil {
+		slog.Warn("setup verify (HTTP) failed", "format", req.APIFormat, "url", req.CustomURL, "model", req.Model, "error", verifyErr)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": false,
+			"message": "验证失败：API Key 无效或模型不可用。请检查后重试。",
+			"model":   req.Model,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "配置验证成功！智能体工作正常。",
+		"model":   req.Model,
+	})
 }
 
 // writePiConfigFiles writes Pi CLI configuration files (auth.json, settings.json).

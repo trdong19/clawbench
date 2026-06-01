@@ -40,8 +40,8 @@ session:
     max_count: 20
 summarize:
     api:
-        agent_id: openai
-        base_url: https://api.openai.com/v1/chat/completions
+        agent_id: custom-openai
+        base_url: https://api.example.com/v1/chat/completions
         format: openai
         key: ""
     backend: api

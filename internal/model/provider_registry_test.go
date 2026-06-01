@@ -57,16 +57,12 @@ func TestProviderRegistry_AllProvidersHaveRequiredFields(t *testing.T) {
 				"provider %s has invalid APIFormat: %s", id, spec.APIFormat)
 		}
 
-		// Providers with KnownModels should have empty ModelsEndpoint
-		if len(spec.KnownModels) > 0 {
-			assert.Empty(t, spec.ModelsEndpoint,
-				"provider %s has both KnownModels and ModelsEndpoint (should be mutually exclusive)", id)
-		}
-
-		// Providers with ModelsEndpoint should have no KnownModels
-		if spec.ModelsEndpoint != "" {
-			assert.Empty(t, spec.KnownModels,
-				"provider %s has both ModelsEndpoint and KnownModels (should be mutually exclusive)", id)
+		// Providers with ModelsEndpoint may also have KnownModels (from generated JSON)
+		// as a fallback when the endpoint is unreachable — this is intentional.
+		// Only assert KnownModels are populated for Anthropic-format providers (no ModelsEndpoint).
+		if spec.ModelsEndpoint == "" && spec.WizardReady {
+			assert.NotEmpty(t, spec.KnownModels,
+				"WizardReady provider %s with no ModelsEndpoint should have KnownModels (from generated JSON)", id)
 		}
 	}
 }
@@ -124,15 +120,11 @@ func TestProviderRegistry_AnthropicProviderModels(t *testing.T) {
 	assert.True(t, modelIDs["claude-sonnet-4-20250514"], "anthropic should include Claude Sonnet 4")
 	assert.True(t, modelIDs["claude-3-5-haiku-20241022"], "anthropic should include Claude 3.5 Haiku")
 
-	// Check there's at least one cheap model for summarize_model_hint
-	hasCheapModel := false
+	// Check all KnownModels have valid cost tiers
 	for _, m := range spec.KnownModels {
-		if m.CostTier == "cheap" {
-			hasCheapModel = true
-			break
-		}
+		assert.True(t, m.CostTier == "cheap" || m.CostTier == "moderate" || m.CostTier == "expensive",
+			"KnownModel %s has invalid CostTier: %s", m.ID, m.CostTier)
 	}
-	assert.True(t, hasCheapModel, "anthropic should have at least one cheap model for summarize")
 }
 
 func TestGetWizardProviders_ReturnsOnlyWizardReady(t *testing.T) {
@@ -164,7 +156,9 @@ func TestGetWizardProviders_SortedByID(t *testing.T) {
 func TestGetSummarizeModelHint_KnownModels(t *testing.T) {
 	spec := ProviderRegistry["anthropic"]
 	hint := GetSummarizeModelHint(spec.KnownModels, nil)
-	assert.Equal(t, "claude-3-5-haiku-20241022", hint, "should pick first cheap model from KnownModels")
+	// Anthropic no longer has a "cheap" model (all are moderate/expensive per models.dev pricing)
+	// so the hint should fall back to the first known model
+	assert.NotEmpty(t, hint, "should return a model hint for anthropic")
 }
 
 func TestGetSummarizeModelHint_V1Models(t *testing.T) {
@@ -227,4 +221,138 @@ func TestFindProviderSpec(t *testing.T) {
 
 	spec = FindProviderSpec("nonexistent")
 	assert.Nil(t, spec)
+}
+
+// ---------- KnownModelsToAgentModels tests ----------
+
+func TestKnownModelsToAgentModels_Empty(t *testing.T) {
+	result := KnownModelsToAgentModels(nil)
+	assert.Nil(t, result)
+}
+
+func TestKnownModelsToAgentModels_SetsDefaults(t *testing.T) {
+	models := []KnownModel{
+		{ID: "model-a", Name: "Model A"},
+		{ID: "model-b", Name: "Model B"},
+		{ID: "model-c", Name: "Model C"},
+	}
+	result := KnownModelsToAgentModels(models)
+	require.Len(t, result, 3)
+
+	// First model is default
+	assert.True(t, result[0].Default, "first model should be default")
+	assert.Equal(t, "model-a", result[0].ID)
+
+	// Others are not default
+	assert.False(t, result[1].Default, "second model should not be default")
+	assert.Equal(t, "model-b", result[1].ID)
+	assert.False(t, result[2].Default, "third model should not be default")
+	assert.Equal(t, "model-c", result[2].ID)
+}
+
+func TestKnownModelsToAgentModels_SingleModel(t *testing.T) {
+	models := []KnownModel{
+		{ID: "only-model", Name: "Only Model"},
+	}
+	result := KnownModelsToAgentModels(models)
+	require.Len(t, result, 1)
+	assert.True(t, result[0].Default)
+	assert.Equal(t, "only-model", result[0].ID)
+	assert.Equal(t, "Only Model", result[0].Name)
+}
+
+// ---------- GetSummarizeModelHint extended tests ----------
+
+func TestGetSummarizeModelHint_KnownModelsCheapFirst(t *testing.T) {
+	models := []KnownModel{
+		{ID: "expensive-model", Name: "Expensive", CostTier: "expensive"},
+		{ID: "cheap-model", Name: "Cheap", CostTier: "cheap"},
+		{ID: "moderate-model", Name: "Moderate", CostTier: "moderate"},
+	}
+	hint := GetSummarizeModelHint(models, nil)
+	assert.Equal(t, "cheap-model", hint, "should pick first cheap model")
+}
+
+func TestGetSummarizeModelHint_KnownModelsNoCheap(t *testing.T) {
+	models := []KnownModel{
+		{ID: "moderate-model", Name: "Moderate", CostTier: "moderate"},
+		{ID: "expensive-model", Name: "Expensive", CostTier: "expensive"},
+	}
+	hint := GetSummarizeModelHint(models, nil)
+	assert.Equal(t, "moderate-model", hint, "should fall back to first model when no cheap")
+}
+
+func TestGetSummarizeModelHint_V1Models_HaikuKeyword(t *testing.T) {
+	models := []ModelInfo{
+		{ID: "claude-opus-4", Name: "Opus"},
+		{ID: "claude-3.5-haiku", Name: "Haiku"},
+	}
+	hint := GetSummarizeModelHint(nil, models)
+	assert.Equal(t, "claude-3.5-haiku", hint, "should pick haiku keyword model")
+}
+
+func TestGetSummarizeModelHint_V1Models_LiteKeyword(t *testing.T) {
+	models := []ModelInfo{
+		{ID: "deepseek-chat", Name: "Chat"},
+		{ID: "deepseek-lite", Name: "Lite"},
+	}
+	hint := GetSummarizeModelHint(nil, models)
+	assert.Equal(t, "deepseek-lite", hint, "should pick lite keyword model")
+}
+
+func TestGetSummarizeModelHint_V1Models_SmallKeyword(t *testing.T) {
+	models := []ModelInfo{
+		{ID: "llama-4-maverick", Name: "Maverick"},
+		{ID: "llama-4-small", Name: "Small"},
+	}
+	hint := GetSummarizeModelHint(nil, models)
+	assert.Equal(t, "llama-4-small", hint, "should pick small keyword model")
+}
+
+func TestGetSummarizeModelHint_V1Models_DotSeparated(t *testing.T) {
+	models := []ModelInfo{
+		{ID: "model-pro.v2", Name: "Pro"},
+		{ID: "model-mini.v1", Name: "Mini"},
+	}
+	hint := GetSummarizeModelHint(nil, models)
+	assert.Equal(t, "model-mini.v1", hint, "should match mini after dot separator")
+}
+
+func TestGetSummarizeModelHint_V1Models_SlashSeparated(t *testing.T) {
+	models := []ModelInfo{
+		{ID: "provider/pro-model", Name: "Pro"},
+		{ID: "provider/flash-model", Name: "Flash"},
+	}
+	hint := GetSummarizeModelHint(nil, models)
+	assert.Equal(t, "provider/flash-model", hint, "should match flash after slash separator")
+}
+
+func TestGetSummarizeModelHint_V1Models_UnderscoreSeparated(t *testing.T) {
+	models := []ModelInfo{
+		{ID: "model_pro", Name: "Pro"},
+		{ID: "model_mini", Name: "Mini"},
+	}
+	hint := GetSummarizeModelHint(nil, models)
+	assert.Equal(t, "model_mini", hint, "should match mini after underscore separator")
+}
+
+func TestGetSummarizeModelHint_KnownModelsTakesPrecedence(t *testing.T) {
+	knownModels := []KnownModel{
+		{ID: "cheap-known", Name: "Cheap Known", CostTier: "cheap"},
+	}
+	v1Models := []ModelInfo{
+		{ID: "mini-v1", Name: "Mini V1"},
+	}
+	// KnownModels with cheap should be used first
+	hint := GetSummarizeModelHint(knownModels, v1Models)
+	assert.Equal(t, "cheap-known", hint, "KnownModels cheap should take precedence over v1Models")
+}
+
+func TestGetSummarizeModelHint_V1Models_PrefixMatch(t *testing.T) {
+	models := []ModelInfo{
+		{ID: "minimax-chat", Name: "MiniMax"},
+	}
+	// "mini" keyword should match "minimax" via HasPrefix
+	hint := GetSummarizeModelHint(nil, models)
+	assert.Equal(t, "minimax-chat", hint, "should match keyword at start of model ID")
 }

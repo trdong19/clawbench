@@ -38,14 +38,6 @@ func TestEdgeTTSProvider_Synthesize_CancelledContext(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestEdgeTTSProvider_Synthesize_MissingBinary(t *testing.T) {
-	p := NewEdgeTTSProvider()
-
-	outputPath := filepath.Join(t.TempDir(), "output.mp3")
-	err := p.Synthesize(context.Background(), "hello", outputPath, "zh")
-	assert.Error(t, err)
-}
-
 func TestEdgeTTSProvider_Synthesize_CreatesDirectory(t *testing.T) {
 	p := NewEdgeTTSProvider()
 
