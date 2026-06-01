@@ -85,7 +85,7 @@ type setupModelsRequest struct {
 // ServeSetupModels lists available models for the selected provider.
 // For providers with ModelsEndpoint: calls /v1/models via HTTP.
 // For providers with KnownModels (Anthropic-format): returns hardcoded list.
-func ServeSetupModels(w http.ResponseWriter, r *http.Request) {
+func ServeSetupModels(w http.ResponseWriter, r *http.Request) { //nolint:gocyclo // multi-step model listing with custom URL + fallback paths
 	if r.Method != http.MethodPost {
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
 		return
@@ -94,6 +94,11 @@ func ServeSetupModels(w http.ResponseWriter, r *http.Request) {
 	var req setupModelsRequest
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+
+	// Normalize: frontend sends "_custom" for custom URL mode — treat as empty
+	if req.Provider == "_custom" {
+		req.Provider = ""
 	}
 
 	// Custom URL mode: default provider to "openai" (OpenAI-compatible API format)
@@ -343,6 +348,11 @@ func ServeSetupComplete(w http.ResponseWriter, r *http.Request) { //nolint:gocyc
 	if req.APIKey == "" || req.Model == "" || req.AgentName == "" || req.AgentID == "" {
 		writeLocalizedErrorf(w, r, http.StatusBadRequest, "InvalidRequestBody")
 		return
+	}
+
+	// Normalize: frontend sends "_custom" for custom URL mode — treat as empty
+	if req.Provider == "_custom" {
+		req.Provider = ""
 	}
 
 	// Custom URL mode: default provider to "openai" (OpenAI-compatible API format)
