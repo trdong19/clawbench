@@ -216,12 +216,13 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	summarizeBackend := cfg.Summarize.Backend
 
 	var ttsSummarizer summarize.Summarizer
-	if summarizeBackend == "simple" {
+	switch summarizeBackend {
+	case "simple":
 		ttsSummarizer = summarize.NewSimple()
 		slog.Info("tts summarizer configured",
 			slog.String("backend", "simple"),
 		)
-	} else if summarizeBackend == "api" {
+	case "api":
 		if cfg.Summarize.API.BaseURL == "" {
 			slog.Error("summarize.backend is \"api\" but summarize.api.base_url is not configured")
 			os.Exit(1)
@@ -243,7 +244,7 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 				slog.String("model", s.Model),
 			)
 		}
-	} else {
+	default:
 		s, err := summarize.NewAIBackendSummarizer(summarizeBackend)
 		if err != nil {
 			slog.Error("failed to create AI backend summarizer, falling back to simple",

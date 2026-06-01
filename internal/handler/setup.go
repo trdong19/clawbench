@@ -85,8 +85,6 @@ type setupModelsRequest struct {
 // ServeSetupModels lists available models for the selected provider.
 // For providers with ModelsEndpoint: calls /v1/models via HTTP.
 // For providers with KnownModels (Anthropic-format): returns hardcoded list.
-//
-//nolint:gocyclo // multiple provider resolution paths, each with distinct error handling
 func ServeSetupModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
@@ -180,8 +178,6 @@ type setupVerifyRequest struct {
 // (OpenAI or Anthropic protocol based on URL path). This avoids shelling out
 // to Pi CLI which doesn't natively support arbitrary custom endpoints.
 // For built-in providers: uses the embedded Pi CLI as before.
-//
-//nolint:gocyclo // complex verify logic with multiple provider formats
 func ServeSetupVerify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeLocalizedErrorf(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed")
@@ -464,38 +460,6 @@ func reinitSummarizer(req setupCompleteRequest, spec *model.ProviderSpec) {
 }
 
 // ---------- Helper functions ----------
-
-// verifyCustomURLHTTP verifies a custom URL endpoint by sending a minimal
-// HTTP request directly (no Pi CLI). This is fast and works with any
-// OpenAI-compatible or Anthropic-compatible endpoint.
-func verifyCustomURLHTTP(w http.ResponseWriter, r *http.Request, req setupVerifyRequest) {
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	var verifyErr error
-	switch req.APIFormat {
-	case "anthropic":
-		verifyErr = verifyAnthropicHTTP(ctx, req.CustomURL, req.APIKey, req.Model)
-	default: // openai
-		verifyErr = verifyOpenAIHTTP(ctx, req.CustomURL, req.APIKey, req.Model)
-	}
-
-	if verifyErr != nil {
-		slog.Warn("setup verify (HTTP) failed", "format", req.APIFormat, "url", req.CustomURL, "model", req.Model, "error", verifyErr)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"success": false,
-			"message": "验证失败：API Key 无效或模型不可用。请检查后重试。",
-			"model":   req.Model,
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"success": true,
-		"message": "配置验证成功！智能体工作正常。",
-		"model":   req.Model,
-	})
-}
 
 // verifyOpenAIHTTP sends a minimal OpenAI Chat Completions request to verify
 // the endpoint is reachable and the API key + model are valid.

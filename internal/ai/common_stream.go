@@ -21,11 +21,11 @@ func writeSystemPromptFile(prompt string) (string, error) {
 		return "", err
 	}
 	if _, err := f.WriteString(prompt); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return "", err
 	}
-	f.Close()
+	_ = f.Close()
 	systemPromptTempFile = f.Name()
 	return f.Name(), nil
 }
@@ -33,7 +33,7 @@ func writeSystemPromptFile(prompt string) (string, error) {
 // cleanupSystemPromptFile removes the temporary system prompt file.
 func cleanupSystemPromptFile() {
 	if systemPromptTempFile != "" {
-		os.Remove(systemPromptTempFile)
+		_ = os.Remove(systemPromptTempFile)
 		systemPromptTempFile = ""
 	}
 }

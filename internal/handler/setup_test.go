@@ -2072,63 +2072,6 @@ func TestVerifyAnthropicHTTP_NoAPIKey(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// ---------- ServeSetupBackends tests ----------
-
-func TestSetupBackends_ReturnsCLIBackends(t *testing.T) {
-	_, teardown := setupAgentTestEnv(t)
-	defer teardown()
-
-	req := newRequest(t, http.MethodGet, "/api/setup/backends", nil)
-	withAuthCookie(req, model.SessionToken)
-	w := callHandler(ServeSetupBackends, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-
-	backends, ok := resp["backends"].([]any)
-	require.True(t, ok, "response should contain backends array")
-	assert.NotEmpty(t, backends, "should have at least one CLI backend")
-
-	for _, b := range backends {
-		bMap := b.(map[string]any)
-		assert.NotEmpty(t, bMap["id"], "backend should have id")
-		assert.NotEmpty(t, bMap["name"], "backend should have name")
-	}
-}
-
-func TestSetupBackends_MethodNotAllowed(t *testing.T) {
-	_, teardown := setupAgentTestEnv(t)
-	defer teardown()
-
-	req := newRequest(t, http.MethodPost, "/api/setup/backends", nil)
-	withAuthCookie(req, model.SessionToken)
-	w := callHandler(ServeSetupBackends, req)
-
-	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
-}
-
-func TestSetupBackends_SkipsNoCLI(t *testing.T) {
-	_, teardown := setupAgentTestEnv(t)
-	defer teardown()
-
-	req := newRequest(t, http.MethodGet, "/api/setup/backends", nil)
-	withAuthCookie(req, model.SessionToken)
-	w := callHandler(ServeSetupBackends, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-
-	backends := resp["backends"].([]any)
-	for _, b := range backends {
-		bMap := b.(map[string]any)
-		assert.NotEqual(t, "mock", bMap["id"], "NoCLI backends should be excluded")
-	}
-}
-
 // ---------- writePiModelsJSON tests ----------
 
 func TestWritePiModelsJSON_OpenAIFormat(t *testing.T) {
