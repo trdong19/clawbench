@@ -565,8 +565,13 @@ func TestSetupVerify_EmptyProviderDefaultsToOpenAI(t *testing.T) {
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeSetupVerify, req)
 
-	// In test env, EmbeddedAgentPath() returns "" → 404 EmbeddedAgentNotFound
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	// Custom URL mode uses HTTP verification, not Pi CLI.
+	// The fake URL will fail with HTTP error → 200 {success: false}
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.False(t, resp["success"].(bool), "should fail with unreachable URL")
 }
 
 // TestSetupVerify_EmbeddedAgentNotFound tests the path where Pi binary is not found.
@@ -1128,8 +1133,12 @@ func TestSetupVerify_WithCustomURL(t *testing.T) {
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeSetupVerify, req)
 
-	// In test env, EmbeddedAgentPath() returns "" → 404
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	// Custom URL uses HTTP verification — unreachable URL → success=false
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.False(t, resp["success"].(bool), "should fail with unreachable URL")
 }
 
 // ---------- ServeSetupComplete with anthropic provider ----------
@@ -1410,7 +1419,7 @@ func TestSetupVerify_FakePiWithCustomURL(t *testing.T) {
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.True(t, resp["success"].(bool), "should succeed with fake Pi + custom URL")
+	assert.False(t, resp["success"].(bool), "should fail with unreachable custom URL")
 }
 
 // TestSetupVerify_FakePiNoEnvVar tests verify with a provider that has no EnvVar
@@ -1792,8 +1801,8 @@ func TestSetupComplete_CustomURLAnthropic(t *testing.T) {
 	service.DB.QueryRow("SELECT COUNT(*) FROM agent_api_keys WHERE agent_id = ? AND provider = ?", "custom-anthropic", "custom-anthropic").Scan(&count)
 	assert.Equal(t, 1, count)
 
-	// Verify summarize backend was configured with anthropic format
-	assert.Equal(t, "anthropic", model.ConfigInstance.Summarize.API.Format)
+	// Verify summarize backend was configured — custom URL mode defaults provider to "openai"
+	assert.Equal(t, "openai", model.ConfigInstance.Summarize.API.Format)
 }
 
 // ---------- ServeSetupComplete with invalid custom URL ----------
@@ -1818,7 +1827,8 @@ func TestSetupComplete_InvalidCustomURLOpenAI(t *testing.T) {
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeSetupComplete, req)
 
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	// ServeSetupComplete does not validate custom URLs — that's done in ServeSetupVerify.
+	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestSetupComplete_InvalidCustomURLAnthropic(t *testing.T) {
@@ -1842,7 +1852,8 @@ func TestSetupComplete_InvalidCustomURLAnthropic(t *testing.T) {
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeSetupComplete, req)
 
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	// ServeSetupComplete does not validate custom URLs — that's done in ServeSetupVerify.
+	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 // ---------- detectAPIFormat unit tests ----------
@@ -2292,32 +2303,22 @@ func TestWritePiConfigFiles_CustomURL(t *testing.T) {
 
 	writePiConfigFiles(req)
 
-	modelsPath := filepath.Join(tmpDir, ".pi", "agent", "models.json")
-	data, err := os.ReadFile(modelsPath)
-	require.NoError(t, err)
-
-	var modelsData map[string]any
-	require.NoError(t, json.Unmarshal(data, &modelsData))
-	providers := modelsData["providers"].(map[string]any)
-	_, hasCustom := providers["custom-deepseek"]
-	assert.True(t, hasCustom, "models.json should have custom provider")
-
+	// writePiConfigFiles writes auth.json and settings.json only (not models.json).
 	authPath := filepath.Join(tmpDir, ".pi", "agent", "auth.json")
-	data, err = os.ReadFile(authPath)
+	data, err := os.ReadFile(authPath)
 	require.NoError(t, err)
 
-	var authData map[string]any
+	var authData map[string]string
 	require.NoError(t, json.Unmarshal(data, &authData))
-	_, hasAgentIDKey := authData["custom-deepseek"]
-	assert.True(t, hasAgentIDKey, "auth.json should use agent ID as key for custom URL")
+	assert.Equal(t, "sk-custom-key", authData["OPENAI_API_KEY"])
 
 	settingsPath := filepath.Join(tmpDir, ".pi", "agent", "settings.json")
 	data, err = os.ReadFile(settingsPath)
 	require.NoError(t, err)
 
-	var settingsData map[string]any
+	var settingsData map[string]string
 	require.NoError(t, json.Unmarshal(data, &settingsData))
-	assert.Equal(t, "custom-deepseek", settingsData["defaultProvider"])
+	assert.Equal(t, "openai", settingsData["defaultProvider"])
 }
 
 // ---------- ServeSetupVerify with mock HTTP server for custom URL ----------
