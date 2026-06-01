@@ -47,11 +47,28 @@
     <button ref="statusBtnRef" class="status-toggle" @click="toggleStatusMenu" :title="t('appHeader.connectionStatus')">
       <span class="status-dot" :class="statusDotClass"></span>
     </button>
-    <PopupMenu v-model:show="statusMenuOpen" :target-element="statusBtnRef" :max-width="200" :max-height="120" :menu-items-count="2">
+    <PopupMenu v-model:show="statusMenuOpen" :target-element="statusBtnRef" :max-width="260" :max-height="320" :menu-items-count="2 + quickServers.length">
       <div class="status-menu-item">
         <span class="status-indicator" :class="statusDotClass"></span>
         <span class="status-value">{{ serverStatusLabel }}</span>
       </div>
+      <template v-if="quickServers.length > 1">
+        <div class="server-quick-separator"></div>
+        <div
+          v-for="s in quickServers"
+          :key="s.id"
+          class="server-quick-item"
+          :class="{ 'server-quick-active': s.id === activeServerId }"
+          @click="switchServer(s)"
+        >
+          <span class="server-quick-dot" :style="{ background: s.tagColor || '#58a6ff' }"></span>
+          <div class="server-quick-info">
+            <span class="server-quick-name">{{ s.name || s.host }}</span>
+            <span class="server-quick-addr">{{ s.host }}:{{ s.port }}</span>
+          </div>
+          <span v-if="s.id === activeServerId" class="server-quick-check">✓</span>
+        </div>
+      </template>
     </PopupMenu>
   </header>
   </Teleport>
@@ -102,6 +119,40 @@ const serverStatusLabel = computed(() => {
     if (wsStatus.value === 'reconnecting') return t('appHeader.serverReconnecting')
     return t('appHeader.serverDisconnected')
 })
+
+// Quick server switch
+const quickServers = ref([])
+const activeServerId = ref('')
+
+function loadQuickServers() {
+    const an = window.AndroidNative
+    if (an && typeof an.getServerList === 'function') {
+        try {
+            const list = JSON.parse(an.getServerList() || '[]')
+            quickServers.value = list
+            activeServerId.value = an.getActiveServerId?.() || ''
+        } catch { quickServers.value = [] }
+    } else {
+        try {
+            const list = JSON.parse(localStorage.getItem('clawbench-settings-serverList') || '[]')
+            quickServers.value = list
+        } catch { quickServers.value = [] }
+    }
+}
+
+function switchServer(s) {
+    const an = window.AndroidNative
+    if (an && typeof an.connectToServerById === 'function') {
+        an.connectToServerById(s.id)
+        activeServerId.value = s.id
+    } else {
+        const url = `${s.protocol}://${s.host}:${s.port}`
+        window.location.href = url
+    }
+    statusMenuOpen.value = false
+}
+
+onMounted(loadQuickServers)
 
 const projectName = computed(() => {
     if (!props.projectRoot) return t('appHeader.selectProject')
@@ -462,6 +513,68 @@ onUnmounted(() => {
 
 .status-value {
     color: var(--text-primary, #333);
+}
+
+/* Quick server switch */
+.server-quick-separator {
+    height: 1px;
+    background: var(--border-color, #30363d);
+    margin: 4px 8px;
+}
+
+.server-quick-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: background 0.15s;
+    border-radius: 4px;
+    margin: 0 4px;
+}
+
+.server-quick-item:hover {
+    background: var(--bg-tertiary, #1c2128);
+}
+
+.server-quick-active {
+    background: rgba(88, 166, 255, 0.08);
+}
+
+.server-quick-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.server-quick-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.server-quick-name {
+    font-size: 12px;
+    color: var(--text-primary, #e6edf3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.server-quick-addr {
+    font-size: 10px;
+    color: var(--text-muted, #8b949e);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.server-quick-check {
+    font-size: 12px;
+    color: var(--accent-color, #58a6ff);
+    flex-shrink: 0;
 }
 
 /* Project dropdown (teleported to body, positioned via JS) */
