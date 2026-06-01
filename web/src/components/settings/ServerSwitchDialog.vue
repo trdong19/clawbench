@@ -130,15 +130,40 @@ function emptyForm(): ServerInfo {
   return { id: '', name: '', protocol: 'https', host: '', port: 20000, password: '', notes: '', tagColor: '#58a6ff', lastConnectedAt: 0, isDefault: false }
 }
 
+const isAppMode = !!(window as any).AndroidNative?.getServerList
+
 function loadServers() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    servers.value = raw ? JSON.parse(raw) : []
+    if (isAppMode) {
+      // App mode: read from Android SharedPreferences (global server list)
+      const raw = (window as any).AndroidNative.getServerList()
+      servers.value = raw ? JSON.parse(raw) : []
+    } else {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      servers.value = raw ? JSON.parse(raw) : []
+    }
   } catch { servers.value = [] }
 }
 
 function saveServers() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(servers.value))
+  if (isAppMode) {
+    // App mode: write each server to Android SharedPreferences via bridge
+    const an = (window as any).AndroidNative
+    // Clear and re-save all servers
+    const currentList = JSON.parse(an.getServerList() || '[]')
+    // Delete servers that no longer exist
+    for (const old of currentList) {
+      if (!servers.value.find((s: ServerInfo) => s.id === old.id)) {
+        try { an.deleteServer(old.id) } catch {}
+      }
+    }
+    // Save each server
+    for (const s of servers.value) {
+      try { an.saveServer(JSON.stringify(s)) } catch {}
+    }
+  } else {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(servers.value))
+  }
 }
 
 function openAddForm() {
