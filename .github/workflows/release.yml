@@ -208,13 +208,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Upload install scripts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          gh release upload "$TAG" install.sh install.ps1 --clobber
-
       - name: Generate release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
