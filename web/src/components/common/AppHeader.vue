@@ -104,6 +104,8 @@ const statusMenuOpen = ref(false)
 
 function toggleStatusMenu() {
     statusMenuOpen.value = !statusMenuOpen.value
+    // Refresh server list every time menu opens (handles post-switch state)
+    if (statusMenuOpen.value) loadQuickServers()
 }
 
 // Status dot class for the button indicator and popup
