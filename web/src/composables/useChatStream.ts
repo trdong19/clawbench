@@ -256,6 +256,10 @@ export function useChatStream(options: UseChatStreamOptions) {
     }
 
     eventSource = new EventSource(`/api/ai/chat/stream?session_id=${encodeURIComponent(sessionId)}`, { withCredentials: true })
+    // Capture current EventSource instance — handlers must use esRef instead of
+    // the outer `eventSource` variable, which gets reassigned on reconnect/session
+    // switch. Without this, a stale handler could close the NEW connection.
+    const esRef = eventSource
 
     // Start stream timeout
     resetStreamTimeout()
@@ -407,6 +411,12 @@ export function useChatStream(options: UseChatStreamOptions) {
     eventSource.addEventListener('done', () => {
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
       clearToolUseTimeouts()
+      // Guard FIRST: if session switched, close only the stale esRef, not the
+      // current `eventSource` which belongs to the new session.
+      if (!guard()) {
+        esRef.close()
+        return
+      }
       disconnectStream()
       reconnect.reset() // Stream completed — reset reconnect state for future sessions
       // Reload from DB to ensure complete content — SSE events may have been
@@ -435,8 +445,12 @@ export function useChatStream(options: UseChatStreamOptions) {
 
     eventSource.addEventListener('cancelled', () => {
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
+      // Guard FIRST: if session switched, close only the stale esRef
+      if (!guard()) {
+        esRef.close()
+        return
+      }
       disconnectStream()
-      if (!guard()) return
       streamingMsg.cancelled = true
       // If no content was received, add error block so the UI shows the error card instead of loading dots
       if ((!streamingMsg.blocks || streamingMsg.blocks.length === 0) && !streamingMsg.content) {
@@ -549,15 +563,18 @@ export function useChatStream(options: UseChatStreamOptions) {
     eventSource.onerror = () => {
       // SSE connection error — reconnect if session is still active
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
-      disconnectStream()
-      if (currentSessionId.value && loading.value && reconnect.shouldReconnect()) {
-        // AI session likely still running on backend, reconnect SSE
-        reconnect.scheduleReconnect()
-      } else {
-        // Too many attempts or session inactive — fall back to polling
-        reconnect.reset() // Clear reconnect state before falling back to polling
-        forceCleanupStreamingState()
-        pollUntilDone()
+      // Use esRef to check if this is a permanent failure (CLOSED = 404, server
+      // shutdown). readyState OPEN/HALF_OPEN may recover automatically — only
+      // intervene for truly dead connections.
+      if (esRef.readyState === EventSource.CLOSED) {
+        disconnectStream()
+        if (currentSessionId.value && loading.value && reconnect.shouldReconnect()) {
+          reconnect.scheduleReconnect()
+        } else {
+          reconnect.reset()
+          forceCleanupStreamingState()
+          pollUntilDone()
+        }
       }
     }
   }

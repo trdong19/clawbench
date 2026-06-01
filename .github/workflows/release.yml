@@ -97,8 +97,7 @@ jobs:
           cp -r public pkg-linux/clawbench/public
           cp -r config pkg-linux/clawbench/config
           cp -r .clawbench/pi pkg-linux/clawbench/.clawbench/pi
-          cp server.sh pkg-linux/clawbench/
-          chmod +x pkg-linux/clawbench/clawbench pkg-linux/clawbench/server.sh
+          chmod +x pkg-linux/clawbench/clawbench
           cd pkg-linux && zip -r clawbench-linux-amd64.zip clawbench/
 
       - uses: softprops/action-gh-release@v2
@@ -150,7 +149,6 @@ jobs:
           Copy-Item -Recurse public pkg-windows/clawbench/public
           Copy-Item -Recurse config pkg-windows/clawbench/config
           Copy-Item -Recurse .clawbench/pi pkg-windows/clawbench/.clawbench/pi
-          Copy-Item server.ps1 pkg-windows/clawbench/
           Compress-Archive -Path pkg-windows/clawbench -DestinationPath pkg-windows/clawbench-windows-amd64.zip
 
       - uses: softprops/action-gh-release@v2
@@ -197,8 +195,7 @@ jobs:
           cp -r public pkg-mac-arm64/clawbench/public
           cp -r config pkg-mac-arm64/clawbench/config
           cp -r .clawbench/pi pkg-mac-arm64/clawbench/.clawbench/pi
-          cp server.sh pkg-mac-arm64/clawbench/
-          chmod +x pkg-mac-arm64/clawbench/clawbench pkg-mac-arm64/clawbench/server.sh
+          chmod +x pkg-mac-arm64/clawbench/clawbench
           cd pkg-mac-arm64 && zip -r clawbench-darwin-arm64.zip clawbench/
 
       - uses: softprops/action-gh-release@v2
@@ -248,8 +245,7 @@ jobs:
           cp -r public pkg-mac-amd64/clawbench/public
           cp -r config pkg-mac-amd64/clawbench/config
           cp -r .clawbench/pi pkg-mac-amd64/clawbench/.clawbench/pi
-          cp server.sh pkg-mac-amd64/clawbench/
-          chmod +x pkg-mac-amd64/clawbench/clawbench pkg-mac-amd64/clawbench/server.sh
+          chmod +x pkg-mac-amd64/clawbench/clawbench
           cd pkg-mac-amd64 && zip -r clawbench-darwin-amd64.zip clawbench/
 
       - uses: softprops/action-gh-release@v2
