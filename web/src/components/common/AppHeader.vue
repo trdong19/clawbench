@@ -52,7 +52,10 @@
         <span class="status-indicator" :class="statusDotClass"></span>
         <span class="status-value">{{ serverStatusLabel }}</span>
       </div>
-      <template v-if="quickServers.length > 1">
+      <div class="status-menu-item" style="font-size:10px;color:var(--text-muted,#8b949e);">
+        {{ quickServers.length }} servers{{ activeServerId ? ' (active: ' + activeServerId + ')' : '' }}
+      </div>
+      <template v-if="quickServers.length >= 1">
         <div class="server-quick-separator"></div>
         <div
           v-for="s in quickServers"
@@ -130,15 +133,21 @@ function loadQuickServers() {
     const an = window.AndroidNative
     if (an && typeof an.getServerList === 'function') {
         try {
-            const list = JSON.parse(an.getServerList() || '[]')
+            const raw = an.getServerList() || '[]'
+            console.log('[QuickSwitch] Android mode, raw:', raw)
+            const list = JSON.parse(raw)
             quickServers.value = list
             activeServerId.value = an.getActiveServerId?.() || ''
-        } catch { quickServers.value = [] }
+            console.log('[QuickSwitch] loaded', list.length, 'servers, active:', activeServerId.value)
+        } catch (e) { console.error('[QuickSwitch] parse error:', e); quickServers.value = [] }
     } else {
         try {
-            const list = JSON.parse(localStorage.getItem('clawbench-settings-serverList') || '[]')
+            const raw = localStorage.getItem('clawbench-settings-serverList') || '[]'
+            console.log('[QuickSwitch] Web mode, raw:', raw)
+            const list = JSON.parse(raw)
             quickServers.value = list
-        } catch { quickServers.value = [] }
+            console.log('[QuickSwitch] loaded', list.length, 'servers')
+        } catch (e) { console.error('[QuickSwitch] parse error:', e); quickServers.value = [] }
     }
 }
 
