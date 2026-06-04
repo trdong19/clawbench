@@ -6,8 +6,27 @@ on:
       - 'v*'
 
 jobs:
+  golangci-lint:
+    name: Lint (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+
   test:
     name: Test & Coverage Gate
+    needs: golangci-lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,9 +34,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-
-      - name: Go vet
-        run: go vet ./...
 
       - name: Go coverage gate
         run: ./scripts/check-go-coverage.sh
@@ -76,19 +92,24 @@ jobs:
           CGO_ENABLED: 1
         run: |
           VERSION=$(git describe --tags --always 2>/dev/null || echo "dev")
-          go build -ldflags="-s -w -X clawbench/internal/version.Version=$VERSION" -o clawbench-linux ./cmd/server
+          go build -tags "fts5" -ldflags="-s -w -X clawbench/internal/version.Version=$VERSION" -o clawbench-linux ./cmd/server
+          echo "Built with CGO_ENABLED=1: dynamically linked, SQLite FTS5/RAG enabled"
 
       - name: Verify Linux binary
         run: |
           file clawbench-linux
-          echo "✅ Linux binary built successfully"
+          ldd clawbench-linux
 
-      - name: Download Pi agent binary (Linux)
+      - name: Download Pi binary (embedded agent for setup wizard)
+        env:
+          PI_VERSION: "0.78.0"
         run: |
-          PI_VERSION="${PI_VERSION:-0.78.0}"
+          PI_URL="https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-linux-x64.tar.gz"
           mkdir -p .clawbench/pi
-          curl -sL "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-linux-x64.tar.gz" | tar xzf - -C .clawbench/pi --strip-components=1
+          curl -sL "$PI_URL" | tar xzf - -C .clawbench/pi --strip-components=1
           chmod +x .clawbench/pi/pi
+          echo "$PI_VERSION" > .clawbench/pi/VERSION
+          echo "Pi v${PI_VERSION} downloaded"
 
       - name: Package Linux
         run: |
@@ -96,6 +117,7 @@ jobs:
           cp clawbench-linux pkg-linux/clawbench/clawbench
           cp -r public pkg-linux/clawbench/public
           cp -r config pkg-linux/clawbench/config
+          mkdir -p pkg-linux/clawbench/.clawbench
           cp -r .clawbench/pi pkg-linux/clawbench/.clawbench/pi
           chmod +x pkg-linux/clawbench/clawbench
           cd pkg-linux && zip -r clawbench-linux-amd64.zip clawbench/
@@ -104,6 +126,11 @@ jobs:
         with:
           generate_release_notes: false
           files: pkg-linux/clawbench-linux-amd64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-package
+          path: pkg-linux/clawbench/
 
   build-windows:
     name: Build Windows amd64
@@ -129,17 +156,21 @@ jobs:
           CGO_ENABLED: 1
         run: |
           VERSION=$(git describe --tags --always 2>/dev/null || echo "dev")
-          go build -ldflags="-s -w -X clawbench/internal/version.Version=$VERSION" -o clawbench.exe ./cmd/server
+          go build -tags "fts5" -ldflags="-s -w -X clawbench/internal/version.Version=$VERSION" -o clawbench.exe ./cmd/server
 
-      - name: Download Pi agent binary (Windows)
+      - name: Download Pi binary (embedded agent for setup wizard)
         shell: pwsh
+        env:
+          PI_VERSION: "0.78.0"
         run: |
-          $PI_VERSION = if ($env:PI_VERSION) { $env:PI_VERSION } else { "0.78.0" }
-          New-Item -ItemType Directory -Force -Path .clawbench/pi
-          $url = "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-windows-x64.zip"
-          Invoke-WebRequest -Uri $url -OutFile pi-download.zip
-          Expand-Archive -Path pi-download.zip -DestinationPath .clawbench\pi
-          Remove-Item -Force pi-download.zip
+          $PI_URL = "https://github.com/earendil-works/pi/releases/download/v${env:PI_VERSION}/pi-windows-x64.zip"
+          New-Item -ItemType Directory -Force -Path .clawbench\pi
+          $tmpZip = "$env:TEMP\pi-download.zip"
+          Invoke-WebRequest -Uri $PI_URL -OutFile $tmpZip
+          Expand-Archive -Path $tmpZip -DestinationPath .clawbench\pi -Force
+          Remove-Item $tmpZip -Force
+          Set-Content -Path ".clawbench\pi\VERSION" -Value $env:PI_VERSION
+          Write-Host "Pi v${env:PI_VERSION} downloaded"
 
       - name: Package Windows
         shell: pwsh
@@ -148,6 +179,7 @@ jobs:
           Copy-Item clawbench.exe pkg-windows/clawbench/
           Copy-Item -Recurse public pkg-windows/clawbench/public
           Copy-Item -Recurse config pkg-windows/clawbench/config
+          New-Item -ItemType Directory -Force -Path pkg-windows/clawbench/.clawbench
           Copy-Item -Recurse .clawbench/pi pkg-windows/clawbench/.clawbench/pi
           Compress-Archive -Path pkg-windows/clawbench -DestinationPath pkg-windows/clawbench-windows-amd64.zip
 
@@ -155,6 +187,8 @@ jobs:
         with:
           generate_release_notes: false
           files: pkg-windows/clawbench-windows-amd64.zip
+
+
 
   build-android:
     name: Build Android APK
@@ -197,9 +231,86 @@ jobs:
           files: |
             android/app/build/outputs/apk/release/clawbench-android.apk
 
+  docker:
+    name: Build & Push Docker Image
+    needs: build-linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-package
+          path: pkg-linux/clawbench/
+
+      - name: Prepare Docker build context
+        run: |
+          cp pkg-linux/clawbench/clawbench .
+          cp -r pkg-linux/clawbench/public .
+          mkdir -p docker-staging/pi
+          if [ -d "pkg-linux/clawbench/.clawbench/pi" ]; then
+            cp -r pkg-linux/clawbench/.clawbench/pi/. docker-staging/pi/
+          fi
+          chmod +x ./clawbench
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check package visibility
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ORG="${GITHUB_REPOSITORY_OWNER}"
+          PKG_SLUG="clawbench"
+          SETTINGS_URL="https://github.com/orgs/${ORG}/packages/container/${PKG_SLUG}/settings"
+          ORG_PACKAGES_URL="https://github.com/orgs/${ORG}/settings/packages"
+
+          # GitHub has no API to change package visibility — this can only be
+          # done via the web UI.  We check and warn if the package is private.
+          VISIBILITY=$(gh api "/orgs/${ORG}/packages/container/${PKG_SLUG}" --jq '.visibility' 2>/dev/null || echo "not_found")
+
+          if [ "$VISIBILITY" = "public" ]; then
+            echo "✅ Package is already public"
+          elif [ "$VISIBILITY" = "private" ]; then
+            echo "::warning::Docker image package is PRIVATE. Users cannot pull without authentication. Fix: ${SETTINGS_URL} → Danger Zone → Change visibility → Public. To make this permanent: ${ORG_PACKAGES_URL} → Package Creation → Public."
+          else
+            echo "::warning::Could not determine package visibility. If it's private, set it to public at: ${SETTINGS_URL}"
+          fi
+
   release-notes:
     name: Generate Release Notes
-    needs: [build-linux, build-windows, build-android]
+    needs: [build-linux, build-windows, build-android, docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write

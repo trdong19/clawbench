@@ -23,6 +23,7 @@ export interface Provider {
     id: string
     name: string
     envVar: string
+    apiFormat: string
 }
 
 export interface ModelItem {
@@ -46,6 +47,15 @@ export interface VerifyResponse {
     model?: string
 }
 
+export interface BackendInfo {
+    id: string
+    name: string
+    icon: string
+    specialty: string
+    default_cmd: string
+    thinking_effort_levels?: string[]
+}
+
 export interface CompleteResponse {
     success: boolean
     agent?: { id: string; name: string; [key: string]: unknown }
@@ -55,6 +65,7 @@ export interface CompleteResponse {
 export interface SetupCompleteRequest {
     provider: string
     custom_url: string
+    api_format: string
     api_key: string
     model: string
     summarize_model: string
@@ -91,10 +102,6 @@ export const providerAgentNames: Record<string, { name: string; id: string }> = 
     '_custom':                { name: '自定义智能体',        id: 'custom-agent' },
 }
 
-// ── Recommended providers (shown prominently) ──
-
-export const recommendedProviders = ['openai', 'anthropic', 'google']
-
 // ── Singleton state ──
 
 const status = ref<SetupStatus | null>(null)
@@ -119,7 +126,12 @@ async function getProviders(): Promise<Provider[]> {
     return providers.value
 }
 
-async function scanModels(provider: string, customUrl: string, apiKey: string): Promise<ModelsResponse> {
+async function getBackends(): Promise<BackendInfo[]> {
+    const data = await apiGet<{ backends: BackendInfo[] }>('/api/setup/backends')
+    return data.backends || []
+}
+
+async function scanModels(provider: string, customUrl: string, apiKey: string, apiFormat: string): Promise<ModelsResponse> {
     loading.value = true
     modelsError.value = ''
     try {
@@ -127,6 +139,7 @@ async function scanModels(provider: string, customUrl: string, apiKey: string): 
             provider,
             custom_url: customUrl,
             api_key: apiKey,
+            api_format: apiFormat,
         }, { signal: AbortSignal.timeout(30_000) })
         models.value = data.models || []
         summarizeModelHint.value = data.summarize_model_hint || ''
@@ -142,7 +155,7 @@ async function scanModels(provider: string, customUrl: string, apiKey: string): 
     }
 }
 
-async function verify(provider: string, customUrl: string, apiKey: string, model: string): Promise<VerifyResponse> {
+async function verify(provider: string, customUrl: string, apiKey: string, model: string, apiFormat: string): Promise<VerifyResponse> {
     loading.value = true
     try {
         const data = await apiPost<VerifyResponse>('/api/setup/verify', {
@@ -150,6 +163,7 @@ async function verify(provider: string, customUrl: string, apiKey: string, model
             custom_url: customUrl,
             api_key: apiKey,
             model,
+            api_format: apiFormat,
         }, { signal: AbortSignal.timeout(35_000) })
         return data
     } catch (err) {
@@ -177,41 +191,6 @@ async function complete(config: SetupCompleteRequest): Promise<CompleteResponse>
     }
 }
 
-// ── Session storage persistence (security: API key is NOT persisted) ──
-
-const STORAGE_KEY = 'clawbench-setup-state'
-
-interface SetupWizardState {
-    step: number
-    provider: string
-    customUrl: string
-    chatModel: string
-    summarizeModel: string
-    agentName: string
-    agentId: string
-}
-
-function saveWizardState(state: SetupWizardState) {
-    try {
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-    } catch { /* ignore storage errors */ }
-}
-
-function loadWizardState(): SetupWizardState | null {
-    try {
-        const raw = sessionStorage.getItem(STORAGE_KEY)
-        return raw ? JSON.parse(raw) : null
-    } catch {
-        return null
-    }
-}
-
-function clearWizardState() {
-    try {
-        sessionStorage.removeItem(STORAGE_KEY)
-    } catch { /* ignore */ }
-}
-
 // ── Exported composable ──
 
 export function useSetup() {
@@ -228,13 +207,9 @@ export function useSetup() {
         // API methods
         checkStatus,
         getProviders,
+        getBackends,
         scanModels,
         verify,
         complete,
-
-        // Persistence helpers
-        saveWizardState,
-        loadWizardState,
-        clearWizardState,
     }
 }

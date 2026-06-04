@@ -13,6 +13,8 @@ import {
   extractScheduledTaskIds,
   stripScheduledTaskTags,
   detectAskQuestion,
+  detectRagResults,
+  stripRagResultsTags,
   taskChanged,
   StaticBlockCache,
 } from '@/utils/streamPerf.ts'
@@ -20,6 +22,7 @@ import {
   rewriteImageUrls,
   convertAudioLinks,
   parseAskQuestionContent,
+  parseRagResultsContent,
 } from '@/utils/chatRenderUtils.ts'
 import {
   parseAssistantContent,
@@ -43,6 +46,7 @@ export function useChatRender(options) {
 
   const blockTasks = reactive({})
   const blockAskQuestions = reactive({})
+  const blockRagResults = reactive({})
   const expandedTools = ref({})
   let lastRenderedCount = 0
 
@@ -141,7 +145,7 @@ export function useChatRender(options) {
       html = renderKatexInString(html)
     }
 
-    html = DOMPurify.sanitize(html, { ADD_TAGS: ['math', 'button'], ADD_ATTR: ['data-file-path', 'data-commit-sha', 'data-worktree-path', 'data-url', 'data-port', 'data-protocol', 'title'] })
+    html = DOMPurify.sanitize(html, { ADD_TAGS: ['math', 'button', 'rag-results', 'rag-item', 'session-id', 'session-title', 'created-at', 'summary'], ADD_ATTR: ['data-file-path', 'data-commit-sha', 'data-worktree-path', 'data-url', 'data-port', 'data-protocol', 'title'] })
     html = html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>')
 
     if (!skipEnhancements) {
@@ -213,6 +217,59 @@ export function useChatRender(options) {
 
     // Detect ask-question tags
     const askResult = detectAskQuestion(text)
+
+    // Detect rag-results tags (before ask-question check so both can coexist)
+    const ragResult = detectRagResults(text)
+    if (ragResult.found) {
+      const ragKey = `${msgId}-${blockIdx}`
+      if (!blockRagResults[ragKey]) {
+        const parsed = parseRagResultsContent(ragResult.content!)
+        if (parsed && parsed.length > 0) {
+          blockRagResults[ragKey] = parsed
+        }
+      }
+      // Strip rag-results from text for markdown rendering
+      let cleanText = stripRagResultsTags(text)
+      // Still process scheduled-task and ask-question in the remaining text
+      const taskIds = extractScheduledTaskIds(cleanText)
+      if (taskIds.length > 0) {
+        const taskKeys = taskIds.map((tid, tagIdx) => ({
+          key: `${msgId}-${blockIdx}-${tagIdx}`,
+          taskId: Number(tid),
+        }))
+        fetchBatchTaskData(taskKeys)
+      }
+      const askInClean = detectAskQuestion(cleanText)
+      if (askInClean.found) {
+        const askKey = `${msgId}-${blockIdx}`
+        if (!blockAskQuestions[askKey]) {
+          const parsed = parseAskQuestionContent(askInClean.content!)
+          if (parsed) {
+            blockAskQuestions[askKey] = parsed
+          }
+        }
+        let afterAsk
+        if (askInClean.endIdx !== undefined) {
+          afterAsk = (cleanText.slice(0, askInClean.startIdx) + cleanText.slice(askInClean.endIdx)).trim()
+        } else {
+          afterAsk = cleanText.slice(0, askInClean.startIdx).trim()
+        }
+        afterAsk = stripScheduledTaskTags(afterAsk)
+        return afterAsk ? renderMarkdown(afterAsk) : ''
+      }
+      cleanText = stripScheduledTaskTags(cleanText)
+      // When rag-results is the only content, cleanText is empty.
+      // If blockRagResults was populated, the RAG card v-for will render
+      // independently of this return value — but the surrounding-text
+      // <div v-if="getBlockHtml(...)"> would hide an empty string.
+      // Returning a zero-width space ensures the block is not treated as
+      // completely empty, and prevents the entire message from disappearing
+      // when parseRagResultsContent fails and blockRagResults is unset.
+      if (!cleanText) {
+        return blockRagResults[ragKey] ? '\u200B' : ''
+      }
+      return renderMarkdown(cleanText)
+    }
 
     if (askResult.found) {
       const askKey = `${msgId}-${blockIdx}`
@@ -298,6 +355,7 @@ export function useChatRender(options) {
   return {
     blockTasks,
     blockAskQuestions,
+    blockRagResults,
     expandedTools,
     renderMarkdown,
     renderTextBlock,

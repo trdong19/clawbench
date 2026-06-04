@@ -21,6 +21,10 @@ export async function loadSessionsOnce() {
       const hasUnread = sessions.some((s: any) => s.unreadCount > 0 && s.id !== identity.currentSessionId.value)
       store.state.chatRunning = hasRunning
       store.state.chatUnread = hasUnread
+      // Update session count for header indicator
+      if (typeof data.totalCount === 'number') {
+        store.state.sessionCount = data.totalCount
+      }
       // Populate runningSessions set from API data
       identity.runningSessions.value.clear()
       for (const s of sessions) {
@@ -38,6 +42,7 @@ export interface UseChatSessionOptions {
   inputDisabled: Ref<boolean>
   blockTasks: Record<string, any>
   blockAskQuestions: Record<string, any>
+  blockRagResults: Record<string, any>
   expandedTools: Ref<Record<string, boolean>>
   switching?: Ref<boolean>
   onParseAssistantContent: (content: string) => any
@@ -59,6 +64,7 @@ export function useChatSession(options: UseChatSessionOptions) {
     inputDisabled,
     blockTasks,
     blockAskQuestions,
+    blockRagResults,
     expandedTools,
     onParseAssistantContent,
     onExtractScheduledTasks,
@@ -198,7 +204,8 @@ export function useChatSession(options: UseChatSessionOptions) {
       // to tool_use blocks, old entries keyed by text-block indices would cause duplicate
       // rendering. extractScheduledTasks below will re-populate from current DB state.
       Object.keys(blockAskQuestions).forEach(k => delete blockAskQuestions[k])
-      messages.value = parseMessages(rawMsgs, onParseAssistantContent)
+      Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
+      messages.value = parseMessages(rawMsgs, onParseAssistantContent, messages.value)
       totalMessages.value = data.total || messages.value.length
       currentSessionId.value = data.sessionId || ''
       currentSessionTitle.value = data.sessionTitle || ''
@@ -271,6 +278,7 @@ export function useChatSession(options: UseChatSessionOptions) {
     expandedTools.value = {}
     // Clear stale blockAskQuestions from previous session
     Object.keys(blockAskQuestions).forEach(k => delete blockAskQuestions[k])
+    Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
     try {
       // Load agents first so we can resolve agent names
       if (agents.value.length === 0) await loadAgents()
@@ -349,8 +357,10 @@ export function useChatSession(options: UseChatSessionOptions) {
       lastMessageSnapshot = ''  // New session — no messages yet
       Object.keys(blockTasks).forEach(k => delete blockTasks[k])
       Object.keys(blockAskQuestions).forEach(k => delete blockAskQuestions[k])
+      Object.keys(blockRagResults).forEach(k => delete blockRagResults[k])
       loading.value = false
       const maxCount = store.state.sessionMaxCount
+      if (typeof data.sessionCount === 'number') store.state.sessionCount = data.sessionCount
       toast.show(gt('chat.session.created', { count: data.sessionCount ?? '', max: maxCount }), { icon: '✨', type: 'success', duration: 1500 })
     } catch (err) {
       console.error('Failed to create session:', err)
@@ -381,6 +391,7 @@ export function useChatSession(options: UseChatSessionOptions) {
           await loadSessionsOnce()
         }
         const maxCount = store.state.sessionMaxCount
+        if (typeof data.sessionCount === 'number') store.state.sessionCount = data.sessionCount
         toast.show(gt('chat.session.deleted', { count: data.sessionCount ?? '', max: maxCount }), { icon: '🗑️', type: 'success', duration: 2000 })
       }
     } catch (err) {
@@ -522,6 +533,7 @@ export function useChatSession(options: UseChatSessionOptions) {
         // Toast: only when a new session is actually created (not when restoring a deleted one)
         if (isNewlyCreated) {
           const maxCount = store.state.sessionMaxCount
+          if (typeof data.sessionCount === 'number') store.state.sessionCount = data.sessionCount
           toast.show(gt('chat.session.continued', { count: data.sessionCount ?? '', max: maxCount }), { icon: '💬', type: 'success', duration: 1500 })
         }
       }

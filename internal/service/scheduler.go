@@ -139,6 +139,13 @@ func (s *Scheduler) TaskSummarizer() *summarize.TaskSummarizer {
 	return s.taskSummarizer
 }
 
+// TaskCount returns the number of registered cron tasks.
+func (s *Scheduler) TaskCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.entries)
+}
+
 // UnmarkTaskRunning removes the running flag for a task. Used for testing cleanup.
 func (s *Scheduler) UnmarkTaskRunning(taskID int64) {
 	s.taskRunning.Delete(taskID)
@@ -470,10 +477,13 @@ func (s *Scheduler) registerTaskLocked(task *model.ScheduledTask) error {
 }
 
 // UpdateTaskStats increments run_count and updates last_run_at for a task.
-func UpdateTaskStats(task *model.ScheduledTask, newStatus string) {
+// It does NOT update the status column — status changes must be handled
+// separately to avoid overwriting user-initiated state changes (e.g. pause).
+// See ISS-013.
+func UpdateTaskStats(task *model.ScheduledTask) {
 	now := time.Now()
-	_, _ = DB.Exec("UPDATE scheduled_tasks SET last_run_at = ?, run_count = run_count + 1, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-		now, newStatus, task.ID)
+	_, _ = DB.Exec("UPDATE scheduled_tasks SET last_run_at = ?, run_count = run_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+		now, task.ID)
 }
 
 // emitTaskEvent broadcasts a task_update event to connected clients.
@@ -559,25 +569,13 @@ func (s *Scheduler) executeTask(task *model.ScheduledTask, projectPath string, t
 	// ScheduledExecution flag prevents recursive task creation at the
 	// handler level: even if the AI outputs a <schedule-proposal> tag,
 	// the handler will not create a task from it.
-	//
-	// Rebuild system prompt without task-scheduler skill to prevent
-	// the AI from discovering scheduled task capability (anti-recursion).
+	// Anti-recursion is also enforced by the @task on-demand injection
+	// mechanism: task instructions are only injected when the user
+	// explicitly uses @task, so they never appear during scheduled execution.
 	systemPrompt := agent.SystemPrompt
 	// Replace {{PROJECT_PATH}} per-request with the actual project path for this task
 	if projectPath != "" {
 		systemPrompt = strings.ReplaceAll(systemPrompt, "{{PROJECT_PATH}}", projectPath)
-	}
-	scheduledCommon := model.BuildCommonPrompt(true)
-	normalCommon := model.BuildCommonPrompt(false)
-	if normalCommon != "" && strings.HasPrefix(systemPrompt, normalCommon) {
-		// Replace the common prompt prefix with the scheduled version
-		remaining := systemPrompt[len(normalCommon):]
-		if scheduledCommon != "" {
-			systemPrompt = scheduledCommon + remaining
-		} else {
-			// No skills at all in scheduled mode — strip the common prefix
-			systemPrompt = strings.TrimPrefix(remaining, "\n\n")
-		}
 	}
 
 	// Respect user's global model/thinking preference (from most recent session).
@@ -672,8 +670,8 @@ func (s *Scheduler) executeTask(task *model.ScheduledTask, projectPath string, t
 		)
 		_ = UpdateExecutionStatus(sessionID, "cancelled")
 		emitTaskEvent(fmt.Sprintf("%d", task.ID), "cancelled", fmt.Sprintf("%d", executionID), sessionID, projectPath, task.Name)
-		newStatus := task.Status
-		UpdateTaskStats(task, newStatus)
+		// Only update stats, not status — don't overwrite user-initiated pauses (ISS-013)
+		UpdateTaskStats(task)
 		return
 	}
 
@@ -688,8 +686,8 @@ func (s *Scheduler) executeTask(task *model.ScheduledTask, projectPath string, t
 		)
 		_ = UpdateExecutionStatus(sessionID, "failed")
 		emitTaskEvent(fmt.Sprintf("%d", task.ID), "failed", fmt.Sprintf("%d", executionID), sessionID, projectPath, task.Name)
-		newStatus := task.Status
-		UpdateTaskStats(task, newStatus)
+		// Only update stats, not status — don't overwrite user-initiated pauses (ISS-013)
+		UpdateTaskStats(task)
 		return
 	}
 
@@ -715,7 +713,14 @@ func (s *Scheduler) executeTask(task *model.ScheduledTask, projectPath string, t
 	emitTaskEvent(fmt.Sprintf("%d", task.ID), "completed", fmt.Sprintf("%d", executionID), sessionID, projectPath, task.Name)
 
 	// Update task execution stats
-	newStatus := task.Status
+	// Read current DB status to avoid overwriting user-initiated changes (e.g. pause).
+	// See ISS-013: using task.Status (in-memory snapshot) can revert "paused" back to "active".
+	var currentStatus string
+	if err := DBRead.QueryRow("SELECT status FROM scheduled_tasks WHERE id = ?", task.ID).Scan(&currentStatus); err != nil {
+		slog.Warn("failed to read current task status, falling back to snapshot", "error", err)
+		currentStatus = task.Status
+	}
+	newStatus := currentStatus
 
 	// Check repeat mode — for "limited", read current DB value to decide completion
 	if task.RepeatMode == "limited" {

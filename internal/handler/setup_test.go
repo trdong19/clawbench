@@ -549,8 +549,9 @@ func TestSetupModels_InvalidJSON(t *testing.T) {
 
 // ---------- ServeSetupVerify extended coverage ----------
 
-// TestSetupVerify_EmptyProviderDefaultsToOpenAI tests that empty provider defaults to
-// "openai" and then fails because EmbeddedAgentPath is empty in test env.
+// TestSetupVerify_EmptyProviderDefaultsToOpenAI tests that empty provider with
+// custom_url uses HTTP verification (not Pi CLI). With a bad URL, it should
+// return 200 with success=false.
 func TestSetupVerify_EmptyProviderDefaultsToOpenAI(t *testing.T) {
 	_, teardown := setupAgentTestEnv(t)
 	defer teardown()
@@ -900,9 +901,13 @@ func TestWritePiConfigFiles(t *testing.T) {
 	data, err := os.ReadFile(authPath)
 	require.NoError(t, err)
 
-	var authData map[string]string
+	var authData map[string]any
 	require.NoError(t, json.Unmarshal(data, &authData))
-	assert.Equal(t, "sk-test-key-123", authData["OPENAI_API_KEY"])
+	// Pi expects structured format: { "provider": { "type": "api_key", "key": "..." } }
+	entry, ok := authData["openai"].(map[string]any)
+	require.True(t, ok, "auth.json should have 'openai' key with object value")
+	assert.Equal(t, "api_key", entry["type"])
+	assert.Equal(t, "sk-test-key-123", entry["key"])
 
 	// Verify settings.json was written
 	settingsPath := filepath.Join(tmpDir, ".pi", "agent", "settings.json")
@@ -955,9 +960,6 @@ func TestReinitSummarizer_AnthropicFormat(t *testing.T) {
 	// Save the original summarizer to restore later
 	origSummarizer := summarizer
 
-	// Insert an agent API key into DB for the reinit to read
-	require.NoError(t, service.SaveAgentAPIKey(service.DB, "anthropic-test", "anthropic", "", "sk-ant-test-key"))
-
 	req := setupCompleteRequest{
 		Provider:       "anthropic",
 		CustomURL:      "",
@@ -1009,7 +1011,7 @@ func TestReinitSummarizer_UnknownFormat(t *testing.T) {
 	assert.Equal(t, origSummarizer, summarizer)
 }
 
-// TestReinitSummarizer_NoAPIKey tests the path where API key is empty after loading.
+// TestReinitSummarizer_NoAPIKey tests the path where API key is empty.
 func TestReinitSummarizer_NoAPIKey(t *testing.T) {
 	_, teardown := setupAgentTestEnv(t)
 	defer teardown()
@@ -1019,7 +1021,7 @@ func TestReinitSummarizer_NoAPIKey(t *testing.T) {
 	req := setupCompleteRequest{
 		Provider:       "openai",
 		CustomURL:      "",
-		APIKey:         "test-key",
+		APIKey:         "", // empty key
 		Model:          "gpt-4o",
 		SummarizeModel: "gpt-4o-mini",
 		AgentID:        "no-key-agent",
@@ -1028,10 +1030,9 @@ func TestReinitSummarizer_NoAPIKey(t *testing.T) {
 	spec := model.FindProviderSpec("openai")
 	require.NotNil(t, spec)
 
-	// Don't save any API key — LoadAgentAPIKey will fail
 	reinitSummarizer(req, spec)
 
-	// Should not have changed the summarizer
+	// Summarizer should NOT have changed (no key available)
 	assert.Equal(t, origSummarizer, summarizer)
 }
 
@@ -1042,9 +1043,6 @@ func TestReinitSummarizer_NoAPIKey(t *testing.T) {
 func TestConfigureSummarizeBackend_CustomURLOverride(t *testing.T) {
 	_, teardown := setupAgentTestEnv(t)
 	defer teardown()
-
-	// Set up: save an API key so reinitSummarizer can read it
-	require.NoError(t, service.SaveAgentAPIKey(service.DB, "custom-url-agent", "openai", "https://custom.api.com/v1/chat/completions", "sk-test-key"))
 
 	origSummarizer := summarizer
 	defer func() { summarizer = origSummarizer }()
@@ -1072,8 +1070,8 @@ func TestConfigureSummarizeBackend_CustomURLOverride(t *testing.T) {
 
 // ---------- ServeSetupModels with mock server ----------
 
-// TestSetupModels_CustomURLWithMockServer tests the full HTTP fetch path
-// using a local mock server.
+// TestSetupModels_CustomURLWithMockServer tests that custom URL mode returns
+// an empty model list (user enters models manually).
 func TestSetupModels_CustomURLWithMockServer(t *testing.T) {
 	_, teardown := setupAgentTestEnv(t)
 	defer teardown()
@@ -1096,7 +1094,7 @@ func TestSetupModels_CustomURLWithMockServer(t *testing.T) {
 	// model IDs manually. Verify the response matches this behavior.
 	body := map[string]any{
 		"provider":   "",
-		"custom_url": server.URL + "/v1/chat/completions",
+		"custom_url": "https://api.example.com/v1/chat/completions",
 		"api_key":    "test-key",
 	}
 	req := newRequest(t, http.MethodPost, "/api/setup/models", body)
@@ -1117,8 +1115,8 @@ func TestSetupModels_CustomURLWithMockServer(t *testing.T) {
 
 // ---------- ServeSetupVerify with custom URL ----------
 
-// TestSetupVerify_WithCustomURL tests that custom_url is passed through
-// to the Pi CLI via PI_CUSTOM_URL env var (but still fails since no embedded Pi).
+// TestSetupVerify_WithCustomURL tests that custom_url triggers HTTP verification
+// instead of Pi CLI. With an unreachable URL, it returns success=false.
 func TestSetupVerify_WithCustomURL(t *testing.T) {
 	_, teardown := setupAgentTestEnv(t)
 	defer teardown()
@@ -1390,8 +1388,8 @@ func TestSetupVerify_FakePiNoOutput(t *testing.T) {
 	assert.False(t, resp["success"].(bool), "should fail")
 }
 
-// TestSetupVerify_FakePiWithCustomURL tests verify with custom_url injected via
-// PI_CUSTOM_URL env var.
+// TestSetupVerify_FakePiWithCustomURL tests verify with custom_url — this now
+// uses HTTP verification instead of Pi CLI, so the fake Pi is NOT invoked.
 func TestSetupVerify_FakePiWithCustomURL(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake Pi binary path resolution differs on Windows")
@@ -1405,6 +1403,8 @@ func TestSetupVerify_FakePiWithCustomURL(t *testing.T) {
 	_, err := os.Stat(piPath)
 	require.NoError(t, err, "fake Pi binary should exist at %s", piPath)
 
+	// Custom URL mode → HTTP verification, NOT Pi CLI
+	// The URL is unreachable, so verify should fail
 	body := map[string]any{
 		"provider":   "openai",
 		"custom_url": "https://custom.api.com/v1/chat/completions",
@@ -1493,9 +1493,12 @@ func TestWritePiConfigFiles_HomeDirError(t *testing.T) {
 	data, err := os.ReadFile(authPath)
 	require.NoError(t, err)
 
-	var authData map[string]string
+	var authData map[string]any
 	require.NoError(t, json.Unmarshal(data, &authData))
-	assert.Equal(t, "sk-ant-key", authData["ANTHROPIC_API_KEY"])
+	entry, ok := authData["anthropic"].(map[string]any)
+	require.True(t, ok, "auth.json should have 'anthropic' key with object value")
+	assert.Equal(t, "api_key", entry["type"])
+	assert.Equal(t, "sk-ant-key", entry["key"])
 }
 
 // ---------- atomicWriteFile error path ----------
@@ -1644,8 +1647,9 @@ func TestWritePiConfigFiles_AuthWriteFailure(t *testing.T) {
 
 // ---------- reinitSummarizer empty API key path ----------
 
-// TestReinitSummarizer_EmptyAPIKey tests the path where LoadAgentAPIKey returns
-// an empty apiKey string.
+// TestReinitSummarizer_EmptyAPIKey tests the path where req.APIKey is empty.
+// Since reinitSummarizer now reads directly from req.APIKey, empty key means
+// no summarizer change.
 func TestReinitSummarizer_EmptyAPIKey(t *testing.T) {
 	_, teardown := setupAgentTestEnv(t)
 	defer teardown()
@@ -1653,28 +1657,48 @@ func TestReinitSummarizer_EmptyAPIKey(t *testing.T) {
 	origSummarizer := summarizer
 	defer func() { summarizer = origSummarizer }()
 
-	// Save an API key, then manually set it to empty in DB
-	require.NoError(t, service.SaveAgentAPIKey(service.DB, "empty-key-agent", "openai", "", "test-key"))
-	// Manually update the encrypted key to something that decrypts to empty
-	// Actually this is hard to do since encryption is involved.
-	// Instead, let's test the case where the agent ID doesn't match any key.
-
 	req := setupCompleteRequest{
 		Provider:       "openai",
 		CustomURL:      "",
-		APIKey:         "test-key",
+		APIKey:         "", // empty key in request
 		Model:          "gpt-4o",
 		SummarizeModel: "gpt-4o-mini",
-		AgentID:        "nonexistent-key-agent",
+		AgentID:        "empty-key-agent",
 	}
 
 	spec := model.FindProviderSpec("openai")
 	require.NotNil(t, spec)
 
-	// LoadAgentAPIKey will fail (no rows), so it should return early
 	reinitSummarizer(req, spec)
 
-	// Summarizer should not have changed
+	// Summarizer should NOT have changed — no key available
+	assert.Equal(t, origSummarizer, summarizer)
+}
+
+// TestReinitSummarizer_NoKeyAtAll tests that when request key is empty,
+// the summarizer is not changed.
+func TestReinitSummarizer_NoKeyAtAll(t *testing.T) {
+	_, teardown := setupAgentTestEnv(t)
+	defer teardown()
+
+	origSummarizer := summarizer
+	defer func() { summarizer = origSummarizer }()
+
+	req := setupCompleteRequest{
+		Provider:       "openai",
+		CustomURL:      "",
+		APIKey:         "", // No key in request
+		Model:          "gpt-4o",
+		SummarizeModel: "gpt-4o-mini",
+		AgentID:        "no-key-at-all-agent",
+	}
+
+	spec := model.FindProviderSpec("openai")
+	require.NotNil(t, spec)
+
+	reinitSummarizer(req, spec)
+
+	// Should not have changed the summarizer — no key available at all
 	assert.Equal(t, origSummarizer, summarizer)
 }
 
@@ -1690,7 +1714,6 @@ func TestReinitSummarizer_CustomURL(t *testing.T) {
 	defer func() { summarizer = origSummarizer }()
 
 	customURL := "https://custom.api.com/v1/chat/completions"
-	require.NoError(t, service.SaveAgentAPIKey(service.DB, "reinit-custom-agent", "openai", customURL, "sk-test-key"))
 
 	req := setupCompleteRequest{
 		Provider:       "openai",
@@ -1801,8 +1824,8 @@ func TestSetupComplete_CustomURLAnthropic(t *testing.T) {
 	service.DB.QueryRow("SELECT COUNT(*) FROM agent_api_keys WHERE agent_id = ? AND provider = ?", "custom-anthropic", "custom-anthropic").Scan(&count)
 	assert.Equal(t, 1, count)
 
-	// Verify summarize backend was configured — custom URL mode defaults provider to "openai"
-	assert.Equal(t, "openai", model.ConfigInstance.Summarize.API.Format)
+	// Verify summarize backend was configured with anthropic format
+	assert.Equal(t, "anthropic", model.ConfigInstance.Summarize.API.Format)
 }
 
 // ---------- ServeSetupComplete with invalid custom URL ----------
@@ -1827,8 +1850,7 @@ func TestSetupComplete_InvalidCustomURLOpenAI(t *testing.T) {
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeSetupComplete, req)
 
-	// ServeSetupComplete does not validate custom URLs — that's done in ServeSetupVerify.
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestSetupComplete_InvalidCustomURLAnthropic(t *testing.T) {
@@ -1852,8 +1874,7 @@ func TestSetupComplete_InvalidCustomURLAnthropic(t *testing.T) {
 	withAuthCookie(req, model.SessionToken)
 	w := callHandler(ServeSetupComplete, req)
 
-	// ServeSetupComplete does not validate custom URLs — that's done in ServeSetupVerify.
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 // ---------- detectAPIFormat unit tests ----------
@@ -2083,6 +2104,63 @@ func TestVerifyAnthropicHTTP_NoAPIKey(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// ---------- ServeSetupBackends tests ----------
+
+func TestSetupBackends_ReturnsCLIBackends(t *testing.T) {
+	_, teardown := setupAgentTestEnv(t)
+	defer teardown()
+
+	req := newRequest(t, http.MethodGet, "/api/setup/backends", nil)
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeSetupBackends, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+
+	backends, ok := resp["backends"].([]any)
+	require.True(t, ok, "response should contain backends array")
+	assert.NotEmpty(t, backends, "should have at least one CLI backend")
+
+	for _, b := range backends {
+		bMap := b.(map[string]any)
+		assert.NotEmpty(t, bMap["id"], "backend should have id")
+		assert.NotEmpty(t, bMap["name"], "backend should have name")
+	}
+}
+
+func TestSetupBackends_MethodNotAllowed(t *testing.T) {
+	_, teardown := setupAgentTestEnv(t)
+	defer teardown()
+
+	req := newRequest(t, http.MethodPost, "/api/setup/backends", nil)
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeSetupBackends, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
+
+func TestSetupBackends_SkipsNoCLI(t *testing.T) {
+	_, teardown := setupAgentTestEnv(t)
+	defer teardown()
+
+	req := newRequest(t, http.MethodGet, "/api/setup/backends", nil)
+	withAuthCookie(req, model.SessionToken)
+	w := callHandler(ServeSetupBackends, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+
+	backends := resp["backends"].([]any)
+	for _, b := range backends {
+		bMap := b.(map[string]any)
+		assert.NotEqual(t, "mock", bMap["id"], "NoCLI backends should be excluded")
+	}
+}
+
 // ---------- writePiModelsJSON tests ----------
 
 func TestWritePiModelsJSON_OpenAIFormat(t *testing.T) {
@@ -2303,22 +2381,32 @@ func TestWritePiConfigFiles_CustomURL(t *testing.T) {
 
 	writePiConfigFiles(req)
 
-	// writePiConfigFiles writes auth.json and settings.json only (not models.json).
-	authPath := filepath.Join(tmpDir, ".pi", "agent", "auth.json")
-	data, err := os.ReadFile(authPath)
+	modelsPath := filepath.Join(tmpDir, ".pi", "agent", "models.json")
+	data, err := os.ReadFile(modelsPath)
 	require.NoError(t, err)
 
-	var authData map[string]string
+	var modelsData map[string]any
+	require.NoError(t, json.Unmarshal(data, &modelsData))
+	providers := modelsData["providers"].(map[string]any)
+	_, hasCustom := providers["custom-deepseek"]
+	assert.True(t, hasCustom, "models.json should have custom provider")
+
+	authPath := filepath.Join(tmpDir, ".pi", "agent", "auth.json")
+	data, err = os.ReadFile(authPath)
+	require.NoError(t, err)
+
+	var authData map[string]any
 	require.NoError(t, json.Unmarshal(data, &authData))
-	assert.Equal(t, "sk-custom-key", authData["OPENAI_API_KEY"])
+	_, hasAgentIDKey := authData["custom-deepseek"]
+	assert.True(t, hasAgentIDKey, "auth.json should use agent ID as key for custom URL")
 
 	settingsPath := filepath.Join(tmpDir, ".pi", "agent", "settings.json")
 	data, err = os.ReadFile(settingsPath)
 	require.NoError(t, err)
 
-	var settingsData map[string]string
+	var settingsData map[string]any
 	require.NoError(t, json.Unmarshal(data, &settingsData))
-	assert.Equal(t, "openai", settingsData["defaultProvider"])
+	assert.Equal(t, "custom-deepseek", settingsData["defaultProvider"])
 }
 
 // ---------- ServeSetupVerify with mock HTTP server for custom URL ----------

@@ -20,6 +20,7 @@ import (
 	"clawbench/internal/ai"
 	"clawbench/internal/model"
 	"clawbench/internal/platform"
+	"clawbench/internal/rag"
 	"clawbench/internal/service"
 
 	"github.com/google/uuid"
@@ -75,18 +76,19 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 
 		var sessionID string
 		var sessionBackend string
+		var cachedSessionInfo *service.SessionInfo // reused to avoid extra DB queries
 
 		if requestedSessionID != "" {
-			// Use the requested session
+			// Use the requested session — single query to get backend + project_path + metadata
 			sessionID = requestedSessionID
-			sessionBackend = service.GetSessionBackend(sessionID)
-			if sessionBackend == "" {
+			cachedSessionInfo = service.GetSessionFullInfo(sessionID)
+			if cachedSessionInfo == nil {
 				writeLocalizedErrorf(w, r, http.StatusNotFound, "SessionNotFound")
 				return
 			}
+			sessionBackend = cachedSessionInfo.Backend
 			// Verify the session belongs to the requesting project (ISS-180)
-			// Skip ownership check if session doesn't exist in DB (session auto-created below)
-			if sessionProject := service.GetSessionProjectPath(sessionID); sessionProject != "" && sessionProject != projectPath {
+			if cachedSessionInfo.ProjectPath != projectPath {
 				writeLocalizedError(w, r, model.Forbidden(nil, "AccessDenied"))
 				return
 			}
@@ -159,16 +161,20 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 
 		totalCount := service.GetChatMessageCount(sessionID)
 		messages, err := service.GetChatHistoryPaged(projectPath, sessionBackend, sessionID, limit, beforeID)
-		// Get session metadata in a single query
-		sessionInfo, _ := service.GetSessionInfo(sessionID)
+		// Use cached session info from earlier lookup, or fetch if not yet available
+		// (e.g. when session was found via GetLatestSessionID or newly created).
+		// This avoids an extra DB query for the common case of switching to an existing session.
+		if cachedSessionInfo == nil {
+			cachedSessionInfo = service.GetSessionFullInfo(sessionID)
+		}
 		var sessionTitle, sessionAgentID, sessionModelID, sessionThinkingEffort string
 		var sessionInfoBackend string
-		if sessionInfo != nil {
-			sessionTitle = sessionInfo.Title
-			sessionInfoBackend = sessionInfo.Backend
-			sessionAgentID = sessionInfo.AgentID
-			sessionModelID = sessionInfo.Model
-			sessionThinkingEffort = sessionInfo.ThinkingEffort
+		if cachedSessionInfo != nil {
+			sessionTitle = cachedSessionInfo.Title
+			sessionInfoBackend = cachedSessionInfo.Backend
+			sessionAgentID = cachedSessionInfo.AgentID
+			sessionModelID = cachedSessionInfo.Model
+			sessionThinkingEffort = cachedSessionInfo.ThinkingEffort
 		}
 		if sessionInfoBackend != "" {
 			sessionBackend = sessionInfoBackend
@@ -301,6 +307,29 @@ func AIChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(fileAbsPaths) > 0 {
 		prompt = fmt.Sprintf("[User uploaded %d file(s): %s]\n%s", len(fileAbsPaths), strings.Join(fileAbsPaths, ", "), prompt)
+	}
+
+	// @ command injection: detect on raw req.Message, prepend template to prompt.
+	// Must happen after file path prefixes are added so the AI sees both
+	// the injected context and file context, but detection is on raw req.Message
+	// (since file prefixes would break the @ prefix check).
+	if strings.HasPrefix(req.Message, "@chatsearch ") {
+		// RAG availability check — GlobalStore is nil when RAG index is not ready
+		if rag.GlobalStore == nil {
+			writeLocalizedErrorf(w, r, http.StatusServiceUnavailable, "RAGNotReady")
+			return
+		}
+		// Empty query rejection
+		query := strings.TrimPrefix(req.Message, "@chatsearch ")
+		if strings.TrimSpace(query) == "" {
+			writeLocalizedErrorf(w, r, http.StatusBadRequest, "SearchQueryRequired")
+			return
+		}
+		atInjected := processAtCommand(req.Message, projectPath, sessionID)
+		prompt = atInjected + "\n\n" + prompt
+	} else if strings.HasPrefix(req.Message, "@task ") {
+		atInjected := processAtCommand(req.Message, projectPath, sessionID)
+		prompt = atInjected + "\n\n" + prompt
 	}
 
 	// allFiles already includes filePaths (frontend merges them before sending)
@@ -917,6 +946,11 @@ func buildChatRequestFromQueue(qMsg model.QueuedMessage, sessionID, projectPath,
 		prompt = fmt.Sprintf("[User uploaded %d file(s): %s]\n%s", len(qMsg.Files), strings.Join(qMsg.Files, ", "), prompt)
 	}
 
+	// @ command injection for queued messages (same logic as primary message path)
+	if atInjected := processAtCommand(qMsg.Text, projectPath, sessionID); atInjected != qMsg.Text {
+		prompt = atInjected + "\n\n" + prompt
+	}
+
 	// Use session-persisted model (if user explicitly chose one) as modelOverride
 	// so queued messages respect the user's model choice, not just the agent default.
 	sessionModel := service.GetSessionModel(sessionID)
@@ -967,58 +1001,101 @@ func stringsContainsAnyBlock(blocks []model.ContentBlock, substr string) bool {
 	return false
 }
 
-// extractJSONCandidate prepares a raw <ask-question> content string for JSON
-// parsing. It strips markdown code fences and trailing XML closing tags that
-// some models append after the JSON payload (e.g. "</user_query>"). Returns
-// the cleaned JSON string if the content looks like valid JSON (starts with
-// '{' or '['), or an empty string otherwise.
-func extractJSONCandidate(raw string) string {
+// extractXMLCandidate checks if the content between <ask-question> tags contains
+// XML with <item> child elements. Returns the raw XML content string if valid,
+// or empty string otherwise.
+func extractXMLCandidate(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return ""
 	}
-	// Strip markdown code fences (```json ... ```)
-	if strings.HasPrefix(trimmed, "```") {
-		if nl := strings.Index(trimmed, "\n"); nl != -1 {
-			trimmed = strings.TrimSpace(trimmed[nl+1:])
-		}
-		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
-			trimmed = strings.TrimSpace(trimmed[:idx])
-		}
+	// Must contain <item> element (XML format)
+	if !strings.Contains(trimmed, "<item>") && !strings.Contains(trimmed, "<item ") {
+		return ""
 	}
-	// Strip trailing XML closing tags that some models incorrectly append
-	// after the JSON payload (e.g. GLM-5.1 uses </user_query>).
-	reTrailingXML := regexp.MustCompile(`\s*</[a-zA-Z_][\w.-]*>\s*$`)
-	for reTrailingXML.MatchString(trimmed) {
-		trimmed = strings.TrimSpace(reTrailingXML.ReplaceAllString(trimmed, ""))
-	}
-	// Fallback: strip trailing closing tags with non-ASCII/obfuscated characters
-	// (e.g. </｜｜DSML｜｜question> with fullwidth pipe U+FF5C). The strict regex
-	// above won't match these, so use a permissive pattern as a second pass.
-	reTrailingXMLLoose := regexp.MustCompile(`\s*</[^>]+>\s*$`)
-	for reTrailingXMLLoose.MatchString(trimmed) {
-		prev := trimmed
-		trimmed = strings.TrimSpace(reTrailingXMLLoose.ReplaceAllString(trimmed, ""))
-		if trimmed == prev {
-			break
-		}
-	}
-	// Strip leading XML tags that some models use to wrap the JSON payload
-	// (e.g. <parameter name="questions">). These are parameter-style wrappers
-	// that enclose the JSON array/dict instead of placing it directly.
-	reLeadingXML := regexp.MustCompile(`^\s*<[a-zA-Z_][\w.-]*(?:\s[^>]*)?>\s*`)
-	if reLeadingXML.MatchString(trimmed) {
-		trimmed = strings.TrimSpace(reLeadingXML.ReplaceAllString(trimmed, ""))
-	}
-	// Validate that the content looks like JSON — must start with '{' or '['.
-	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+	// Basic validation: must have <question> and <option>
+	if !strings.Contains(trimmed, "<question>") || !strings.Contains(trimmed, "<option>") {
 		return ""
 	}
 	return trimmed
 }
 
+// parseAskQuestionXML parses XML-format <ask-question> content into the
+// map[string]any format expected by ContentBlock.Input for "AskUserQuestion" tool.
+func parseAskQuestionXML(xmlContent string) map[string]any {
+	// Use regex to extract item elements (lightweight XML parsing for Go)
+	reItem := regexp.MustCompile(`(?s)<item>(.*?)</item>`)
+	reHeader := regexp.MustCompile(`(?s)<header>(.*?)</header>`)
+	reMultiSelect := regexp.MustCompile(`(?s)<multi-select>(.*?)</multi-select>`)
+	reQuestion := regexp.MustCompile(`(?s)<question>(.*?)</question>`)
+	reOption := regexp.MustCompile(`(?s)<option>(.*?)</option>`)
+	reLabel := regexp.MustCompile(`(?s)<label>(.*?)</label>`)
+	reDesc := regexp.MustCompile(`(?s)<description>(.*?)</description>`)
+
+	itemMatches := reItem.FindAllStringSubmatch(xmlContent, -1)
+	if len(itemMatches) == 0 {
+		return nil
+	}
+
+	var questions []map[string]any
+	for _, itemMatch := range itemMatches {
+		itemContent := itemMatch[1]
+
+		headerMatch := reHeader.FindStringSubmatch(itemContent)
+		header := ""
+		if headerMatch != nil {
+			header = strings.TrimSpace(headerMatch[1])
+		}
+
+		multiSelectMatch := reMultiSelect.FindStringSubmatch(itemContent)
+		multiSelect := false
+		if multiSelectMatch != nil {
+			multiSelect = strings.TrimSpace(multiSelectMatch[1]) == "true"
+		}
+
+		questionMatch := reQuestion.FindStringSubmatch(itemContent)
+		if questionMatch == nil {
+			continue
+		}
+		question := strings.TrimSpace(questionMatch[1])
+
+		optionMatches := reOption.FindAllStringSubmatch(itemContent, -1)
+		var options []map[string]any
+		for _, optMatch := range optionMatches {
+			optContent := optMatch[1]
+			labelMatch := reLabel.FindStringSubmatch(optContent)
+			if labelMatch == nil {
+				continue
+			}
+			opt := map[string]any{"label": strings.TrimSpace(labelMatch[1])}
+			descMatch := reDesc.FindStringSubmatch(optContent)
+			if descMatch != nil {
+				opt["description"] = strings.TrimSpace(descMatch[1])
+			}
+			options = append(options, opt)
+		}
+
+		if len(options) == 0 {
+			continue
+		}
+
+		questions = append(questions, map[string]any{
+			"header":      header,
+			"multiSelect": multiSelect,
+			"question":    question,
+			"options":     options,
+		})
+	}
+
+	if len(questions) == 0 {
+		return nil
+	}
+
+	return map[string]any{"questions": questions}
+}
+
 // convertAskQuestionBlocks detects <ask-question> tags in text ContentBlocks,
-// parses the JSON content, and converts them into tool_use ContentBlocks with
+// parses the XML content, and converts them into tool_use ContentBlocks with
 // name="AskUserQuestion". Tags are stripped from text; if no text remains the
 // block is replaced entirely, otherwise a new tool_use block is appended.
 //
@@ -1035,7 +1112,7 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 	reUnclosed := regexp.MustCompile(`<ask-question\b[^>]*>([\s\S]+)$`)
 
 	// findAskMatch tries three regex strategies (from strict to loose) to locate
-	// a valid <ask-question> tag in text. It returns the JSON content string and
+	// a valid <ask-question> tag in text. It returns the XML content string and
 	// the [start, end) byte positions of the full tag span in text (for removal).
 	// Matches are tried from last to first because earlier occurrences may be prose
 	// references rather than actual structured questions.
@@ -1045,7 +1122,7 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 			matches := re.FindAllStringSubmatchIndex(text, -1)
 			for j := len(matches) - 1; j >= 0; j-- {
 				pair := matches[j]
-				if candidate := extractJSONCandidate(text[pair[2]:pair[3]]); candidate != "" {
+				if candidate := extractXMLCandidate(text[pair[2]:pair[3]]); candidate != "" {
 					return candidate, pair[0], pair[1]
 				}
 			}
@@ -1066,20 +1143,15 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 			continue
 		}
 
-		jsonContent, tagStart, tagEnd := findAskMatch(block.Text)
-		if jsonContent == "" {
+		xmlContent, tagStart, tagEnd := findAskMatch(block.Text)
+		if xmlContent == "" {
 			continue
 		}
 
-		var input map[string]any
-		if err := json.Unmarshal([]byte(jsonContent), &input); err != nil {
-			var questionsArr []any
-			if err2 := json.Unmarshal([]byte(jsonContent), &questionsArr); err2 == nil && len(questionsArr) > 0 {
-				input = map[string]any{"questions": questionsArr}
-			} else {
-				slog.Error("failed to parse ask-question JSON", slog.String("error", err.Error()))
-				continue
-			}
+		input := parseAskQuestionXML(xmlContent)
+		if input == nil {
+			slog.Error("failed to parse ask-question XML")
+			continue
 		}
 
 		questions, ok := input["questions"]
@@ -1087,7 +1159,7 @@ func convertAskQuestionBlocks(blocks []model.ContentBlock) []model.ContentBlock 
 			slog.Error("ask-question missing 'questions' field")
 			continue
 		}
-		questionsArr, ok := questions.([]any)
+		questionsArr, ok := questions.([]map[string]any)
 		if !ok || len(questionsArr) == 0 {
 			slog.Error("ask-question 'questions' must be a non-empty array")
 			continue

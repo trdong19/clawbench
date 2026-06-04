@@ -126,7 +126,7 @@ graph LR
 wget https://github.com/xulongzhe/clawbench/releases/latest/download/clawbench-linux-amd64.zip
 unzip clawbench-linux-amd64.zip
 cd clawbench
-./server.sh
+./clawbench
 ```
 
 就这么简单 —— 每次启动时，ClawBench 会自动扫描系统中已安装的 AI CLI 工具，为每个检测到的后端生成最小化智能体配置，并自动发现可用模型和思考档位。无需手动配置即可开始使用。
@@ -142,17 +142,7 @@ cd clawbench
 
 ### 自定义智能体
 
-自动生成的智能体配置为最小化默认值（不含模型列表和思考档位，由运行时自动发现填充）。如需自定义模型列表、系统提示词、图标等，编辑 `config/agents/` 目录下的 YAML 文件后重启服务即可：
-
-```bash
-# 编辑已有智能体
-vim config/agents/claude.yaml
-
-# 添加新的智能体（参考示例模板）
-cp config/agents/claude.yaml.example config/agents/my-claude.yaml
-```
-
-每个 `.yaml.example` 文件包含该后端的完整配置字段和说明，仅作为参考模板，不会被自动加载。
+自动发现的智能体配置为最小化默认值（不含模型列表和思考档位，由运行时自动发现填充）。如需自定义模型列表、系统提示词等，可在 Web UI 的设置向导中创建新智能体，智能体配置存储在数据库中。
 
 > 编译构建、高级配置、部署说明、架构设计等详细文档请参阅 **[编译与开发指南](docs/DEVELOPMENT.md)**。
 
@@ -173,6 +163,7 @@ cp config/agents/claude.yaml.example config/agents/my-claude.yaml
 
 ### 🎨 代码预览
 - 语法高亮，粘性行号，自动换行切换
+- **Sticky Scroll**：VS Code 风格的粘性滚动，滚动时自动显示当前所在的作用域上下文（函数/类/结构体等）
 - 双击复制代码行内容（闪烁动画反馈）
 - **文件改动闪烁高亮**：文件被外部修改时，删除字符红色脉冲闪烁，新增字符蓝色脉冲闪烁，快速定位改动
 - **引用提问**：选中代码片段后，一键向 AI 提问，自动附上文件路径和行号
@@ -181,7 +172,7 @@ cp config/agents/claude.yaml.example config/agents/my-claude.yaml
 ### 📝 Markdown
 - 渲染视图 / 源码视图一键切换
 - **引用提问**：选中文本，一键向 AI 提问
-- 智能目录抽屉（TOC），LaTeX 数学公式，Mermaid 图表
+- 智能目录抽屉（TOC），支持 Tree-sitter 代码符号提取（100+ 语言，17 种符号类型图标），LaTeX 数学公式，Mermaid 图表
 - **图片灯箱**：图片支持放大、左右切换浏览
 - **文件路径跳转**：Markdown 中的文件路径可点击跳转
 
@@ -194,7 +185,7 @@ cp config/agents/claude.yaml.example config/agents/my-claude.yaml
 - **模型选择持久化**：每个智能体的模型选择和思考档位自动保存到 localStorage，刷新/切换会话自动恢复
 - **定时任务**：AI 通过 CLI 子命令创建 Cron 调度，定时自动执行；独立标签页管理，4 级面包屑导航；频率预设（每小时/每天/每周/每月）+ 自定义 Cron 表达式；任务卡片内嵌聊天消息；执行级别已读追踪 + TTS 朗读；执行完成后自动摘要 + 完成通知（音效/震动/Toast）
 - **继续对话**：定时任务执行详情页可一键继续对话，自动复制历史消息和摘要到新会话，继承后端/智能体/模型/思考档位；会话列表中定时任务来源的会话显示紫色「定时」角标
-- **设置向导**：未安装任何 AI CLI 时，内置 Pi 智能体提供 5 步引导（欢迎 → 选择提供商 → 输入 API Key → 验证模型 → 命名智能体），支持 23 家 LLM 提供商（OpenAI、Anthropic、Google、DeepSeek、阿里通义等），API Key AES-256-GCM 加密存储，修改密码时自动轮换加密密钥
+- **设置向导**：未安装任何 AI CLI 时，内置 Pi 智能体提供 5 步引导（欢迎 → 选择提供商 → 输入 API Key → 验证模型 → 命名智能体），支持 23 家 LLM 提供商（OpenAI、Anthropic、Google、DeepSeek、阿里通义等）；支持自定义 URL 模式，可接入任意 OpenAI/Anthropic 兼容端点，自动检测 API 格式，直接 HTTP 验证（无需 Pi CLI），API Key AES-256-GCM 加密存储，修改密码时自动轮换加密密钥
 - **多会话管理**：创建、切换、删除独立会话，滑动切换
 - **滑动会话切换开关**：可在设置中开关聊天区域左右滑动切换会话，默认关闭避免滚动宽内容时误触
 - **图片上传**：支持上传图片与 AI 对话（多模态）
@@ -202,6 +193,10 @@ cp config/agents/claude.yaml.example config/agents/my-claude.yaml
 - **自动恢复**：Claude / CodeBuddy / Qoder / DeepSeek / Pi 退出 Plan Mode 后自动发送"继续"
 - **消息队列**：AI 忙碌时消息排队，依次发送
 - **自动摘要**：会话完成后自动生成最后一条助手消息的摘要，底部横幅一键切换摘要/原文；TTS 朗读也使用摘要
+- **@ 命令**：输入 `@chatsearch` 搜索历史对话、`@task` 管理定时任务，自动补全弹出菜单，用户消息显示紫色命令徽章
+- **RAG 结果卡片**：AI 回复中的 RAG 搜索结果渲染为紫色卡片，点击弹出详情抽屉，可一键恢复对话
+- **思维流内联显示**：思考过程流式内联展示，完成后自动折叠为可点击芯片
+- **会话进度指示**：会话抽屉显示胶囊进度条，颜色随用量变化（蓝/橙/红）
 
 ### 🤖 AI 对话
 - **工具调用可视化**：名称、参数、执行结果实时展示，成功/失败状态一目了然
@@ -219,7 +214,7 @@ cp config/agents/claude.yaml.example config/agents/my-claude.yaml
 
 ### 🔊 TTS 语音朗读
 - AI 回复自动总结后朗读，边听边看
-- **5 种 TTS 引擎**：Edge TTS（免费）、MiniMax（音质最佳）、Piper / Kokoro / MOSS-Nano（本地离线）
+- **5 种 TTS 引擎**：Edge TTS（免费，原生 Go 实现，无外部依赖）、MiniMax（音质最佳）、Piper / Kokoro / MOSS-Nano（本地离线）
 - **12 种总结后端**：simple 纯清洗、mmx-cli、api（OpenAI/Anthropic 兼容）、Claude、CodeBuddy、Gemini、OpenCode、Codex、Qoder、VeCLI、DeepSeek、Pi
 - 详见 [TTS 语音合成部署指南](docs/TTS.md)
 

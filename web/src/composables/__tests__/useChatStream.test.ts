@@ -988,6 +988,144 @@ describe('useChatStream', () => {
     })
   })
 
+  describe('JSON.parse error handling (ISS-244)', () => {
+    it('should skip content event with invalid JSON without crashing', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // Send malformed JSON as content event
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      es.listeners.get('content')?.forEach(listener => {
+        listener({ data: 'not valid json{' } as any)
+      })
+      consoleSpy.mockRestore()
+
+      // Stream should still be alive — no crash
+      const assistantMsg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(assistantMsg).toBeDefined()
+      // No text blocks should have been added from the malformed event
+      const textBlocks = assistantMsg.blocks.filter((b: any) => b.type === 'text')
+      expect(textBlocks.length).toBe(0)
+    })
+
+    it('should skip thinking event with invalid JSON without crashing', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      es.listeners.get('thinking')?.forEach(listener => {
+        listener({ data: '{broken json' } as any)
+      })
+      consoleSpy.mockRestore()
+
+      const assistantMsg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(assistantMsg).toBeDefined()
+      expect(assistantMsg.blocks.length).toBe(0)
+    })
+
+    it('should skip tool_use event with invalid JSON without crashing', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      es.listeners.get('tool_use')?.forEach(listener => {
+        listener({ data: 'not-json' } as any)
+      })
+      consoleSpy.mockRestore()
+
+      const assistantMsg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(assistantMsg).toBeDefined()
+      expect(assistantMsg.blocks.length).toBe(0)
+    })
+
+    it('should recover from invalid JSON and process subsequent valid events', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // Send invalid content event
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      es.listeners.get('content')?.forEach(listener => {
+        listener({ data: 'not-json' } as any)
+      })
+      consoleSpy.mockRestore()
+
+      // Send valid content event — should still work
+      es.simulate('content', { content: 'Hello after error' })
+
+      const assistantMsg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(assistantMsg).toBeDefined()
+      const textBlocks = assistantMsg.blocks.filter((b: any) => b.type === 'text')
+      expect(textBlocks.length).toBe(1)
+      expect(textBlocks[0].text).toBe('Hello after error')
+    })
+
+    it('should skip metadata event with invalid JSON without crashing', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      es.listeners.get('metadata')?.forEach(listener => {
+        listener({ data: '{invalid' } as any)
+      })
+      consoleSpy.mockRestore()
+
+      const assistantMsg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(assistantMsg).toBeDefined()
+      expect(assistantMsg.metadata).toBeUndefined()
+    })
+
+    it('should skip warning event with invalid JSON without crashing', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      es.listeners.get('warning')?.forEach(listener => {
+        listener({ data: 'not-json' } as any)
+      })
+      consoleSpy.mockRestore()
+
+      const assistantMsg = options.messages.value.find(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      expect(assistantMsg).toBeDefined()
+      expect(assistantMsg.blocks.length).toBe(0)
+    })
+  })
+
   describe('connectStream', () => {
     it('should disconnect previous stream before connecting new one', () => {
       const options = createOptions()
@@ -1265,6 +1403,179 @@ describe('useChatStream', () => {
         expect(options.onToast).toHaveBeenCalled()
       })
       expect(options.onNotification).toHaveBeenCalled()
+    })
+  })
+
+  describe('ISS-246: done handler checks guard() before modifying state', () => {
+    it('should not modify loading state when session changed before done', async () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      options.loading.value = true
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // Change session — guard should reject the done event
+      options.currentSessionId.value = 'different-session'
+
+      es.simulate('done', {})
+
+      // The stale EventSource should be closed, but loading state should NOT
+      // be set to false for the new session (it belongs to the old session)
+      expect(es.readyState).toBe(MockEventSource.CLOSED)
+      // loading remains true because guard() rejected the event
+      expect(options.loading.value).toBe(true)
+      // onLoadHistory should NOT be called for the wrong session
+      expect(options.onLoadHistory).not.toHaveBeenCalled()
+    })
+
+    it('should not call onMessage or onStreamEnd when guard fails on done', async () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      options.loading.value = true
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // Remove the streaming message — guard fails
+      const idx = options.messages.value.findIndex(
+        (m: any) => m.role === 'assistant' && m.streaming
+      )
+      options.messages.value.splice(idx, 1)
+
+      es.simulate('done', {})
+
+      expect(options.onMessage).not.toHaveBeenCalled()
+      expect(options.onStreamEnd).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('ISS-245/ISS-278: cancelled handler checks guard() before disconnectStream', () => {
+    it('should not close new session EventSource when cancelled arrives for old session', () => {
+      const options = createOptions()
+      const stream = useChatStream(options)
+
+      options.loading.value = true
+      stream.connectStream('test-session-1')
+      const es1 = getLatestEs()
+      es1.simulateOpen()
+
+      // Simulate session switch — user opens a new session
+      options.currentSessionId.value = 'session-2'
+      options.loading.value = true
+      stream.connectStream('session-2')
+      const es2 = getLatestEs()
+      es2.simulateOpen()
+
+      // The old EventSource (es1) fires a stale 'cancelled' event
+      es1.simulate('cancelled', {})
+
+      // The new session's EventSource should NOT be affected
+      expect(es2.readyState).toBe(MockEventSource.OPEN)
+      // loading should remain true for the new session
+      expect(options.loading.value).toBe(true)
+      // onStreamEnd should NOT be called for the stale event
+      expect(options.onStreamEnd).not.toHaveBeenCalledWith('cancelled')
+    })
+
+    it('should still close the stale EventSource on cancelled when guard fails', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      options.loading.value = true
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      // Change session ID
+      options.currentSessionId.value = 'different-session'
+
+      es.simulate('cancelled', {})
+
+      // The stale EventSource should be closed (cleanup)
+      expect(es.readyState).toBe(MockEventSource.CLOSED)
+    })
+
+    it('should mark streamingMsg as cancelled when guard passes', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      options.loading.value = true
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.simulateOpen()
+
+      es.simulate('cancelled', {})
+
+      // Guard passed — streamingMsg should be marked as cancelled
+      const assistantMsg = options.messages.value.find(
+        (m: any) => m.role === 'assistant'
+      )
+      expect(assistantMsg.cancelled).toBe(true)
+      expect(options.loading.value).toBe(false)
+      expect(options.onStreamEnd).toHaveBeenCalledWith('cancelled')
+    })
+  })
+
+  describe('ISS-248/ISS-279: onerror distinguishes recoverable vs non-recoverable errors', () => {
+    it('should attempt reconnect for transient errors (readyState != CLOSED)', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      options.loading.value = true
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      // Simulate OPEN state — transient error (e.g., network blip)
+      es.readyState = MockEventSource.OPEN
+
+      // Clear any previous calls to forceCleanupStreamingState from other tests
+      ;(forceCleanupStreamingState as any).mockClear?.()
+
+      es.simulateError()
+
+      // Since the error was recoverable (readyState != CLOSED), the stream
+      // should attempt reconnection rather than falling back to polling
+      // We verify by checking that forceCleanupStreamingState was NOT called
+      // (it would be called for non-recoverable errors before polling)
+      expect(forceCleanupStreamingState).not.toHaveBeenCalled()
+    })
+
+    it('should fall back to polling for non-recoverable errors (readyState = CLOSED)', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      options.loading.value = true
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      // Simulate CLOSED state — permanent failure (e.g., 404, server shutdown)
+      es.readyState = MockEventSource.CLOSED
+
+      es.simulateError()
+
+      // Non-recoverable: should fall back to polling (NOT forceCleanupStreamingState
+      // which would delete the streaming flag and cause pollUntilDone to fail)
+      // Verify loading stays true (session is still running, just using polling)
+      expect(options.loading.value).toBe(true)
+    })
+
+    it('should not attempt reconnect when readyState is CLOSED even if loading and sessionId exist', () => {
+      const options = createOptions()
+      const { connectStream } = useChatStream(options)
+
+      options.loading.value = true
+      connectStream('test-session-1')
+      const es = getLatestEs()
+      es.readyState = MockEventSource.CLOSED
+
+      const esCountBeforeError = mockEsInstances.length
+
+      es.simulateError()
+
+      // No new EventSource should be created (no reconnect attempt for fatal errors)
+      // Only the initial one from connectStream should exist
+      expect(mockEsInstances.length).toBe(esCountBeforeError)
     })
   })
 

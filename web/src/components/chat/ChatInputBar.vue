@@ -84,7 +84,7 @@
           ref="textareaRef"
           v-model="inputText"
           :disabled="inputDisabled"
-          :placeholder="pendingFiles.length > 0 ? t('chat.input.placeholderOptional') : loading ? t('chat.input.placeholderQueue') : quickSendItems.length > 0 && !hasInputContent ? t('chat.input.placeholderQuickSend') : t('chat.input.placeholder')"
+          :placeholder="dynamicPlaceholder"
           rows="1"
           @keydown.enter.exact.prevent="$emit('send', inputText.trim())"
           @focus="onTextareaFocus"
@@ -156,6 +156,14 @@
         @switch-thinking-effort="handleSwitchThinkingEffort"
       />
       <QuickSendDialog :open="props.active && quickSendStore.showEditDialog.value" @close="quickSendStore.showEditDialog.value = false" />
+      <!-- @ command autocomplete menu -->
+      <PopupMenu v-model:show="showAtMenu" :target-element="textareaRef" :max-width="260" :max-height="200" :menu-items-count="atMenuItems.length">
+        <div class="at-menu-title">{{ t('chat.atCommand.title') }}</div>
+        <button v-for="cmd in atMenuItems" :key="cmd.key" class="at-menu-item" @mousedown.prevent="handleAtSelect(cmd)">
+          <span class="at-menu-label">{{ cmd.label }}</span>
+          <span class="at-menu-desc">{{ cmd.description }}</span>
+        </button>
+      </PopupMenu>
     </div>
   </div>
 </template>
@@ -178,6 +186,53 @@ const { t } = useI18n()
 const dialog = useDialog()
 const quickSendStore = useQuickSend()
 const { items: quickSendItems, fetchItems } = quickSendStore
+
+// ── Rotating placeholder ──
+const placeholderIndex = ref(0)
+let placeholderTimer = null
+
+// The candidate hints cycle when the textarea is empty, unfocused, and not in queue/upload mode.
+// When quickSendItems exist, the cycle includes the quick-send tip; otherwise it's skipped.
+const placeholderHints = computed(() => {
+  const hints = [t('chat.input.placeholder')]
+  if (quickSendItems.value.length > 0) {
+    hints.push(t('chat.input.placeholderQuickSend'))
+  }
+  hints.push(t('chat.input.placeholderAtCommand'))
+  return hints
+})
+
+function startPlaceholderRotation() {
+  stopPlaceholderRotation()
+  if (placeholderHints.value.length <= 1) return
+  placeholderTimer = setInterval(() => {
+    placeholderIndex.value = (placeholderIndex.value + 1) % placeholderHints.value.length
+  }, 4000)
+}
+
+function stopPlaceholderRotation() {
+  if (placeholderTimer) {
+    clearInterval(placeholderTimer)
+    placeholderTimer = null
+  }
+}
+
+// Reset index when hints change (e.g. quickSendItems loaded) so we don't go out of bounds
+watch(placeholderHints, () => {
+  if (placeholderIndex.value >= placeholderHints.value.length) {
+    placeholderIndex.value = 0
+  }
+})
+
+const isTextareaFocused = ref(false)
+
+const dynamicPlaceholder = computed(() => {
+  if (props.pendingFiles.length > 0) return t('chat.input.placeholderOptional')
+  if (props.loading) return t('chat.input.placeholderQueue')
+  if (isTextareaFocused.value) return t('chat.input.placeholder')
+  // Unfocused & empty: cycle through hints
+  return placeholderHints.value[placeholderIndex.value] || t('chat.input.placeholder')
+})
 
 const props = defineProps({
   inputDisabled: Boolean,
@@ -226,6 +281,38 @@ const attachMenuRef = ref(null)
 const showQuickMenu = ref(false)
 const sendBtnRef = ref(null)
 const showModelModal = ref(false)
+
+// ── @ command autocomplete ──
+const showAtMenu = ref(false)
+const atCommands = [
+  { key: '@chatsearch', label: '@chatsearch', description: t('chat.atCommand.chatsearchDesc') },
+  { key: '@task', label: '@task', description: t('chat.atCommand.taskDesc') },
+]
+
+const atMenuItems = computed(() => {
+  const text = inputText.value
+  if (!text.startsWith('@')) return []
+  const query = text.toLowerCase()
+  return atCommands.filter(cmd => cmd.key.startsWith(query))
+})
+
+// Directly control menu visibility from inputText changes
+watch(inputText, () => {
+  const text = inputText.value
+  const shouldShow = text.startsWith('@')
+    && !text.includes(' ')
+    && atMenuItems.value.length > 0
+  showAtMenu.value = shouldShow
+})
+
+function handleAtSelect(cmd) {
+  inputText.value = cmd.key + ' '
+  showAtMenu.value = false
+  nextTick(() => {
+    const el = textareaRef.value
+    if (el) el.focus()
+  })
+}
 
 // Keyboard detection for iOS (no adjustResize) — activates visualViewport monitoring
 // when textarea is focused so App.vue can compensate the layout.
@@ -318,11 +405,23 @@ function autoResizeTextarea() {
 function onTextareaFocus() {
   chatKeyboard.activate()
   autoResizeTextarea()
+  isTextareaFocused.value = true
+  stopPlaceholderRotation()
 }
 
 function onTextareaBlur() {
   chatKeyboard.debounceDeactivate()
   autoResizeTextarea()
+  isTextareaFocused.value = false
+  // Start rotation when unfocused (only if empty input)
+  if (!inputText.value.trim()) {
+    startPlaceholderRotation()
+  }
+  // Close @ command menu when textarea loses focus (clicking menu items uses
+  // @mousedown.prevent so blur won't fire for those interactions)
+  nextTick(() => {
+    showAtMenu.value = false
+  })
 }
 
 // Watch inputText changes (both user input and programmatic changes like draft restore)
@@ -421,10 +520,12 @@ watch(showModelModal, (v) => { if (v) { showAttachMenu.value = false; showQuickM
 
 onMounted(() => {
   fetchItems()
+  startPlaceholderRotation()
 })
 
 onBeforeUnmount(() => {
   clearTimeout(stopPrimeTimer)
+  stopPlaceholderRotation()
 })
 
 // Reset stop confirmation state when loading ends (AI finished or cancelled)
@@ -1134,5 +1235,51 @@ defineExpose({
   width: 14px;
   height: 14px;
   flex-shrink: 0;
+}
+
+/* @ command autocomplete menu styles */
+.at-menu-title {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.at-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.at-menu-item:hover {
+  background: var(--bg-secondary, #f1f3f5);
+}
+
+.at-menu-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8b5cf6;
+  white-space: nowrap;
+}
+
+:root[data-theme="dark"] .at-menu-label {
+  color: #a78bfa;
+}
+
+.at-menu-desc {
+  font-size: 12px;
+  color: var(--text-secondary, #495057);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

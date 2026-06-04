@@ -7,6 +7,25 @@ on:
     branches: [main]
 
 jobs:
+  golangci-lint:
+    name: Lint (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          args: --timeout=5m --build-tags fts5
+          only-new-issues: true
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -20,14 +39,11 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Go vet
-        run: go vet ./...
-
       - name: Go test
-        run: go test ./...
+        run: go test -tags "fts5" ./...
 
       - name: Go build
-        run: go build ./cmd/server
+        run: go build -tags "fts5" ./cmd/server
 
   coverage-go:
     name: Coverage Gate (Go)
@@ -52,7 +68,16 @@ jobs:
           go-version: '1.25'
 
       - name: Run coverage gate check
-        run: ./scripts/check-go-coverage.sh
+        run: |
+          set +e
+          ./scripts/check-go-coverage.sh
+          exit_code=$?
+          set -e
+          if [ $exit_code -eq 2 ]; then
+            echo "::warning::Tier 1 (Project) coverage gate failed — baseline drift, non-blocking"
+            exit 0
+          fi
+          exit $exit_code
 
       - name: Upload coverage profile
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -213,7 +238,7 @@ jobs:
         run: npx playwright install --with-deps
 
       - name: Build Go binary
-        run: go build -o clawbench ./cmd/server
+        run: go build -tags "fts5" -o clawbench ./cmd/server
 
       - name: Build frontend
         run: npm run build

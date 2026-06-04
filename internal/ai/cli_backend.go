@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"clawbench/internal/model"
 )
@@ -92,6 +93,34 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 
 	go func() {
 		defer close(ch)
+		// Ensure cmd.Wait() is always called to reap the child process.
+		// If the goroutine returns early (e.g. context cancellation), we must
+		// still call Wait() to prevent zombie processes. See ISS-232.
+		var waitCalled bool
+		defer func() {
+			if !waitCalled {
+				// exec.CommandContext already sends SIGKILL on cancel,
+				// so the process should exit quickly. Best-effort Wait
+				// with timeout to reap the process and avoid zombies.
+				go func() {
+					timer := time.NewTimer(30 * time.Second)
+					defer timer.Stop()
+					waitCh := make(chan struct{})
+					go func() {
+						_ = cmd.Wait()
+						close(waitCh)
+					}()
+					select {
+					case <-waitCh:
+						// Process reaped successfully
+					case <-timer.C:
+						slog.Warn(b.name+" stream: cmd.Wait() timed out after context cancellation, releasing process",
+							slog.String("session_id", req.SessionID))
+						_ = cmd.Process.Release()
+					}
+				}()
+			}
+		}()
 
 		scanner := bufio.NewScanner(stdoutPipe)
 		buf := make([]byte, scannerInitial)
@@ -167,6 +196,7 @@ func (b *CLIBackend) ExecuteStream(ctx context.Context, req ChatRequest) (<-chan
 			}
 		}
 
+		waitCalled = true
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() != nil {
 				slog.Warn(
@@ -260,6 +290,12 @@ func filterSkipNonJSON() func(string) (string, bool) {
 // and injects it as an environment variable on the CLI command. For Pi agents,
 // also adds the --provider flag so Pi knows which provider config to use.
 // If the agent has no stored API key, this is a no-op (Pi falls back to auth.json).
+//
+// For custom URL agents (customURL != ""): the provider stored in agent_api_keys
+// is the agent ID itself (e.g., "custom-agent"), and Pi uses models.json to find
+// the endpoint. We inject --provider {agentID} --api-key {key} directly.
+// For built-in providers: we inject the env var (e.g., OPENAI_API_KEY=sk-...)
+// and --provider {provider}.
 func injectAgentAPIKey(cmd *exec.Cmd, req ChatRequest) {
 	if agentAPIKeyLoader == nil {
 		return
@@ -281,17 +317,20 @@ func injectAgentAPIKey(cmd *exec.Cmd, req ChatRequest) {
 		return // No stored API key — Pi will fall back to auth.json
 	}
 
-	// Find the provider spec and inject the env var
+	// Custom URL mode: provider is the agent ID (set by setup complete).
+	// Use --provider {agentID} + --api-key so Pi reads models.json for the endpoint.
+	if customURL != "" {
+		cmd.Args = append(cmd.Args[:len(cmd.Args)-1], "--provider", provider, "--api-key", apiKey, cmd.Args[len(cmd.Args)-1])
+		slog.Debug("injected custom URL API key for agent", "agent_id", req.AgentID, "provider", provider)
+		return
+	}
+
+	// Built-in provider mode: inject env var + --provider flag
 	spec := model.FindProviderSpec(provider)
 	if spec != nil && spec.EnvVar != "" {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", spec.EnvVar, apiKey))
 		// Add --provider flag to Pi CLI args
 		cmd.Args = append(cmd.Args[:len(cmd.Args)-1], "--provider", provider, cmd.Args[len(cmd.Args)-1])
-	}
-
-	// Inject custom URL if provided
-	if customURL != "" {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("PI_CUSTOM_URL=%s", customURL))
 	}
 
 	slog.Debug("injected API key for agent", "agent_id", req.AgentID, "provider", provider)

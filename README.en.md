@@ -125,7 +125,7 @@ Download the latest ZIP package from [GitHub Releases](https://github.com/xulong
 wget https://github.com/xulongzhe/clawbench/releases/latest/download/clawbench-linux-amd64.zip
 unzip clawbench-linux-amd64.zip
 cd clawbench
-./server.sh
+./clawbench
 ```
 
 That's it — on every startup, ClawBench automatically scans for installed AI CLI tools, generates minimal agent configs for each detected backend, and auto-discovers available models and thinking effort levels. No manual configuration needed.
@@ -141,17 +141,7 @@ Once deployed, access `http://server-ip:20000` from your phone app or mobile bro
 
 ### Customize Agents
 
-Auto-generated agent configs use minimal defaults (no model lists or thinking effort levels — these are auto-discovered at runtime). To customize model lists, system prompts, icons, etc., edit the YAML files in `config/agents/` and restart the server:
-
-```bash
-# Edit an existing agent
-vim config/agents/claude.yaml
-
-# Add a new agent (use example templates as reference)
-cp config/agents/claude.yaml.example config/agents/my-claude.yaml
-```
-
-Each `.yaml.example` file contains complete configuration fields and descriptions for that backend. They serve as reference templates only and are not auto-loaded.
+Auto-discovered agent configs use minimal defaults (no model lists or thinking effort levels — these are auto-discovered at runtime). To customize model lists, system prompts, etc., create new agents via the setup wizard in the Web UI. Agent configs are stored in the database.
 
 > For build instructions, advanced configuration, deployment, and architecture details, see **[Build & Development Guide](docs/DEVELOPMENT.en.md)**.
 
@@ -172,6 +162,7 @@ Each `.yaml.example` file contains complete configuration fields and description
 
 ### 🎨 Code Preview
 - Syntax highlighting, sticky line numbers, word wrap toggle
+- **Sticky Scroll**: VS Code-style sticky scroll that shows enclosing scope context (functions, classes, structs, etc.) as you scroll
 - Double-click to copy code line content (flash animation feedback)
 - **File Change Flash Highlight**: When files are modified externally, deleted characters flash red and new characters flash blue for quick change identification
 - **Quote & Ask**: Select a code snippet, one-click ask AI, auto-attaches file path and line number
@@ -180,7 +171,7 @@ Each `.yaml.example` file contains complete configuration fields and description
 ### 📝 Markdown
 - Toggle between rendered view / source view
 - **Quote & Ask**: Select text, one-click ask AI
-- Smart table of contents drawer (TOC), LaTeX math, Mermaid diagrams
+- Smart table of contents drawer (TOC) with tree-sitter code symbol extraction (100+ languages, 17 symbol kind icons), LaTeX math, Mermaid diagrams
 - **Image Lightbox**: Images support zoom, swipe browsing
 - **File Path Navigation**: Clickable file paths in Markdown
 
@@ -193,7 +184,7 @@ Each `.yaml.example` file contains complete configuration fields and description
 - **Model Selection Persistence**: Model choice and thinking effort per agent auto-saved to localStorage, restored on reload/session switch
 - **Scheduled Tasks**: AI creates Cron schedules via CLI subcommands, executes automatically; independent tab with 4-level breadcrumb navigation; task cards embedded in chat messages; frequency presets (hourly/daily/weekly/monthly) + custom cron expressions; per-execution read tracking + TTS playback; execution auto-summary + completion notification (sound/haptic/toast)
 - **Continue Conversation**: One-click continue conversation from task execution detail, auto-copies history messages and summaries to a new session, inherits backend/agent/model/thinking effort; sessions originated from scheduled tasks show a purple "Task" badge in session list
-- **Setup Wizard**: When no AI CLI is installed, the embedded Pi agent provides a 5-step guided setup (Welcome → Select Provider → Enter API Key → Verify Model → Name Agent), supporting 23 LLM providers (OpenAI, Anthropic, Google, DeepSeek, Alibaba Qwen, etc.). API keys are encrypted with AES-256-GCM and encryption keys auto-rotate on password change
+- **Setup Wizard**: When no AI CLI is installed, the embedded Pi agent provides a 5-step guided setup (Welcome → Select Provider → Enter API Key → Verify Model → Name Agent), supporting 23 LLM providers (OpenAI, Anthropic, Google, DeepSeek, Alibaba Qwen, etc.); supports custom URL mode for any OpenAI/Anthropic-compatible endpoint with auto-detected API format and direct HTTP verification (no Pi CLI needed). API keys are encrypted with AES-256-GCM and encryption keys auto-rotate on password change
 - **Multi-Session Management**: Create, switch, delete independent sessions, swipe to switch
 - **Swipe Session Toggle**: Toggle left/right swipe session switching in Settings → Chat; defaults to off to prevent accidental switches when scrolling wide content
 - **Image Upload**: Upload images for AI conversation (multimodal)
@@ -201,6 +192,10 @@ Each `.yaml.example` file contains complete configuration fields and description
 - **Auto Resume**: Automatically sends "continue" after Claude/CodeBuddy/Qoder/DeepSeek/Pi exits Plan Mode
 - **Message Queue**: Messages queue when AI is busy, sent sequentially
 - **Auto Summary**: Automatically generates a summary of the last assistant message on session complete; toggle between summary/original via bottom banner; TTS playback also uses the summary
+- **@ Commands**: Type `@chatsearch` to search conversation history, `@task` to manage scheduled tasks — autocomplete popup menu, purple command badge in user messages
+- **RAG Results Card**: RAG search results in AI responses rendered as purple-themed cards; click to open detail drawer, one-click resume conversation
+- **Inline Thinking Streaming**: Thinking process streams inline during active session; auto-collapses to clickable chip on completion
+- **Session Progress Indicator**: Session drawer shows capsule progress bar with color-coded fill (blue/orange/red) based on usage
 
 ### ⏰ Scheduled Tasks
 - **Cron Scheduling**: AI creates Cron schedules via CLI subcommands, executes automatically
@@ -231,7 +226,7 @@ Each `.yaml.example` file contains complete configuration fields and description
 
 ### 🔊 TTS Speech Synthesis
 - Auto-summarize and read AI replies aloud, listen while reading
-- **5 TTS Engines**: Edge TTS (free), MiniMax (best quality), Piper / Kokoro / MOSS-Nano (local offline)
+- **5 TTS Engines**: Edge TTS (free, native Go implementation, no external dependency), MiniMax (best quality), Piper / Kokoro / MOSS-Nano (local offline)
 - **12 Summarization Backends**: simple (text-only cleanup), mmx-cli, api (OpenAI/Anthropic compatible), Claude, CodeBuddy, Gemini, OpenCode, Codex, Qoder, VeCLI, DeepSeek, Pi
 - See [TTS Deployment Guide](docs/TTS.en.md)
 

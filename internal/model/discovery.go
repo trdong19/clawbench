@@ -90,9 +90,15 @@ var BackendRegistry = []BackendSpec{
 // If that fails, it falls back to exec.LookPath — some CLIs (especially Node.js ones)
 // may return non-zero exit codes for --version when run without a TTY or in certain
 // environments, but the binary itself is still present and functional.
+// For the "pi" command, also checks the embedded binary at .clawbench/pi/pi.
 func CheckCLIExists(cmd string) bool {
 	if cmd == "" {
 		return false
+	}
+
+	// Special case: embedded Pi binary
+	if cmd == "pi" && EmbeddedAgentPath() != "" {
+		return true
 	}
 
 	// Primary check: run `cmd --version`
@@ -119,9 +125,15 @@ func CheckCLIExists(cmd string) bool {
 
 // CheckCLIExistsErr returns an error describing why the CLI is not available,
 // or nil if the CLI is available. This is used for more specific error reporting.
+// For the "pi" command, also checks the embedded binary at .clawbench/pi/pi.
 func CheckCLIExistsErr(cmd string) error {
 	if cmd == "" {
 		return fmt.Errorf("empty command")
+	}
+
+	// Special case: embedded Pi binary
+	if cmd == "pi" && EmbeddedAgentPath() != "" {
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -477,18 +489,12 @@ type codebuddyProduct struct {
 // file from the CLI installation directory. This JSON file contains the authoritative model
 // list with proper names and default status, making it far more reliable than --help output
 // (which launches a TUI that hangs without a TTY) or JS bundle scanning (which is fragile).
-func DiscoverCodebuddyModels() []AgentModel { //nolint:gocyclo // multi-format model discovery
-	// Find the codebuddy binary path
-	path, err := exec.LookPath("codebuddy")
-	if err != nil {
-		return nil
-	}
-
-	// Resolve symlink to find the actual installation directory
+func DiscoverCodebuddyModels() []AgentModel {
+	// Resolve the real path for the codebuddy CLI, handling Windows .cmd wrappers
 	// Path is typically: .../node_modules/@tencent-ai/codebuddy-code/bin/codebuddy
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		realPath = path
+	realPath := platform.ResolveCLIPath("codebuddy")
+	if realPath == "" {
+		return nil
 	}
 
 	// The product JSON is at .../codebuddy-code/product.cloudhosted.json
@@ -698,39 +704,25 @@ func claudeIsDateStamped(modelID string) bool {
 // DiscoverClaudeModels discovers Claude model IDs by scanning the claude binary
 // with `strings`. Claude CLI does not have a --list-models command, so we extract
 // model IDs from the binary which contains hardcoded model name patterns.
-func DiscoverClaudeModels() []AgentModel { //nolint:gocognit,gocyclo // binary scanning model discovery
-	// Find the claude binary path
-	path, err := exec.LookPath("claude")
-	if err != nil {
+func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo // binary scanning model discovery
+	// Resolve the real path for the claude binary, handling Windows .cmd wrappers
+	path := platform.ResolveCLIPath("claude")
+	if path == "" {
 		return nil
 	}
 
-	var out []byte
-	if runtime.GOOS == "windows" {
-		// Windows: read binary directly and scan for printable strings
-		data, err := os.ReadFile(path)
-		if err != nil {
-			slog.Debug("claude model discovery: failed to read binary", "error", err)
-			return nil
-		}
-		out = extractPrintableStrings(data)
-	} else {
-		// Unix: use the `strings` command
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		out, err = exec.CommandContext(ctx, "strings", path).Output()
-		if err != nil {
-			slog.Debug("claude model discovery: strings command failed", "error", err)
-			return nil
-		}
+	// Extract printable strings from the binary (cross-platform replacement for
+	// the POSIX "strings" command, which does not exist on Windows)
+	lines, err := platform.ExtractStrings(path, 4)
+	if err != nil {
+		slog.Debug("claude model discovery: extract strings failed", "error", err)
+		return nil
 	}
 
 	// Extract unique model IDs matching the pattern
 	seen := make(map[string]bool)
 	var models []AgentModel
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
+	for _, line := range lines {
 		if !claudeModelRe.MatchString(line) || seen[line] {
 			continue
 		}
@@ -916,15 +908,21 @@ func ParsePiModels(output string) []AgentModel {
 
 // DiscoverPiModels discovers Pi model IDs by running `pi --list-models` and parsing the output.
 // Pi outputs the model table to stderr (not stdout), so we must capture both streams.
+// It first tries the embedded Pi binary at .clawbench/pi/pi, then falls back to PATH.
 func DiscoverPiModels() []AgentModel {
+	piPath := EmbeddedAgentPath()
+	if piPath == "" {
+		piPath = "pi" // fallback to PATH
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "pi", "--list-models")
+	cmd := exec.CommandContext(ctx, piPath, "--list-models")
 	// Pi outputs the model table to stderr; use CombinedOutput to capture both.
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		slog.Debug("pi model discovery: command failed", "error", err)
+		slog.Debug("pi model discovery: command failed", "path", piPath, "error", err)
 		return nil
 	}
 
@@ -959,25 +957,45 @@ var geminiTierRe = regexp.MustCompile(`tier:\s*"([^"]+)"`)
 // geminiFamilyRe extracts the family value from a model definition block.
 var geminiFamilyRe = regexp.MustCompile(`family:\s*"([^"]+)"`)
 
+// hasChunkJS checks whether a directory listing contains any chunk-*.js files,
+// which is how Gemini CLI organizes its JS bundle.
+func hasChunkJS(entries []os.DirEntry) bool {
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "chunk-") && strings.HasSuffix(e.Name(), ".js") {
+			return true
+		}
+	}
+	return false
+}
+
 // DiscoverGeminiModels discovers Gemini model IDs by scanning the JS bundle files
 // in the Gemini CLI npm package directory. The model definitions are embedded in
 // chunk-*.js files with isVisible: true/false markers.
 func DiscoverGeminiModels() []AgentModel { //nolint:gocognit,gocyclo // API-based model discovery with pagination
-	path, err := exec.LookPath("gemini")
-	if err != nil {
+	// Resolve the real path for the gemini CLI, handling Windows .cmd wrappers
+	realPath := platform.ResolveCLIPath("gemini")
+	if realPath == "" {
 		return nil
-	}
-
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		realPath = path
 	}
 
 	// Navigate to the bundle directory: .../node_modules/@google/gemini-cli/bundle/
+	// The JS entry point is typically at .../bundle/gemini, so Dir() gives .../bundle/
 	bundleDir := filepath.Dir(realPath)
+
+	// On Windows, the resolved path from .cmd points directly to the JS entry file
+	// inside the bundle/ directory, so Dir() correctly gives the bundle directory.
+	// On Unix, the symlink also resolves to the bundle/ directory.
+	// Verify by checking for chunk-*.js files.
 	if filepath.Base(bundleDir) != "bundle" {
-		slog.Debug("gemini model discovery: unexpected path layout", "path", realPath)
-		return nil
+		// Try bundle/ subdirectory — the entry file might be at package root
+		// and bundle/ is a subdirectory (e.g. if path resolves differently)
+		altBundleDir := filepath.Join(bundleDir, "bundle")
+		if entries, err := os.ReadDir(altBundleDir); err == nil && hasChunkJS(entries) {
+			bundleDir = altBundleDir
+		} else {
+			slog.Debug("gemini model discovery: unexpected path layout", "path", realPath, "dir", bundleDir)
+			return nil
+		}
 	}
 
 	entries, err := os.ReadDir(bundleDir)
@@ -1148,17 +1166,13 @@ func DiscoverCodexModels() []AgentModel {
 	return discoverCodexModelsDefaults()
 }
 
-// discoverCodexModelsFromBinary tries to extract model IDs by running `strings`
-// on the Codex Rust binary. This works for unstripped or debug binaries.
+// discoverCodexModelsFromBinary tries to extract model IDs by scanning the
+// Codex Rust binary for printable strings. This works for unstripped or debug binaries.
 func discoverCodexModelsFromBinary() []AgentModel {
-	path, err := exec.LookPath("codex")
-	if err != nil {
+	// Resolve the real path for the codex CLI, handling Windows .cmd wrappers
+	realPath := platform.ResolveCLIPath("codex")
+	if realPath == "" {
 		return nil
-	}
-
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		realPath = path
 	}
 
 	// Navigate to the package directory: .../node_modules/@openai/codex/
@@ -1180,18 +1194,17 @@ func discoverCodexModelsFromBinary() []AgentModel {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, "strings", binaryPath).Output()
+	// Extract printable strings from the binary (cross-platform replacement for
+	// the POSIX "strings" command, which does not exist on Windows)
+	lines, err := platform.ExtractStrings(binaryPath, 4)
 	if err != nil {
+		slog.Debug("codex model discovery: extract strings failed", "path", binaryPath, "error", err)
 		return nil
 	}
 
 	seen := make(map[string]bool)
 	var models []AgentModel
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
+	for _, line := range lines {
 		if !codexModelRe.MatchString(line) || seen[line] {
 			continue
 		}
@@ -1273,7 +1286,7 @@ var codexDefaultModels = []AgentModel{
 // This is the fallback when neither binary strings nor state DB extraction works.
 func discoverCodexModelsDefaults() []AgentModel {
 	// Only return defaults if codex is actually installed
-	if _, err := exec.LookPath("codex"); err != nil {
+	if platform.ResolveCLIPath("codex") == "" {
 		return nil
 	}
 
@@ -1407,14 +1420,10 @@ var vecliModelNameRe = regexp.MustCompile(`name:\s*"([^"]+)"`)
 // embedded in the VeCLI JS bundle. All models are included regardless of enabled status
 // (users can still select disabled models via -m flag; enabled only controls the CLI's default UI).
 func DiscoverVeCLIModels() []AgentModel { //nolint:gocyclo // binary parsing model discovery
-	path, err := exec.LookPath("vecli")
-	if err != nil {
+	// Resolve the real path for the vecli CLI, handling Windows .cmd wrappers
+	realPath := platform.ResolveCLIPath("vecli")
+	if realPath == "" {
 		return nil
-	}
-
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		realPath = path
 	}
 
 	data, err := os.ReadFile(realPath)
@@ -1816,7 +1825,7 @@ func MergeDiscoveredDataDB(db *sql.DB, cacheDir string, present map[string]bool)
 	}
 
 	// Build common prompt and prepend to each agent's system prompt
-	commonPrompt := BuildCommonPrompt(false)
+	commonPrompt := BuildCommonPrompt()
 	for _, agent := range Agents {
 		if commonPrompt != "" && agent.SystemPrompt != "" {
 			agent.SystemPrompt = commonPrompt + "\n\n" + agent.SystemPrompt

@@ -15,7 +15,7 @@ unzip clawbench-linux-amd64.zip
 
 # 2. 启动服务（无需配置文件）
 cd clawbench
-./server.sh
+./clawbench
 ```
 
 > 首次启动会自动生成8位随机密码并保存到 `.clawbench/auto-password`，启动时以字符框突出打印。如需自定义配置，可复制 `config/config.example.yaml` 为 `config/config.yaml` 并修改。
@@ -27,9 +27,7 @@ cd clawbench
 | `clawbench-linux-amd64` | 后端二进制 |
 | `public/` | 前端静态资源（已构建） |
 | `config/config.example.yaml` | 配置模板（可选） |
-| `config/agents/` | 智能体配置 |
 | `dev-server.sh` | 开发调试启动脚本 |
-| `server.sh` | 正式版启动脚本 |
 
 发布包内容（Windows）：
 
@@ -38,8 +36,6 @@ cd clawbench
 | `clawbench-windows-amd64.exe` | 后端二进制 |
 | `public/` | 前端静态资源（已构建） |
 | `config/config.example.yaml` | 配置模板（可选） |
-| `config/agents/` | 智能体配置 |
-| `server.ps1` | 启动/停止脚本 |
 
 ### 方式二：从源码构建
 
@@ -51,7 +47,7 @@ git clone https://github.com/xulongzhe/clawbench.git
 cd clawbench
 
 # 2. 一键构建并启动（无需配置文件，所有项均有默认值）
-./build.sh && ./server.sh
+./build.sh && ./clawbench
 ```
 
 **开发调试模式**：
@@ -70,7 +66,7 @@ cd clawbench
 ./dev-server.sh --restart
 ```
 
-**Windows (PowerShell)：**
+**Windows：**
 
 ```powershell
 # 1. 克隆项目
@@ -78,7 +74,7 @@ git clone https://github.com/xulongzhe/clawbench.git
 cd clawbench
 
 # 2. 一键构建并启动（无需配置文件）
-.\build.ps1; .\server.ps1
+./build.sh; ./clawbench
 ```
 
 **交叉编译**（在 Linux 上构建 Windows 二进制）：
@@ -151,12 +147,9 @@ cd clawbench
 
 | 命令 | 说明 |
 |------|------|
-| `./clawbench-linux-amd64` | 直接运行（前台） |
-| `./server.sh` | 后台启动（端口 20000） |
-| `./server.sh --fg` | 前台启动（查看实时日志） |
-| `./server.sh --stop` | 停止服务 |
-| `./server.sh --restart` | 重启服务 |
-| `./server.sh --port 8080` | 指定端口 |
+| `./clawbench` | 直接运行（前台，默认端口 20000） |
+| `./clawbench --port 8080` | 指定端口 |
+| `./clawbench --data-dir /data/.clawbench` | 指定数据目录 |
 
 #### 开发调试模式
 
@@ -168,17 +161,6 @@ cd clawbench
 | `./dev-server.sh --restart` | 重启 |
 
 > **注意**：开发调试与正式版使用独立端口和数据库，可同时运行，互不干扰。
-
-**Windows**：
-
-| 命令 | 说明 |
-|------|------|
-| `.\clawbench-windows-amd64.exe` | 直接运行（前台） |
-| `.\server.ps1` | 后台启动 |
-| `.\server.ps1 -Foreground` | 前台启动 |
-| `.\server.ps1 -Stop` | 停止服务 |
-| `.\server.ps1 -Restart` | 重启服务 |
-| `.\server.ps1 -Port 8080` | 指定端口 |
 
 ---
 
@@ -253,9 +235,9 @@ ClawBench 通过调用本地 CLI 实现与 AI 编程工具的交互，无需额�
 当系统未安装任何 AI CLI 且检测到内置 Pi 二进制（`.clawbench/pi/pi`）时，首次启动自动显示设置向导，引导用户完成：
 
 1. **欢迎**：显示内置智能体信息
-2. **选择提供商**：23 家 `WizardReady` LLM 提供商（OpenAI、Anthropic、Google、DeepSeek、阿里通义、月之暗面等），来源 `ProviderRegistry`
+2. **选择提供商**：23 家 `WizardReady` LLM 提供商（OpenAI、Anthropic、Google、DeepSeek、阿里通义、月之暗面等），来源 `ProviderRegistry`；也可选择自定义 URL，接入任意 OpenAI/Anthropic 兼容端点
 3. **输入 API Key**：AES-256-GCM 加密存储到 `agent_api_keys` 表
-4. **验证模型**：调用 `/v1/models` 或使用预定义 `KnownModels` 列表验证连接
+4. **验证模型**：内置提供商通过 Pi CLI 验证；自定义 URL 通过直接 HTTP 请求验证（自动检测 API 格式，无需 Pi CLI，速度提升 24 倍）
 5. **命名智能体**：完成创建，自动配置 `summarize` 后端
 
 构建时加 `--with-pi` 下载 Pi 二进制：
@@ -268,13 +250,15 @@ PI_VERSION=0.79.0 ./build.sh --with-pi  # 指定 Pi 版本
 
 API Key 安全：HKDF-SHA256 从 auto-password 派生 32 字节 AES 密钥，修改登录密码时自动调用 `RotateAPIKeyEncryption` 重加密所有密钥。
 
+提供商模型数据：`internal/model/provider_models.json` 嵌入文件包含 23 家提供商的 567 个工具调用模型，由 `scripts/generate-provider-models.py` 从 models.dev API 自动生成（`build.sh` 自动调用）。`ProviderRegistry` 初始化时通过 `go:embed` 加载，填充 `KnownModels` 字段。
+
 ### TTS 语音合成配置
 
 ClawBench 支持 TTS 语音合成，自动将 AI 回复总结后朗读。支持 5 种 TTS 引擎和 12 种总结后端。
 
 | TTS 引擎 | 说明 | 网络要求 |
 |----------|------|---------|
-| `edge` | 微软 Edge TTS，免费无限制（默认） | 需要网络 |
+| `edge` | 微软 Edge TTS，免费无限制（默认），原生 Go 实现（无 Python/CLI 依赖） | 需要网络 |
 | `minimax` | 云端合成，音质最佳 | 需要 mmx CLI + API 配额 |
 | `piper` | 本地离线，速度极快 | 无需网络 |
 | `kokoro` | 本地离线，高质量中文 | 无需网络 |
@@ -298,7 +282,7 @@ ClawBench 支持 TTS 语音合成，自动将 AI 回复总结后朗读。支持 
      cert_file: "/etc/letsencrypt/live/your-domain.com/fullchain.pem"
      key_file: "/etc/letsencrypt/live/your-domain.com/privkey.pem"
    ```
-3. **重启服务**：`./server.sh --restart`
+3. **重启服务**：重启 `./clawbench` 进程即可
 
 ### 多实例部署
 
@@ -306,13 +290,39 @@ ClawBench 支持在同一台服务器上运行多个实例（不同端口），�
 
 ```bash
 # 实例 1：默认端口 20000
-./server.sh
+./clawbench
 
 # 实例 2：指定不同端口
-./server.sh --port 20300
+./clawbench --port 20300
 ```
 
 浏览器不区分端口的 Cookie，因此多实例部署时 Cookie 会按端口自动添加前缀（如 `cb20300_`），防止同域名不同端口的实例间 Cookie 冲突。默认端口 20000 不添加前缀，保持向后兼容。
+
+### Docker 部署
+
+项目提供 Docker 部署支持，适用于容器化环境：
+
+```bash
+# 一键构建并启动（使用 scripts/docker-build.sh）
+./scripts/docker-build.sh
+
+# 停止容器
+./scripts/docker-build.sh --stop
+
+# 清理容器和镜像
+./scripts/docker-build.sh --clean
+```
+
+或手动构建：
+
+```bash
+docker compose up -d
+```
+
+Docker 配置说明：
+- **Dockerfile**：基于 Ubuntu 24.04，动态链接（glibc 2.39+），无 Python 运行时依赖（Edge TTS 为原生 Go 实现）
+- **docker-compose.yml**：默认端口 20300，数据持久化到 Docker volume（`/data/.clawbench/`）
+- **构建脚本**：`scripts/docker-build.sh` 自动暂存 Pi 二进制到 Docker 上下文，构建镜像并启动
 
 ### Linux 动态链接
 
@@ -353,27 +363,14 @@ GitHub Release 中的 Linux 二进制使用动态链接（CGO_ENABLED=1），依
 
 ClawBench 不只是一个"聊天壳"——它是一个完整的智能体运行平台：
 
-```
-config/agents/
-├── assistant.yaml     # 全能助手 — 通用问答、代码、文档、运维
-├── codebuddy2.yaml    # Gemini（通过 CodeBuddy 调用）
-├── coder.yaml         # 编码专家 — 复杂编码、架构设计、代码重构
-├── codex.yaml         # Codex — OpenAI Codex CLI 编码助手
-├── gemini.yaml        # Gemini CLI — Google Gemini 驱动的通用助手
-├── gpt54.yaml         # GPT — 通过 CodeBuddy 调用 GPT 模型
-├── qoder.yaml         # Qoder — 阿里编码智能体，自动模型路由
-├── vecli.yaml         # VeCLI — 火山引擎 Doubao 驱动的编码助手
-└── handyman.yaml      # 勤杂工 — 定时任务、简单编码、日常操作
-```
-
-- **Agent 配置化**：每个智能体通过 YAML 定义专属 system prompt、模型、后端、思考档位，无需改代码
-- **自动发现**：首次启动时若 `config/agents/` 为空，自动扫描已安装的 AI CLI（claude、codebuddy、opencode、gemini、codex、qodercli、vecli、deepseek、pi），为每个检测到的后端生成最小化 YAML 配置。仅执行一次，不会覆盖已有文件
-- **共享提示词**：`config/rules.md` 定义所有智能体的公共行为和强制规则（定时任务 CLI、RAG 搜索、媒体处理），避免重复配置
+- **Agent 数据库存储**：每个智能体存储在数据库中，包含专属 system prompt、模型、后端、思考档位，通过设置向导或自动发现创建
+- **自动发现**：首次启动时若数据库中无智能体，自动扫描已安装的 AI CLI（claude、codebuddy、opencode、gemini、codex、qodercli、vecli、deepseek、pi），为每个检测到的后端在数据库中创建智能体记录。仅执行一次
+- **共享规则**：规则模板内嵌于 Go 二进制（`commonRulesTemplate` in `agent.go`），定义所有智能体的公共行为和强制规则（RAG 搜索、媒体处理），避免重复配置。`@chatsearch`/`@task` 命令按需注入，取代旧的 `SCHEDULED_BEGIN/END` 标记
 - **模板占位符**：`{{AVAILABLE_AGENTS}}` 自动替换为可用智能体列表，方便智能体间互相调度
 - **多 Agent 调度**：不同任务匹配不同智能体，全能助手负责对话，专业 Agent 执行定时任务
 - **工具调用透传**：AI 的工具调用（文件读写、Bash 命令、代码编辑）实时可视化展示
 - **Cron 定时执行**：AI 通过 `clawbench task` CLI 子命令创建定时任务，确认后由 Cron 调度自动执行，聊天消息中内嵌任务卡片；`list` 和 `get` 子命令可查看已有任务，`--prompt` 支持 `@path` 语法从文件读取提示词
-- **Cron 管控**：定时任务执行时自动剥离 rules.md 中的定时任务段落（`<!-- SCHEDULED_BEGIN/END -->` 标记），防止 AI 递归创建任务；CLI 层通过 `CLAWBENCH_SCHEDULED=1` 环境变量提供双重保护
+- **Cron 管控**：定时任务执行时不注入 `@task` 命令模板，防止 AI 递归创建任务；CLI 层通过 `CLAWBENCH_SCHEDULED=1` 环境变量提供双重保护
 - **多后端可切换**：同一平台同时支持 CodeBuddy、Claude Code、OpenCode、Gemini CLI、Codex、Qoder CLI、VeCLI、DeepSeek TUI、Pi 后端，会话数据隔离
 
 ### 项目结构
@@ -385,7 +382,9 @@ clawbench/
 │   ├── handler/                 # HTTP 处理器
 │   │   ├── handler.go           # 路由注册
 │   │   ├── auth.go              # 认证
-│   │   ├── chat.go              # AI 聊天（SSE 流式推送）
+│   │   ├── chat.go              # AI 聊天（SSE 流式推送 + @命令注入 + XML ask-question 解析）
+│   │   ├── at_command.go        # @命令检测与模板注入（@chatsearch/@task）
+│   │   ├── session_resume.go    # 恢复已删除会话（POST /api/ai/session/resume）
 │   │   ├── chat_quick_send.go   # 快捷发送 CRUD
 │   │   ├── agent.go             # Agent 管理
 │   │   ├── scheduler.go         # 定时任务（CRUD + 执行列表 + 继续对话 GET/POST /api/tasks/{id}/executions/{execId}/continue）
@@ -404,25 +403,28 @@ clawbench/
 │   │   ├── terminal.go          # 终端 + 快捷命令 CRUD + 多会话管理
 │   │   └── static.go            # 静态文件
 │   ├── middleware/              # 中间件（认证/日志/恢复/请求ID）
-│   ├── platform/                # 平台适配（跨平台路径）
+│   ├── platform/                # 平台适配（跨平台路径 + Windows CLI 工具）
 │   │   ├── path.go              # ListRootPaths, IsPathUnderAnyRoot, ManglePath, ExpandTilde
 │   │   ├── path_unix.go         # Unix: root = "/"
 │   │   ├── path_windows.go      # Windows: 枚举可用驱动器根路径
 │   │   ├── shell.go             # Shell 检测
-│   │   └── path_test.go / shell_test.go
+│   │   ├── npm.go               # Windows .cmd 包装器解析（ResolveCLIPath，提取 JS 入口路径）
+│   │   ├── strings.go           # 跨平台二进制字符串提取（ExtractStrings，替代 POSIX strings）
+│   │   └── path_test.go / shell_test.go / npm_test.go / strings_test.go
 │   ├── service/                 # 业务逻辑
 │   │   ├── database.go          # SQLite 初始化
 │   │   ├── chat.go              # 聊天历史管理
 │   │   ├── continue_conversation.go # 继续对话（从任务执行继续 → 新会话）
 │   │   ├── agent_store.go       # 智能体存储（DB-backed CRUD + agent_api_keys 表）
 │   │   ├── agent_migration.go   # 智能体迁移（YAML → DB 一次性迁移，幂等）
-│   │   ├── crypto.go            # API Key 加密（AES-256-GCM + HKDF-SHA256，密码修改时轮换密钥）
+│   │   ├── crypto.go            # API Key 加密（AES-256-GCM + HKDF-SHA256，密码修改时轮换密钥 + previousEncryptionKey 崩溃恢复）
 │   │   ├── summary.go           # 聊天自动摘要（AsyncSummarize + summaries 表）
 │   │   ├── scheduler.go         # 定时任务调度
 │   │   ├── uuid.go              # UUID 工具
 │   │   └── logger.go            # 文件日志（按天轮转）
 │   ├── model/                   # 数据模型
 │   │   ├── config.go / defaults.go / chat.go / file.go / agent.go / scheduler.go / path.go / ssh.go / discovery.go / provider_registry.go
+│   │   ├── provider_models.json # 嵌入的提供商模型数据（23 提供商 567 模型，go:embed）
 │   │   └── errors.go
 │   ├── ssh/                     # SSH 隧道服务器
 │   │   ├── server.go            # SSH 服务器（direct-tcpip 端口转发）
@@ -453,7 +455,8 @@ clawbench/
 │       └── pi.go / pi_stream.go
 │   └── speech/                  # TTS 语音合成
 │       ├── common_tts.go        # CLISpeechProvider 共享基类
-│       ├── minimax.go / edge.go / piper.go / kokoro.go / moss_tts_nano.go  # TTS 引擎实现
+│       ├── edge_tts.go          # Edge TTS（原生 Go gorilla/websocket 实现，DRM 令牌，无外部依赖）
+│       ├── minimax.go / piper.go / kokoro.go / moss_tts_nano.go  # 其他 TTS 引擎实现
 │   └── summarize/               # 文本总结（TTS + 任务执行摘要）
 │       ├── summarizer.go        # Summarizer 接口 + 工厂方法
 │       ├── simple.go            # 纯文本清洗
@@ -466,19 +469,6 @@ clawbench/
 ├── web/src/components/common/  # 通用组件
 │   ├── SummaryToggle.vue        # 摘要切换（按钮/标签模式）
 ├── config/                      # 配置目录
-│   ├── rules.md                 # 智能体共享规则和 CLI 参考
-│   ├── agents/                  # Agent 配置
-│   │   ├── assistant.yaml       # 全能助手
-│   │   ├── codebuddy2.yaml      # Gemini（CodeBuddy 调用）
-│   │   ├── coder.yaml           # 编码专家
-│   │   ├── codex.yaml           # Codex CLI
-│   │   ├── gemini.yaml          # Gemini CLI
-│   │   ├── gpt54.yaml           # GPT（CodeBuddy 调用）
-│   │   ├── qoder.yaml           # Qoder CLI
-│   │   ├── vecli.yaml           # VeCLI
-│   │   ├── deepseek.yaml        # DeepSeek TUI
-│   │   ├── pi.yaml              # Pi
-│   │   └── handyman.yaml        # 勤杂工
 │   └── config.example.yaml      # 配置模板
 ├── web/                         # Vue 3 前端源码
 │   └── src/
@@ -486,11 +476,13 @@ clawbench/
 │       ├── composables/         # 组合式函数（useQuickSend、useQuickCommands、useChatStream 等）
 │       ├── stores/              # 状态管理
 │       └── utils/               # 工具函数
-├── build.sh                     # 编译脚本 (Linux/macOS)
-├── build.ps1                    # 编译脚本 (Windows)
-├── dev-server.sh                # 开发调试启动脚本 (Linux/macOS)
-├── server.sh                    # 正式版启动脚本 (Linux/macOS)
-├── server.ps1                   # 正式版启动脚本 (Windows)
+├── build.sh                     # 编译脚本
+├── dev-server.sh                # 开发调试启动脚本
+├── Dockerfile                   # Docker 镜像定义（Ubuntu 24.04 基础）
+├── docker-compose.yml           # Docker Compose 配置
+├── scripts/
+│   ├── docker-build.sh          # Docker 一键构建脚本
+│   └── generate-provider-models.py  # 提供商模型数据生成脚本（models.dev API → provider_models.json）
 └── vite.config.ts               # Vite 配置
 ```
 

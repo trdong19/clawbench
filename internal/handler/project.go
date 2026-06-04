@@ -80,6 +80,8 @@ func ServeProjectSet(w http.ResponseWriter, r *http.Request) { //nolint:gocognit
 			recents, _ := service.GetRecentProjects()
 			if len(recents) > 0 {
 				projectPath = recents[0]
+			} else if homeDir := platform.UserHomeDir(); homeDir != "" {
+				projectPath = homeDir
 			} else if len(model.RootPaths) > 0 {
 				projectPath = model.RootPaths[0]
 			}

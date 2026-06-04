@@ -1,18 +1,39 @@
 <template>
   <div class="content-blocks">
-    <!-- Summary mode: render summary as a single text block -->
-    <template v-if="showingSummary && summary">
-      <div v-html="renderTextBlock(summary, msgId, 0, false)"></div>
-    </template>
+    <!-- Summary mode: render summary as a single text block.
+         Using v-show for summary to avoid Vue Fragment patching issues when
+         switching between v-if/v-else branches with nested template v-for.
+         Previously, v-if/v-else with template wrappers caused the v-else
+         branch to render as an empty comment node because Vue 3's patch
+         algorithm fails to correctly transition between different Fragment
+         structures (summary div vs blocks template v-for). -->
+    <div v-show="showingSummary && summary" v-html="renderTextBlock(summary || '', msgId, 0, false)"></div>
     <!-- Original content mode -->
-    <template v-else>
+    <template v-if="!showingSummary || !summary">
     <template v-for="(block, bi) in blocks" :key="bi">
-      <!-- Thinking block -->
-      <div v-if="block.type === 'thinking'" class="chat-thinking" @click.stop="handleThinkingClick(block)">
+      <!-- Thinking block: streaming shows inline content, collapsed shows clickable chip -->
+      <div v-if="block.type === 'thinking'"
+        :ref="isThinkingStreaming(block) ? (el) => setThinkingRef(bi, el) : undefined"
+        class="chat-thinking"
+        :class="{
+          'thinking-streaming': isThinkingStreaming(block),
+          'thinking-collapsed': !isThinkingStreaming(block),
+          'thinking-collapsing': !!collapsingThinking[bi],
+        }"
+        :style="collapsingThinking[bi] ? { maxHeight: collapsingMaxHeight[bi] + 'px' } : {}"
+        @click.stop="!isThinkingStreaming(block) && handleThinkingClick(block, bi)"
+      >
         <div class="thinking-header">
           <Brain :size="12" />
           <span class="thinking-label">{{ t('chat.message.deepThinking') }}</span>
+          <!-- Spinner during streaming -->
+          <span v-if="isThinkingStreaming(block)" class="thinking-spinner"></span>
+          <!-- Cancelled marker: show inline in thinking header when this is the last block and message was cancelled.
+               Prevents the cancelled mark from being visually hidden/trapped under the collapsed thinking chip. -->
+          <span v-if="!isThinkingStreaming(block) && isLastBlock(bi) && cancelled" class="chat-cancelled-mark-inline">{{ t('chat.contentBlocks.cancelled') }}</span>
         </div>
+        <!-- Inline streaming content: only visible during streaming or collapse animation -->
+        <div v-if="isThinkingStreaming(block) || !!collapsingThinking[bi]" class="thinking-inline-content" v-html="getThinkingHtml(bi, block)"></div>
       </div>
       <!-- Tool use block -->
       <template v-else-if="block.type === 'tool_use'">
@@ -85,23 +106,42 @@
         </div>
         <div v-if="expandedTools[key(bi)] || true" class="tool-detail" data-tool-name="AskUserQuestion" @click="handleToolDetailClick" v-html="formatToolInput(blockAskQuestions[blockTaskKey(bi)], 'AskUserQuestion')"></div>
       </template>
+      <!-- RAG results card (from <rag-results> XML tag in text) — must come before generic text block -->
+      <template v-else-if="block.type === 'text' && blockRagResults[blockTaskKey(bi)]">
+        <!-- Surrounding text (with rag-results tag stripped) -->
+        <div v-if="getBlockHtml(bi, block)" v-html="getBlockHtml(bi, block)"></div>
+        <div v-for="(ragItem, ragIdx) in blockRagResults[blockTaskKey(bi)]" :key="ragIdx" class="rag-result-card" @click.stop="emit('show-rag-detail', ragItem)">
+          <div class="rag-header">
+            <span class="rag-icon">🔍</span>
+            <span class="rag-title">{{ ragItem.sessionTitle || t('chat.contentBlocks.ragUntitled') }}</span>
+          </div>
+          <div v-if="ragItem.summary" class="rag-summary">{{ ragItem.summary }}</div>
+          <div v-if="ragItem.createdAt" class="rag-time">{{ formatTime(ragItem.createdAt) }}</div>
+        </div>
+      </template>
+      <!-- Text block with @ command badge (user message starting with @chatsearch/@task) -->
+      <template v-else-if="block.type === 'text' && extractAtCommand(block.text || '')">
+        <span class="at-command-badge">{{ extractAtCommand(block.text).command }}</span>
+        <span v-if="extractAtCommand(block.text).rest.trim()" class="at-command-rest">{{ extractAtCommand(block.text).rest.trim() }}</span>
+      </template>
       <!-- Text block: streaming uses throttled render to avoid UI freeze -->
       <div v-else-if="block.type === 'text'" v-html="getBlockHtml(bi, block)"></div>
     </template>
     </template>
     <!-- Loading dots while AI is still streaming (not when cancelled, and not when showing summary) -->
     <div v-if="streaming && !cancelled && !(showingSummary && summary)" class="placeholder-dots"><span></span><span></span><span></span></div>
-    <!-- Cancelled marker -->
-    <div v-if="cancelled" class="chat-cancelled-mark">{{ t('chat.contentBlocks.cancelled') }}</div>
+    <!-- Cancelled marker: hidden when the last block is thinking (shown inline in thinking-header instead) -->
+    <div v-if="cancelled && !isLastBlockThinking" class="chat-cancelled-mark">{{ t('chat.contentBlocks.cancelled') }}</div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted, computed } from 'vue'
+import { ref, watch, onUnmounted, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { handleToolAction, shouldAutoExpandTool } from '@/utils/renderToolDetail.ts'
 import { getToolIcon } from '@/utils/icons'
 import { Brain, ChevronRight, CheckCircle2, AlertCircle, AlertTriangle, XCircle } from 'lucide-vue-next'
+import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
 import {
   isSevereWarning,
   getWarningText as getWarningTextUtil,
@@ -115,6 +155,7 @@ import {
   buildTaskKeyIndex,
   hasScheduledTasks as hasScheduledTasksUtil,
   scheduledTaskKeys as scheduledTaskKeysUtil,
+  extractAtCommand,
 } from '@/utils/contentBlocks.ts'
 
 const { t, locale } = useI18n()
@@ -155,6 +196,7 @@ const props = defineProps({
   expandedTools: { type: Object, default: () => ({}) },
   blockTasks: { type: Object, default: () => ({}) },
   blockAskQuestions: { type: Object, default: () => ({}) },
+  blockRagResults: { type: Object, default: () => ({}) },
   streaming: { type: Boolean, default: false },
   cancelled: { type: Boolean, default: false },
   summary: { type: String, default: null },
@@ -173,7 +215,7 @@ const props = defineProps({
   active: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['toggle-tool', 'show-tool-detail', 'show-thinking-detail', 'task-card-click', 'send-message', 'render-flush'])
+const emit = defineEmits(['toggle-tool', 'show-tool-detail', 'show-thinking-detail', 'task-card-click', 'send-message', 'render-flush', 'resume-session', 'show-rag-detail'])
 
 // Key helper: use msgId if available, otherwise msgIndex
 function key(bi) {
@@ -198,9 +240,81 @@ function scheduledTaskKeys(bi) {
   return scheduledTaskKeysUtil(taskKeyIndex.value, bi)
 }
 
-function handleThinkingClick(block) {
-  emit('show-thinking-detail', { text: block.text })
+function handleThinkingClick(block, bi) {
+  emit('show-thinking-detail', { text: block.text, msgId: props.msgId, blockIdx: bi })
 }
+
+/** Whether a thinking block should show inline streaming content.
+ *  Thinking blocks don't have a `done` property (unlike tool_use), so we rely
+ *  on the message-level `streaming` prop. All thinking blocks in a streaming
+ *  message are considered "streaming" and show inline content. */
+function isThinkingStreaming(block) {
+  return props.streaming
+}
+
+/** Whether the given block index is the last block in the blocks array. */
+function isLastBlock(bi) {
+  return bi === (props.blocks?.length || 0) - 1
+}
+
+/** Whether the last block is a thinking block (used to avoid duplicate cancelled marker). */
+const isLastBlockThinking = computed(() => {
+  const blocks = props.blocks
+  if (!blocks || blocks.length === 0) return false
+  return blocks[blocks.length - 1].type === 'thinking'
+})
+
+// ── Thinking block collapse animation state ──
+const collapsingThinking = ref({})   // { [blockIndex]: true } for blocks mid-collapse
+const collapsingMaxHeight = ref({})  // { [blockIndex]: maxHeightPx } for animation
+let _collapseElRefs = {}             // { [blockIndex]: HTMLElement } tracked during streaming
+
+/** Track thinking block element refs during streaming for collapse animation. */
+function setThinkingRef(bi, el) {
+  if (el) {
+    _collapseElRefs[bi] = el
+  } else {
+    delete _collapseElRefs[bi]
+  }
+}
+
+/** Trigger collapse animation for all streaming thinking blocks when streaming ends. */
+function startThinkingCollapse() {
+  const newCollapsing = {}
+  const newMaxHeights = {}
+
+  // Find all thinking blocks that were streaming and measure their height
+  for (const idxStr of Object.keys(_collapseElRefs)) {
+    const el = _collapseElRefs[idxStr]
+    if (el && el.scrollHeight) {
+      const fullHeight = el.scrollHeight
+      newCollapsing[idxStr] = true
+      newMaxHeights[idxStr] = fullHeight
+    }
+  }
+  _collapseElRefs = {}
+
+  if (Object.keys(newCollapsing).length > 0) {
+    collapsingThinking.value = newCollapsing
+    collapsingMaxHeight.value = newMaxHeights
+
+    // Next frame: transition to collapsed height
+    requestAnimationFrame(() => {
+      const updatedMaxHeights = {}
+      Object.keys(newCollapsing).forEach(idx => {
+        updatedMaxHeights[idx] = 28 // header-only height
+      })
+      collapsingMaxHeight.value = updatedMaxHeights
+
+      // After transition completes, clean up animation state
+      setTimeout(() => {
+        collapsingThinking.value = {}
+        collapsingMaxHeight.value = {}
+      }, 400) // match CSS transition duration
+    })
+  }
+}
+
 
 /** Click inside expanded tool-detail: dispatch to tool action handlers first, then fall through to generic behavior. */
 function handleToolDetailClick(event) {
@@ -235,6 +349,9 @@ function flushBlockHtml() {
     if (block.type === 'text') {
       // streaming=true: deferred rendering — pure markdown only
       newCache[i] = props.renderTextBlock(block.text, props.msgId, i, true)
+    } else if (block.type === 'thinking') {
+      // Thinking blocks use renderMarkdown during streaming
+      newCache[`t-${i}`] = renderMarkdown(block.text)
     }
   }
   blockHtmlCache.value = newCache
@@ -277,11 +394,36 @@ function getBlockHtml(bi, block) {
   return html
 }
 
+/** Get HTML for thinking block content during streaming (uses renderMarkdown with throttling). */
+function getThinkingHtml(bi, block) {
+  if (!props.streaming || !props.active) {
+    return renderMarkdown(block.text)
+  }
+  const cacheKey = `t-${bi}`
+  // Streaming: deferred rendering with throttling (same pattern as text blocks)
+  if (blockHtmlCache.value[cacheKey] !== undefined) {
+    if (!_throttleTimer) {
+      const newCache = { ...blockHtmlCache.value }
+      newCache[cacheKey] = renderMarkdown(block.text)
+      blockHtmlCache.value = newCache
+      _throttleTimer = setTimeout(flushBlockHtml, THROTTLE_MS)
+    } else {
+      _throttlePending = true
+    }
+    return blockHtmlCache.value[cacheKey]
+  }
+  const html = renderMarkdown(block.text)
+  blockHtmlCache.value = { ...blockHtmlCache.value, [cacheKey]: html }
+  return html
+}
+
 watch(() => props.streaming, (streaming, wasStreaming) => {
   if (wasStreaming && !streaming) {
     if (_throttleTimer) { clearTimeout(_throttleTimer); _throttleTimer = null }
     _throttlePending = false
     blockHtmlCache.value = {}
+    // Trigger collapse animation for thinking blocks that were streaming
+    nextTick(() => startThinkingCollapse())
   }
 })
 
@@ -329,6 +471,16 @@ onUnmounted(() => {
   padding: 2px 8px;
   border-radius: 4px;
   margin-top: 4px;
+}
+
+/* Inline cancelled marker inside thinking header — always visible even when thinking is collapsed */
+.chat-cancelled-mark-inline {
+  font-size: 11px;
+  color: var(--text-muted, #999);
+  background: var(--bg-tertiary, #f0f0f0);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: auto;
 }
 
 
@@ -411,7 +563,28 @@ onUnmounted(() => {
   border: 1px solid color-mix(in srgb, var(--text-secondary, #666) 18%, transparent);
   border-radius: 6px;
   margin: 4px 0;
+  overflow: hidden;
+}
+
+/* Collapsed state: clickable chip (header only) */
+.chat-thinking.thinking-collapsed {
   cursor: pointer;
+  max-height: 28px;
+  transition: max-height 0.35s ease-out;
+}
+
+.chat-thinking.thinking-collapsed:hover {
+  background: color-mix(in srgb, var(--text-secondary, #666) 14%, transparent);
+}
+
+/* Streaming state: inline content visible, no height constraint */
+.chat-thinking.thinking-streaming {
+  max-height: none;
+}
+
+/* Collapse animation state: transitioning from full to collapsed */
+.chat-thinking.thinking-collapsing {
+  transition: max-height 0.35s ease-out;
   overflow: hidden;
 }
 
@@ -428,15 +601,72 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-/* Thinking overlay text */
-.content-blocks .thinking-overlay-text {
-  margin: 0;
-  font-family: 'SF Mono', 'Fira Code', Menlo, Monaco, monospace;
+.thinking-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border-color);
+  border-top-color: var(--text-secondary);
+  border-radius: 50%;
+  animation: tool-spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+.thinking-inline-content {
+  padding: 0 8px 6px;
   font-size: 12px;
   line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
   color: var(--text-secondary);
+  word-break: break-word;
+}
+
+/* Markdown styles inside thinking inline content */
+.thinking-inline-content p { margin: 0 0 0.5em; }
+.thinking-inline-content pre {
+  margin: 0.5em 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 11px;
+}
+.thinking-inline-content code {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.thinking-inline-content pre code {
+  padding: 0;
+  background: none;
+}
+.thinking-inline-content blockquote {
+  margin: 0.5em 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--text-tertiary, #aaa);
+}
+.thinking-inline-content h1,
+.thinking-inline-content h2,
+.thinking-inline-content h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0.5em 0 0.3em;
+}
+.thinking-inline-content ul,
+.thinking-inline-content ol {
+  margin: 0.3em 0;
+  padding-left: 1.5em;
+}
+.thinking-inline-content table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 11px;
+}
+.thinking-inline-content th,
+.thinking-inline-content td {
+  border: 1px solid var(--border-color);
+  padding: 2px 6px;
+}
+.thinking-inline-content th {
+  background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+  font-weight: 600;
 }
 
 /* Tool calls display */
@@ -638,6 +868,111 @@ onUnmounted(() => {
 
 .stask-status-dot.status-completed {
   background: #9e9e9e;
+}
+
+/* RAG result card */
+.rag-result-card {
+  margin: 6px 0;
+  border: 1px solid color-mix(in srgb, #8b5cf6 30%, var(--border-color, #dee2e6));
+  border-radius: 8px;
+  background: color-mix(in srgb, #8b5cf6 6%, var(--bg-primary, #fff));
+  cursor: pointer;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.rag-result-card:hover {
+  border-color: color-mix(in srgb, #8b5cf6 50%, var(--border-color, #dee2e6));
+  box-shadow: 0 2px 8px color-mix(in srgb, #8b5cf6 15%, transparent);
+}
+
+.rag-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: color-mix(in srgb, #8b5cf6 12%, transparent);
+  color: #8b5cf6;
+  font-weight: 600;
+  font-size: 12px;
+  border-bottom: 1px solid color-mix(in srgb, #8b5cf6 15%, var(--border-color, #dee2e6));
+  overflow: hidden;
+}
+
+:root[data-theme="dark"] .rag-header {
+  color: #a78bfa;
+  background: color-mix(in srgb, #a78bfa 12%, transparent);
+  border-bottom-color: color-mix(in srgb, #a78bfa 15%, var(--border-color, #dee2e6));
+}
+
+.rag-icon {
+  margin-right: 4px;
+}
+
+.rag-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rag-summary {
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary, #495057);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  position: relative;
+}
+
+/* Fade-out gradient at bottom of clamped summary — hints at truncated content */
+.rag-summary::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1.4em;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, #8b5cf6 6%, var(--bg-primary, #fff)));
+  pointer-events: none;
+}
+
+:root[data-theme="dark"] .rag-summary::after {
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, #a78bfa 6%, var(--bg-primary, #1a1a1a)));
+}
+
+.rag-time {
+  padding: 0 12px 6px;
+  font-size: 11px;
+  color: var(--text-muted, #999);
+}
+
+/* @ command badge in user messages */
+.at-command-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, #8b5cf6 15%, transparent);
+  color: #8b5cf6;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 4px;
+  vertical-align: baseline;
+  line-height: 1.6;
+}
+
+:root[data-theme="dark"] .at-command-badge {
+  background: color-mix(in srgb, #a78bfa 15%, transparent);
+  color: #a78bfa;
+}
+
+.at-command-rest {
+  /* Rest of the message text after the badge */
 }
 </style>
 

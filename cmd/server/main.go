@@ -29,8 +29,10 @@ import (
 	"clawbench/internal/service"
 	"clawbench/internal/speech"
 	"clawbench/internal/ssh"
+	"clawbench/internal/startup"
 	"clawbench/internal/summarize"
 	"clawbench/internal/terminal"
+	"clawbench/internal/version"
 	"clawbench/internal/ws"
 )
 
@@ -118,6 +120,8 @@ func makeRestartFunc(shutdown func()) func() {
 }
 
 func main() { //nolint:gocognit,gocyclo // complex startup orchestration
+	startTime := time.Now()
+
 	// Root --help handler
 	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
 		fmt.Println("ClawBench - Mobile-first AI workstation")
@@ -211,57 +215,8 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	summarize.InlineCodeMaxLen = cfg.TTS.InlineCodeMaxLen
 	summarize.MaxSummarizeRunes = cfg.TTS.MaxSummarizeRunes
 
-	// Initialize TTS summarizer from config
-	// Language is now per-request (sent from frontend), not configured at startup.
-	summarizeBackend := cfg.Summarize.Backend
-
-	var ttsSummarizer summarize.Summarizer
-	switch summarizeBackend {
-	case "simple":
-		ttsSummarizer = summarize.NewSimple()
-		slog.Info("tts summarizer configured",
-			slog.String("backend", "simple"),
-		)
-	case "api":
-		if cfg.Summarize.API.BaseURL == "" {
-			slog.Error("summarize.backend is \"api\" but summarize.api.base_url is not configured")
-			os.Exit(1)
-		}
-		if cfg.Summarize.API.Format == "anthropic" {
-			s := summarize.NewAnthropic(cfg.Summarize.API.BaseURL, cfg.Summarize.API.Key, cfg.Summarize.Model)
-			ttsSummarizer = s
-			slog.Info("tts summarizer configured",
-				slog.String("backend", "api"),
-				slog.String("format", "anthropic"),
-				slog.String("model", s.Model),
-			)
-		} else {
-			s := summarize.NewOpenAI(cfg.Summarize.API.BaseURL, cfg.Summarize.API.Key, cfg.Summarize.Model)
-			ttsSummarizer = s
-			slog.Info("tts summarizer configured",
-				slog.String("backend", "api"),
-				slog.String("format", "openai"),
-				slog.String("model", s.Model),
-			)
-		}
-	default:
-		s, err := summarize.NewAIBackendSummarizer(summarizeBackend)
-		if err != nil {
-			slog.Error("failed to create AI backend summarizer, falling back to simple",
-				slog.String("backend", summarizeBackend),
-				slog.String("error", err.Error()),
-			)
-			ttsSummarizer = summarize.NewSimple()
-		} else {
-			s.Model = cfg.Summarize.Model // empty = use backend default
-			ttsSummarizer = s
-			slog.Info("tts summarizer configured",
-				slog.String("backend", summarizeBackend),
-				slog.String("model", s.Model),
-			)
-		}
-	}
-	handler.SetSummarizer(ttsSummarizer)
+	// NOTE: TTS summarizer initialization is deferred until after DB init,
+	// because the API key may need to be resolved from agent_api_keys table.
 
 	// Initialize TTS synthesis provider from config
 	var ttsProvider speech.SpeechProvider
@@ -428,22 +383,13 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	// $SHELL to decide which shell their "Bash tool" uses.
 	platform.SetLoginShell()
 
-	// Print auto-generated password info (ISS-003d: don't log plaintext password)
+	// Auto-generated password info is now shown in the startup banner (below).
+	// ISS-003d: don't log plaintext password to slog.
 	if autoPassword != "" {
 		slog.Info(
 			"auto-generated password (no password configured)",
 			slog.String("file", filepath.Join(model.BinDir, ".clawbench", "auto-password")),
 		)
-		// Print to stdout for foreground mode and shell scripts to capture
-		pwdLine := "  Password: " + autoPassword + "  "
-		top := " ┌" + strings.Repeat("─", len(pwdLine)-2) + "┐"
-		mid := " │" + pwdLine + "│"
-		bot := " └" + strings.Repeat("─", len(pwdLine)-2) + "┘"
-		fmt.Println()
-		fmt.Println(top)
-		fmt.Println(mid)
-		fmt.Println(bot)
-		fmt.Println()
 	}
 
 	// Initialize password verification state
@@ -486,6 +432,18 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 	}
 	defer service.CloseDB()
 
+	// Resolve summarize API key from agent_api_keys table if not in config.
+	// New setups write the key directly to config.yaml. This fallback resolves
+	// the key from DB for legacy configs that have key="" and agent_id set.
+	if cfg.Summarize.Backend == "api" && cfg.Summarize.API.Key == "" && cfg.Summarize.API.AgentID != "" {
+		if _, _, ak, err := service.LoadAgentAnyAPIKey(service.DB, cfg.Summarize.API.AgentID); err == nil && ak != "" {
+			cfg.Summarize.API.Key = ak
+			slog.Info("resolved summarize API key from agent_api_keys", slog.String("agent_id", cfg.Summarize.API.AgentID))
+		} else if err != nil {
+			slog.Warn("failed to resolve summarize API key from agent_api_keys", slog.String("agent_id", cfg.Summarize.API.AgentID), slog.String("err", err.Error()))
+		}
+	}
+
 	// Inject API key loader for Pi CLI runtime (avoids import cycle between ai and service packages)
 	ai.SetAgentAPIKeyLoader(func(agentID string) (provider, customURL, apiKey string, found bool) {
 		p, cu, ak, err := service.LoadAgentAnyAPIKey(service.DB, agentID)
@@ -495,11 +453,47 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		return p, cu, ak, true
 	})
 
-	// Initialize RAG history memory system (always enabled)
+	// Initialize TTS summarizer from config (deferred from earlier — needs DB for API key resolution).
+	// Language is now per-request (sent from frontend), not configured at startup.
+	summarizeBackend := cfg.Summarize.Backend
+
+	var ttsSummarizer summarize.Summarizer
+	switch summarizeBackend {
+	case "simple":
+		ttsSummarizer = summarize.NewSimple()
+		slog.Info("tts summarizer configured", slog.String("backend", "simple"))
+	case "api":
+		if cfg.Summarize.API.BaseURL == "" {
+			slog.Error("summarize.backend is \"api\" but summarize.api.base_url is not configured")
+			os.Exit(1)
+		}
+		if cfg.Summarize.API.Format == "anthropic" {
+			s := summarize.NewAnthropic(cfg.Summarize.API.BaseURL, cfg.Summarize.API.Key, cfg.Summarize.Model)
+			ttsSummarizer = s
+			slog.Info("tts summarizer configured", slog.String("backend", "api"), slog.String("format", "anthropic"), slog.String("model", s.Model))
+		} else {
+			s := summarize.NewOpenAI(cfg.Summarize.API.BaseURL, cfg.Summarize.API.Key, cfg.Summarize.Model)
+			ttsSummarizer = s
+			slog.Info("tts summarizer configured", slog.String("backend", "api"), slog.String("format", "openai"), slog.String("model", s.Model))
+		}
+	default:
+		s, err := summarize.NewAIBackendSummarizer(summarizeBackend)
+		if err != nil {
+			slog.Error("failed to create AI backend summarizer, falling back to simple",
+				slog.String("backend", summarizeBackend), slog.String("error", err.Error()))
+			ttsSummarizer = summarize.NewSimple()
+		} else {
+			s.Model = cfg.Summarize.Model // empty = use backend default
+			ttsSummarizer = s
+			slog.Info("tts summarizer configured", slog.String("backend", summarizeBackend), slog.String("model", s.Model))
+		}
+	}
+	handler.SetSummarizer(ttsSummarizer)
+
+	// Initialize RAG history memory system
 	if err := rag.Init(cfg.RAG); err != nil {
 		slog.Warn("failed to initialize RAG system, search will be limited", slog.String("err", err.Error()))
 	}
-	// Always defer shutdown — cleanup worker may be running even without RAG
 	defer rag.Shutdown()
 
 	// Determine port before loading skills/agents (skills and agents need {{PORT}})
@@ -531,7 +525,7 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		slog.Warn("failed to migrate agents from YAML", slog.String("err", err.Error()))
 	}
 
-	// 2. Set ConfigDir for BuildCommonPrompt (replaces old agentsDir variable)
+	// 2. Set ConfigDir for WriteAgentYAML (deprecated, still needed for YAML agent migration)
 	model.ConfigDir = filepath.Dir(agentsDir)
 
 	// 3. Detect installed CLIs and write new agents to DB (replaces SyncDiscoverAgents)
@@ -633,16 +627,16 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 
 	// Initialize RAG indexer (needs final port number)
 	if rag.GlobalStore != nil {
-		// Start RAG indexer
 		rag.StartIndexer(cfg.RAG)
 	}
 
-	// Start cleanup worker for soft-deleted data (runs even without RAG)
+	// Start cleanup worker for soft-deleted data
 	rag.StartCleanupWorker(cfg.RAG)
 
 	// Initialize proxy service (port forwarding) and SSH tunnel server.
 	// ProxyRegistry is only created when SSH tunnel is enabled — it has no
 	// standalone purpose without the SSH tunnel to transport traffic.
+	var sshServerRef *ssh.Server
 	if cfg.PortForward.Enabled {
 		proxyService := service.NewProxyRegistry(port)
 		// Always apply config — empty AllowedPorts means "allow all ports"
@@ -650,14 +644,14 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		service.ProxyService = proxyService
 		defer proxyService.Stop()
 
-		sshServer := ssh.NewServer(cfg.PortForward, port, cfg.Password, proxyService)
-		handler.SetSSHServer(sshServer)
+		sshServerRef = ssh.NewServer(cfg.PortForward, port, cfg.Password, proxyService)
+		handler.SetSSHServer(sshServerRef)
 		go func() {
-			if err := sshServer.ListenAndServe(); err != nil {
+			if err := sshServerRef.ListenAndServe(); err != nil {
 				slog.Error("SSH server failed", slog.String("err", err.Error()))
 			}
 		}()
-		defer func() { sshServer.Close() }()
+		defer func() { sshServerRef.Close() }()
 	} else {
 		slog.Info("SSH tunnel and port forwarding disabled by config")
 	}
@@ -708,6 +702,82 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		}
 	}
 
+	// Resolve TLS config and scheme before banner.
+	// This also logs the HTTP/TLS mode so those slog lines appear
+	// *before* the banner and don't visually disrupt it.
+	scheme := "http"
+	tlsCertFile := ""
+	tlsKeyFile := ""
+	if cfg.TLS.Enabled {
+		tlsCertFile = cfg.TLS.CertFile
+		if tlsCertFile == "" {
+			tlsCertFile = os.Getenv("CERT_FILE")
+		}
+		tlsKeyFile = cfg.TLS.KeyFile
+		if tlsKeyFile == "" {
+			tlsKeyFile = os.Getenv("KEY_FILE")
+		}
+		if tlsCertFile == "" || tlsKeyFile == "" {
+			slog.Warn("TLS enabled but cert_file and key_file are not configured, falling back to HTTP")
+		} else {
+			scheme = "https"
+			slog.Info("starting with TLS", slog.String("cert", tlsCertFile))
+		}
+	}
+	if scheme == "http" {
+		slog.Info("starting with HTTP")
+	}
+
+	// Start dev HTTP listener before banner (so its slog doesn't disrupt the banner)
+	if devSrv != nil && scheme == "https" {
+		go func() {
+			if err := devSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("dev listener failed", slog.String("err", err.Error()))
+			}
+		}()
+	}
+
+	// --- Print startup banner (MUST be the last output before HTTP server starts) ---
+	// All subsystem initialization is complete; this is the final summary
+	// shown to the operator before the server begins accepting connections.
+	// Placed here to avoid being visually disrupted by subsequent slog lines.
+
+	// Build agent info list
+	agentInfos := make([]startup.AgentInfo, 0, len(model.AgentList))
+	for _, a := range model.AgentList {
+		agentInfos = append(agentInfos, startup.AgentInfo{
+			Name:   a.Name,
+			Models: len(a.Models),
+		})
+	}
+
+	// Count scheduled tasks
+	taskCount := scheduler.TaskCount()
+
+	// Determine SSH port
+	sshEnabled := cfg.PortForward.Enabled && sshServerRef != nil
+	sshPort := 0
+	if sshEnabled {
+		sshPort = sshServerRef.Port()
+	}
+
+	startup.PrintBanner(startup.BannerConfig{
+		Version:         version.Get(),
+		Scheme:          scheme,
+		Port:            port,
+		LocalIP:         platform.GetOutboundIP(),
+		AutoPassword:    autoPassword,
+		DataDir:         filepath.Join(model.BinDir, ".clawbench"),
+		Agents:          agentInfos,
+		SSHEnabled:      sshEnabled,
+		SSHPort:         sshPort,
+		TTSEngine:       engine,
+		RAGAvailable:    rag.GlobalStore != nil,
+		TerminalOn:      cfg.Terminal.Enabled,
+		TaskCount:       taskCount,
+		StartupDuration: time.Since(startTime),
+	})
+
 	// Graceful shutdown on SIGINT/SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -727,41 +797,14 @@ func main() { //nolint:gocognit,gocyclo // complex startup orchestration
 		}
 	}()
 
-httpServer:
-	if !cfg.TLS.Enabled {
-		// TLS disabled: plain HTTP
-		slog.Info("starting with HTTP")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	// Start HTTP server (blocking)
+	if scheme == "https" {
+		if err := srv.ListenAndServeTLS(tlsCertFile, tlsKeyFile); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", slog.String("err", err.Error()))
 			os.Exit(1)
 		}
 	} else {
-		// HTTPS with TLS
-		certFile := cfg.TLS.CertFile
-		keyFile := cfg.TLS.KeyFile
-		if certFile == "" {
-			certFile = os.Getenv("CERT_FILE")
-		}
-		if keyFile == "" {
-			keyFile = os.Getenv("KEY_FILE")
-		}
-		if certFile == "" || keyFile == "" {
-			slog.Warn("TLS enabled but cert_file and key_file are not configured, falling back to HTTP")
-			goto httpServer
-		}
-		slog.Info("starting with TLS", slog.String("cert", certFile))
-
-		// Start dev HTTP listener alongside TLS
-		if devSrv != nil {
-			go func() {
-				slog.Info("dev HTTP listener", slog.Int("port", cfg.DevPort))
-				if err := devSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					slog.Error("dev listener failed", slog.String("err", err.Error()))
-				}
-			}()
-		}
-
-		if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", slog.String("err", err.Error()))
 			os.Exit(1)
 		}

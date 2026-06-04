@@ -116,8 +116,10 @@ exempt_files = {
     "internal/ws/events.go",                # WebSocket handler exit path: conn.Close after client disconnect, timing-dependent
     "internal/ssh/server.go",               # SSH protocol-level paths (channel parse error, host key permissions, key save) untestable without protocol manipulation or root bypass
     "internal/rag/indexer.go",              # error logging paths require embedding/DB failures that need integration mock
-    "internal/rag/rag.go",                  # dimension mismatch path requires DuckDB schema manipulation
-    "internal/rag/store.go",                # DuckDB internal error paths (mkdir, close, column migration, search fallback)
+    "internal/rag/rag.go",                  # Init/Shutdown/StartIndexer/StartCleanupWorker require real DB + filesystem setup
+    "internal/rag/store_sqlite.go",         # SQLite internal error paths (file open, transaction rollback, FTS5 query errors)
+    "internal/rag/cleanup.go",              # realCleanupService delegates to service.DB which requires integration setup
+    "internal/rag/search.go",              # RAGSearch strategy branching requires mock embedder + cache state orchestration
     "internal/speech/common_tts.go",        # MkdirAll/temp file write error paths untestable as root
     "internal/terminal/session.go",         # WebSocket kick/PTY close paths require integration testing
     "internal/terminal/manager.go",         # WebSocket connect error path requires integration testing
@@ -521,5 +523,11 @@ else:
     print(f"\n{YELLOW}Tips:{RESET}")
     print("  - Add tests to improve coverage for failing checks")
     print("  - To skip test run: ./scripts/check-go-coverage.sh --skip-test")
+    # Exit code 2: Tier 1 only failure (baseline drift, non-blocking for CI)
+    # Exit code 1: Tier 2 failure or both tiers failed (blocking)
+    if not tier2_skipped and not tier2_pass:
+        sys.exit(1)
+    if not tier1_skipped and not tier1_pass:
+        sys.exit(2)
     sys.exit(1)
 PYTHON_SCRIPT

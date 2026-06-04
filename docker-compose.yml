@@ -1,0 +1,29 @@
+# ClawBench Docker deployment
+#
+# Quick start:
+#   ./scripts/docker-build.sh           # one-step: prepare + build + run
+#   docker compose up -d                # start (after first build)
+#   docker compose down                 # stop (data preserved in volume)
+#   docker compose down -v              # stop and wipe all data
+#   docker compose up -d --build        # rebuild image after code changes
+#   docker compose logs -f              # follow logs
+#
+# Access: http://localhost:20000
+# Password: auto-generated on first start, saved to /data/.clawbench/auto-password
+#           View with: docker exec clawbench cat /data/.clawbench/auto-password
+
+services:
+  clawbench:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clawbench
+    image: ghcr.io/clawbench-dev/clawbench:latest
+    ports:
+      - "20000:20000"
+    volumes:
+      - clawbench-data:/data
+    restart: unless-stopped
+
+volumes:
+  clawbench-data:

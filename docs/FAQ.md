@@ -12,7 +12,7 @@ A: 支持 CodeBuddy、Claude Code、OpenCode、Gemini CLI、Codex、Qoder CLI、
 
 **Q: 如何添加新的智能体？**
 
-A: 在 `config/agents/` 目录下创建 YAML 文件，定义 id、name、icon、specialty、backend、model 和 system_prompt 即可。公共规则放在 `config/rules.md`，会自动注入到所有智能体的系统提示词中。`{{AVAILABLE_AGENTS}}` 占位符会自动替换为可用智能体列表。
+A: 通过 Web UI 的设置向导创建新智能体，选择 LLM 提供商、输入 API Key、验证模型、命名智能体即可。智能体配置存储在数据库中。公共规则内嵌于 Go 二进制（`commonRulesTemplate`），会自动注入到所有智能体的系统提示词中。`{{AVAILABLE_AGENTS}}` 占位符会自动替换为可用智能体列表。`@chatsearch`/`@task` 命令按需注入。
 
 **Q: 是否需要配置 API Key？**
 
@@ -39,7 +39,7 @@ A: 可以。将整个发布目录复制到不同位置，每个副本拥有独�
 
 **Q: 是否需要配置文件才能启动？**
 
-A: 不需要。所有配置项均有默认值，无需 `config/config.yaml` 即可启动。未配置 `password` 时自动生成随机密码并保存到 `.clawbench/auto-password`，启动脚本会自动显示。如需自定义，复制 `config/config.example.yaml` 为 `config/config.yaml` 并修改。
+A: 不需要。所有配置项均有默认值，无需 `config/config.yaml` 即可启动。未配置 `password` 时自动生成随机密码并保存到 `.clawbench/auto-password`，启动时会自动显示。如需自定义，复制 `config/config.example.yaml` 为 `config/config.yaml` 并修改。
 
 **Q: 忘记自动生成的密码怎么办？**
 
@@ -57,6 +57,6 @@ A: 备份二进制同级目录下 `.clawbench/ClawBench.db` 数据库文件即�
 
 A: 如果下载的发布包包含内置 Pi 智能体（或使用 `./build.sh --with-pi` 构建），首次启动会自动显示设置向导。向导引导你选择 LLM 提供商（支持 OpenAI、Anthropic、DeepSeek 等 23 家），输入 API Key，验证模型连接，命名智能体，即可一键开始使用。API Key 使用 AES-256-GCM 加密存储，修改登录密码时自动轮换加密密钥。
 
-**Q: 设置向导创建的智能体和 YAML 配置的智能体有什么区别？**
+**Q: 如何管理智能体？**
 
-A: 设置向导创建的智能体存储在数据库中（`agents` 表），YAML 配置的智能体存储在 `config/agents/` 目录。两者共存时，数据库智能体在 ID 冲突时优先。数据库智能体的 API Key 加密存储在 `agent_api_keys` 表，YAML 智能体的 API Key 由对应 CLI 自行管理。
+A: 所有智能体存储在数据库中（`agents` 表），通过设置向导创建或首次启动时自动发现。API Key 加密存储在 `agent_api_keys` 表（AES-256-GCM），由系统自动管理。

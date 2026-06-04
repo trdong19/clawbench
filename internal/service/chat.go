@@ -603,6 +603,43 @@ func GetSessionTitlesBatch(sessionIDs []string) (map[string]string, error) {
 	return titles, rows.Err()
 }
 
+// GetSessionTitlesBatchIncludeDeleted fetches titles for multiple sessions
+// including soft-deleted ones. Used by RAG search to show titles even for
+// deleted sessions whose chunks are still indexed.
+func GetSessionTitlesBatchIncludeDeleted(sessionIDs []string) (map[string]string, error) {
+	if len(sessionIDs) == 0 {
+		return map[string]string{}, nil
+	}
+
+	placeholders := ""
+	args := make([]any, len(sessionIDs))
+	for i, id := range sessionIDs {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args[i] = id
+	}
+
+	rows, err := DBRead.Query("SELECT id, title FROM chat_sessions WHERE id IN ("+placeholders+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	titles := make(map[string]string, len(sessionIDs))
+	for rows.Next() {
+		var id, title string
+		if err := rows.Scan(&id, &title); err != nil {
+			continue
+		}
+		if title != "" {
+			titles[id] = title
+		}
+	}
+	return titles, rows.Err()
+}
+
 // SessionInfo contains session metadata for the chat view.
 type SessionInfo struct {
 	Title          string
@@ -610,6 +647,7 @@ type SessionInfo struct {
 	AgentID        string
 	Model          string
 	ThinkingEffort string
+	ProjectPath    string // populated by GetSessionFullInfo only
 }
 
 // GetSessionInfo fetches session metadata (title, backend, agent_id, model, thinking_effort)
@@ -625,6 +663,23 @@ func GetSessionInfo(sessionID string) (*SessionInfo, error) {
 		return nil, err
 	}
 	return info, nil
+}
+
+// GetSessionFullInfo fetches all session metadata including project_path in a single query.
+// This replaces the common pattern of calling GetSessionBackend + GetSessionProjectPath +
+// GetSessionInfo (3 separate PK lookups on the same row) with a single query.
+// Returns nil if the session is not found or soft-deleted.
+func GetSessionFullInfo(sessionID string) *SessionInfo {
+	info := &SessionInfo{}
+	err := DBRead.QueryRow(
+		`SELECT backend, project_path, title, agent_id, model, thinking_effort
+		 FROM chat_sessions WHERE id = ? AND deleted = 0`,
+		sessionID,
+	).Scan(&info.Backend, &info.ProjectPath, &info.Title, &info.AgentID, &info.Model, &info.ThinkingEffort)
+	if err != nil {
+		return nil
+	}
+	return info
 }
 
 // GetSessionAgentID returns the agent_id of an active (non-deleted) session.

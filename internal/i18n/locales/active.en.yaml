@@ -1,5 +1,6 @@
 SessionNotRunning: Session is not running
 SessionStreamNotFound: Session stream not found
+SessionStreamBusy: Session stream is being viewed on another device
 SessionLimitReached: Session limit reached ({{.MaxCount}}), please delete old sessions
 SessionIdRequired: session_id required
 NewSession: New Session
@@ -74,6 +75,12 @@ InvalidBranchName: Invalid branch name
 ModelDiscoveryNotSupported: This agent does not support model discovery
 ModelDiscoveryFailed: Model discovery returned no results
 CLINotFound: CLI tool not found, please install it first
+CustomURLOpenAIFormat: Custom URL for OpenAI format should end with /chat/completions
+CustomURLAnthropicFormat: Custom URL for Anthropic format should end with /v1/messages
+CustomURLInvalid: Invalid URL format
+CustomURLInvalidScheme: URL must start with http:// or https://
+CustomURLInvalidHost: URL is missing a valid hostname
+CustomURLUnrecognizedFormat: URL path must end with /chat/completions (OpenAI) or /v1/messages (Anthropic)
 PushTaskCompleted: AI Task Completed
 PushSessionEnded: AI session ended
 PushScheduledTaskDone: Scheduled task completed

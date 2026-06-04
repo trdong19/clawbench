@@ -49,6 +49,7 @@
             :provider-env-var="currentProviderEnvVar"
             v-model:custom-url="customUrl"
             v-model:api-key="apiKey"
+            v-model:api-format="apiFormat"
             @next="handleApiKeyNext"
             @back="goToStep(2)"
           />
@@ -110,9 +111,6 @@ const {
   scanModels,
   verify: verifyApi,
   complete: completeApi,
-  saveWizardState,
-  loadWizardState,
-  clearWizardState,
 } = useSetup()
 
 // ── Wizard state ──
@@ -122,6 +120,7 @@ const step = ref(1)
 
 const provider = ref('')
 const customUrl = ref('')
+const apiFormat = ref('openai')  // "openai" or "anthropic" (only for custom URL)
 const apiKey = ref('')  // NEVER persisted to sessionStorage
 const chatModel = ref('')
 const summarizeModel = ref('')
@@ -130,9 +129,9 @@ const agentId = ref('')
 
 // ── Async state ──
 
-const embeddedAgent = ref(false)
+const embeddedAgent = ref<boolean | null>(false)
 const agentVersion = ref('')
-const providersList = ref<{ id: string; name: string; envVar: string }[]>([])
+const providersList = ref<{ id: string; name: string; envVar: string; apiFormat: string }[]>([])
 const modelsList = ref<{ id: string; name: string; context_length?: number; cost_tier?: string }[]>([])
 const modelsLoading = ref(false)
 const modelsErrorMsg = ref('')
@@ -157,19 +156,6 @@ const currentProviderEnvVar = computed(() => {
 
 function goToStep(n: number) {
   step.value = n
-  persistState()
-}
-
-function persistState() {
-  saveWizardState({
-    step: step.value,
-    provider: provider.value,
-    customUrl: customUrl.value,
-    chatModel: chatModel.value,
-    summarizeModel: summarizeModel.value,
-    agentName: agentName.value,
-    agentId: agentId.value,
-  })
 }
 
 // ── Step handlers ──
@@ -202,8 +188,16 @@ async function fetchModels() {
   summarizeModel.value = ''
   verifyResult.value = null
 
+  // Custom URL mode: skip model list fetch entirely.
+  // The backend returns an empty list anyway, and the API call causes
+  // a misleading red "error" box. Just show manual input fields.
+  if (provider.value === '_custom') {
+    modelsLoading.value = false
+    return
+  }
+
   try {
-    const result = await scanModels(provider.value, customUrl.value, apiKey.value)
+    const result = await scanModels(provider.value, customUrl.value, apiKey.value, apiFormat.value)
     modelsList.value = result.models || []
     summarizeModelHintVal.value = result.summarize_model_hint || ''
     if (result.error) {
@@ -218,7 +212,6 @@ async function fetchModels() {
     modelsErrorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
     modelsLoading.value = false
-    persistState()
   }
 }
 
@@ -226,7 +219,7 @@ async function handleVerify() {
   if (!chatModel.value) return
   verifying.value = true
   verifyResult.value = null
-  const result = await verifyApi(provider.value, customUrl.value, apiKey.value, chatModel.value)
+  const result = await verifyApi(provider.value, customUrl.value, apiKey.value, chatModel.value, apiFormat.value)
   verifyResult.value = result
   verifying.value = false
 }
@@ -236,6 +229,7 @@ async function handleComplete() {
   const result = await completeApi({
     provider: provider.value === '_custom' ? '' : provider.value,
     custom_url: provider.value === '_custom' ? customUrl.value : '',
+    api_format: provider.value === '_custom' ? apiFormat.value : '',
     api_key: apiKey.value,
     model: chatModel.value,
     summarize_model: summarizeModel.value,
@@ -245,7 +239,6 @@ async function handleComplete() {
   completing.value = false
 
   if (result.success) {
-    clearWizardState()
     // Reload agents so the app picks up the new one
     try {
       await store.loadProject()
@@ -256,7 +249,7 @@ async function handleComplete() {
   }
 }
 
-// ── Restore state from sessionStorage on mount ──
+// ── Restore state on mount ──
 
 onMounted(async () => {
   // Check setup status
@@ -265,25 +258,13 @@ onMounted(async () => {
     embeddedAgent.value = status.embedded_agent
     agentVersion.value = status.agent_version || ''
   } catch {
-    embeddedAgent.value = false
+    embeddedAgent.value = null
   }
 
   // Load providers
   try {
     providersList.value = await getProviders()
   } catch { /* will show empty list */ }
-
-  // Restore wizard state (API key is NOT restored for security)
-  const saved = loadWizardState()
-  if (saved) {
-    step.value = saved.step || 1
-    provider.value = saved.provider || ''
-    customUrl.value = saved.customUrl || ''
-    chatModel.value = saved.chatModel || ''
-    summarizeModel.value = saved.summarizeModel || ''
-    agentName.value = saved.agentName || ''
-    agentId.value = saved.agentId || ''
-  }
 })
 
 // ── Auto-derive agentId from agentName ──
@@ -293,6 +274,26 @@ watch(agentName, (name) => {
   const expected = providerAgentNames[provider.value]?.id || ''
   if (!agentId.value || agentId.value === expected || agentId.value === name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')) {
     agentId.value = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  }
+})
+
+// ── Auto-sync summarizeModel from chatModel (custom URL mode) ──
+// When the model list is empty (custom URL), auto-fill summarize model
+// with the same value as chat model so the user doesn't have to type twice.
+// They can still override it manually.
+watch(chatModel, (model) => {
+  if (modelsList.value.length === 0 && model) {
+    summarizeModel.value = model
+  }
+})
+
+// ── Auto-set apiFormat when switching providers ──
+
+watch(provider, (p) => {
+  if (p === '_custom') return // keep user's choice for custom
+  const spec = providersList.value.find(s => s.id === p)
+  if (spec?.apiFormat) {
+    apiFormat.value = spec.apiFormat
   }
 })
 </script>
@@ -336,24 +337,24 @@ watch(agentName, (name) => {
   position: relative;
   z-index: 1;
   width: 100%;
-  max-width: 420px;
-  padding: 24px;
+  max-width: 380px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 12px;
 }
 
 /* Progress dots */
 .setup-progress {
   display: flex;
   justify-content: center;
-  gap: 8px;
-  padding-bottom: 4px;
+  gap: 6px;
+  padding-bottom: 2px;
 }
 
 .progress-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--bg-tertiary);
   transition: background 0.3s, transform 0.3s;
@@ -372,10 +373,10 @@ watch(agentName, (name) => {
 .setup-step-container {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 14px;
-  padding: 24px;
+  border-radius: 12px;
+  padding: 16px;
   box-shadow: var(--shadow-sm);
-  min-height: 280px;
+  min-height: 240px;
   display: flex;
   flex-direction: column;
 }
@@ -405,13 +406,13 @@ watch(agentName, (name) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 11px 20px;
+  gap: 5px;
+  padding: 8px 16px;
   border: none;
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--radius-sm, 6px);
   background: var(--accent-color);
   color: #fff;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.2s, transform 0.1s, opacity 0.2s;
@@ -434,13 +435,13 @@ watch(agentName, (name) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 11px 20px;
+  gap: 5px;
+  padding: 8px 16px;
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--radius-sm, 6px);
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s;
@@ -458,9 +459,9 @@ watch(agentName, (name) => {
 
 .step-nav {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   margin-top: auto;
-  padding-top: 16px;
+  padding-top: 12px;
 }
 
 .step-nav .setup-btn-secondary {
@@ -474,12 +475,12 @@ watch(agentName, (name) => {
 .setup-error {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-radius: var(--radius-md, 10px);
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm, 6px);
   background: color-mix(in srgb, var(--color-red, #dc2626) 8%, var(--bg-primary));
   border: 1px solid color-mix(in srgb, var(--color-red, #dc2626) 20%, var(--border-color));
   color: var(--color-red, #dc2626);
-  font-size: 13px;
+  font-size: 12px;
 }
 </style>

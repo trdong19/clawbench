@@ -31,7 +31,7 @@ func TestNewBackend_OpenCode(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, backend)
 	assert.Equal(t, "opencode", backend.Name())
-	// OpenCode is NOT wrapped in AutoResumeBackend
+	// OpenCode is NOT wrapped in AutoResumeBackend (no ExitPlanMode issue)
 	_, ok := backend.(*AutoResumeBackend)
 	assert.False(t, ok, "opencode should NOT be wrapped in AutoResumeBackend")
 }
@@ -41,7 +41,7 @@ func TestNewBackend_Gemini(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, backend)
 	assert.Equal(t, "gemini", backend.Name())
-	// Gemini is NOT wrapped in AutoResumeBackend
+	// Gemini is NOT wrapped in AutoResumeBackend (no ExitPlanMode issue)
 	_, ok := backend.(*AutoResumeBackend)
 	assert.False(t, ok, "gemini should NOT be wrapped in AutoResumeBackend")
 }
@@ -91,7 +91,7 @@ func TestNewBackend_Codex(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, backend)
 	assert.Equal(t, "codex", backend.Name())
-	// Codex is NOT wrapped in AutoResumeBackend (custom ExecuteStream)
+	// Codex is NOT wrapped in AutoResumeBackend (custom ExecuteStream, no ExitPlanMode)
 	_, ok := backend.(*CodexBackend)
 	assert.True(t, ok, "codex should be a CodexBackend (not wrapped in AutoResumeBackend)")
 }

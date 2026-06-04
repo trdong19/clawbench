@@ -1,5 +1,9 @@
 package rag
 
+import (
+	"time"
+)
+
 // Shared test constants to avoid goconst duplicates across test files.
 const (
 	testModelBgeM3Latest    = "bge-m3:latest"
@@ -25,3 +29,31 @@ const (
 	testSearchQueryChunk    = "chunk"
 	testEmbeddingTextHello  = "hello"
 )
+
+// makeTestEmbedding creates a 1024-dim float64 slice
+// with simple sequential values for testing.
+func makeTestEmbedding() []float64 {
+	emb := make([]float64, 1024)
+	for i := range emb {
+		emb[i] = float64(i%100) * 0.01
+	}
+	return emb
+}
+
+// makeTestChunk creates a Chunk with the given text and a default 1024-dim embedding.
+func makeTestChunk(sessionID string, messageID int64, chunkIndex int, text string) Chunk {
+	return Chunk{
+		SessionID:          sessionID,
+		MessageID:          messageID,
+		ChunkText:          text,
+		ChunkTextSegmented: SegmentText(text),
+		ChunkIndex:         chunkIndex,
+		TokenCount:         len(text) / 4,
+		Embedding:          makeTestEmbedding(),
+		HasEmbedding:       true,
+		ProjectPath:        testProjectPath,
+		Backend:            testBackendClaude,
+		Role:               testRoleAssistant,
+		CreatedAt:          time.Now().Truncate(time.Millisecond),
+	}
+}

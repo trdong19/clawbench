@@ -86,6 +86,9 @@ CREATE INDEX IF NOT EXISTS idx_history_session ON chat_history(project_path, bac
 CREATE INDEX IF NOT EXISTS idx_sessions_project_backend ON chat_sessions(project_path, backend);
 CREATE INDEX IF NOT EXISTS idx_executions_session ON task_executions(session_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON scheduled_tasks(project_path, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_history_session_id ON chat_history(session_id, role, streaming, created_at);
+CREATE INDEX IF NOT EXISTS idx_history_unread ON chat_history(project_path, role, streaming, created_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_order ON chat_sessions(session_type, project_path, deleted, updated_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS ai_raw_responses (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	session_id TEXT NOT NULL,
@@ -1143,10 +1146,9 @@ func TestSendSessionEvent_NoStream(t *testing.T) {
 func TestSendSessionEvent_FullChannel(t *testing.T) {
 	setupDB(t)
 	sid := "full-channel-test"
-	// Register stream (capacity is 256)
 	ch := service.RegisterSessionStream(sid)
 
-	// Fill the channel buffer
+	// Fill the channel buffer (capacity is 256)
 	for i := range 256 {
 		ok := service.SendSessionEvent(sid, ai.StreamEvent{Type: "content", Content: fmt.Sprintf("msg-%d", i)})
 		assert.True(t, ok)
@@ -1904,6 +1906,97 @@ func TestGetSessionTitlesBatch_NonExistentID(t *testing.T) {
 	assert.NoError(t, err)
 	_, ok := titles["non-existent-id"]
 	assert.False(t, ok, "non-existent ID should not appear in titles")
+}
+
+// ---------- GetSessionTitlesBatchIncludeDeleted ----------
+
+func TestGetSessionTitlesBatchIncludeDeleted_IncludesDeletedSessions(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Deleted Session Title")
+	_ = service.DeleteSession("/project", "claude", sid)
+
+	// Regular batch excludes deleted sessions
+	titles, err := service.GetSessionTitlesBatch([]string{sid})
+	assert.NoError(t, err)
+	_, ok := titles[sid]
+	assert.False(t, ok, "GetSessionTitlesBatch should exclude deleted sessions")
+
+	// IncludeDeleted variant includes deleted sessions
+	titlesInc, err := service.GetSessionTitlesBatchIncludeDeleted([]string{sid})
+	assert.NoError(t, err)
+	title, ok := titlesInc[sid]
+	assert.True(t, ok, "GetSessionTitlesBatchIncludeDeleted should include deleted sessions")
+	assert.Equal(t, "Deleted Session Title", title)
+}
+
+func TestGetSessionTitlesBatchIncludeDeleted_ExcludesEmptyTitles(t *testing.T) {
+	setupDB(t)
+
+	sid := helperCreateSession(t, "/project", "claude", "Has Title")
+	_, err := service.DB.Exec("UPDATE chat_sessions SET title = '' WHERE id = ?", sid)
+	assert.NoError(t, err)
+
+	titles, err := service.GetSessionTitlesBatchIncludeDeleted([]string{sid})
+	assert.NoError(t, err)
+	_, ok := titles[sid]
+	assert.False(t, ok, "empty title should not be included even in IncludeDeleted variant")
+}
+
+func TestGetSessionTitlesBatchIncludeDeleted_Empty(t *testing.T) {
+	setupDB(t)
+
+	titles, err := service.GetSessionTitlesBatchIncludeDeleted([]string{})
+	assert.NoError(t, err)
+	assert.Empty(t, titles)
+}
+
+// ---------- GetSessionFullInfo ----------
+
+func TestGetSessionFullInfo(t *testing.T) {
+	_ = setupDB(t)
+
+	sid, err := service.CreateSession("/my/project", "claude", "Full Info Test", "my-agent", "gpt-4o", "user", "chat")
+	assert.NoError(t, err)
+
+	info := service.GetSessionFullInfo(sid)
+	assert.NotNil(t, info)
+	assert.Equal(t, "claude", info.Backend)
+	assert.Equal(t, "/my/project", info.ProjectPath)
+	assert.Equal(t, "Full Info Test", info.Title)
+	assert.Equal(t, "my-agent", info.AgentID)
+	assert.Equal(t, "gpt-4o", info.Model)
+	assert.Equal(t, "", info.ThinkingEffort)
+}
+
+func TestGetSessionFullInfo_WithThinkingEffort(t *testing.T) {
+	_ = setupDB(t)
+
+	sid, err := service.CreateSession("/project", "claude", "Thinking", "claude", "", "default", "chat")
+	assert.NoError(t, err)
+	err = service.UpdateSessionThinkingEffort(sid, "high")
+	assert.NoError(t, err)
+
+	info := service.GetSessionFullInfo(sid)
+	assert.NotNil(t, info)
+	assert.Equal(t, "high", info.ThinkingEffort)
+}
+
+func TestGetSessionFullInfo_NotFound(t *testing.T) {
+	_ = setupDB(t)
+
+	info := service.GetSessionFullInfo("nonexistent")
+	assert.Nil(t, info)
+}
+
+func TestGetSessionFullInfo_Deleted(t *testing.T) {
+	_ = setupDB(t)
+
+	sid, _ := service.CreateSession("/project", "claude", "Deleted", "claude", "", "default", "chat")
+	service.DeleteSession("/project", "claude", sid)
+
+	info := service.GetSessionFullInfo(sid)
+	assert.Nil(t, info)
 }
 
 // ---------- GetSessionInfo ----------

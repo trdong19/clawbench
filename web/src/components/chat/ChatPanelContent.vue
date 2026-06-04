@@ -7,6 +7,7 @@
       :expandedTools="render.expandedTools.value"
       :blockTasks="render.blockTasks"
       :blockAskQuestions="render.blockAskQuestions"
+      :blockRagResults="render.blockRagResults"
       :agents="agentsList"
       :currentAgent="currentAgent"
       :currentSessionId="identity.currentSessionId.value"
@@ -28,6 +29,8 @@
       @remove-pending="manager.handleRemovePending"
       @render-flush="scrollBottom()"
       @toggle-summary="handleToggleSummary"
+      @resume-session="handleResumeSession"
+      @show-rag-detail="handleRagDetail"
     />
 
     <!-- Session switching overlay — placed here to cover the entire message area -->
@@ -123,6 +126,22 @@
     @file-open="handleFileOpenInOverlay"
     @send-message="handleToolSendMessage"
   />
+  <!-- RAG search result detail drawer -->
+  <BottomSheet :open="!!ragDetailItem" handleOnly auto @close="ragDetailItem = null">
+    <template v-if="ragDetailItem">
+      <div class="rag-detail-content">
+        <div class="rag-detail-title">{{ ragDetailItem.sessionTitle || t('chat.contentBlocks.ragUntitled') }}</div>
+        <div v-if="ragDetailItem.createdAt" class="rag-detail-time">{{ render.formatDetailTime(ragDetailItem.createdAt) }}</div>
+        <div v-if="ragDetailItem.summary" class="rag-detail-summary">{{ ragDetailItem.summary }}</div>
+      </div>
+      <div class="rag-detail-footer">
+        <button class="rag-detail-resume-btn" @click="handleResumeFromDetail">
+          {{ t('chat.contentBlocks.ragResume') }}
+          <ChevronRight :size="14" />
+        </button>
+      </div>
+    </template>
+  </BottomSheet>
 </template>
 
 <script setup>
@@ -130,6 +149,7 @@ import { ref, computed, watch, onUnmounted, onMounted, inject, provide, toRef, n
 import { useI18n } from 'vue-i18n'
 import { gt } from '@/composables/useLocale'
 import HeaderMarquee from '@/components/common/HeaderMarquee.vue'
+import BottomSheet from '@/components/common/BottomSheet.vue'
 import ChatMetadataModal from './ChatMetadataModal.vue'
 import ToolDetailOverlay from './ToolDetailOverlay.vue'
 import ChatInputBar from './ChatInputBar.vue'
@@ -153,6 +173,8 @@ import { useSwipeSession } from '@/composables/useSwipeSession.ts'
 import { useGlobalEvents } from '@/composables/useGlobalEvents'
 import { store } from '@/stores/app.ts'
 import { renderMarkdown } from '@/composables/useMarkdownRenderer.ts'
+import { useDialog } from '@/composables/useDialog'
+import { ChevronRight } from 'lucide-vue-next'
 
 const { t } = useI18n()
 
@@ -198,7 +220,11 @@ const toolDetailOverlay = ref({
   status: '',
   done: true,
 })
+// Active thinking overlay: tracks which block is being shown so we can reactively update
+const activeThinkingOverlay = ref(null) // { msgId, blockIdx } or null
+let thinkingRenderTimer = null
 const toast = useToast()
+const dialog = useDialog()
 const notification = useNotification()
 const autoSpeech = useAutoSpeech()
 const theme = inject('theme', ref('light'))
@@ -221,6 +247,7 @@ const session = useChatSession({
   inputDisabled,
   blockTasks: render.blockTasks,
   blockAskQuestions: render.blockAskQuestions,
+  blockRagResults: render.blockRagResults,
   expandedTools: render.expandedTools,
   onParseAssistantContent: (content) => render.parseAssistantContent(content),
   onExtractScheduledTasks: (msgs) => render.extractScheduledTasks(msgs),
@@ -396,6 +423,35 @@ watch(() => props.active, async (val) => {
   }
 }, { immediate: true })
 
+// Reactively update thinking overlay content as block.text changes during streaming
+watch(
+  () => {
+    if (!activeThinkingOverlay.value || !toolDetailOverlay.value.show) return null
+    const block = findThinkingBlock(activeThinkingOverlay.value)
+    return block ? block.text : null
+  },
+  (text) => {
+    if (text === null) return
+    // Debounce: avoid re-rendering markdown on every SSE event
+    if (thinkingRenderTimer) clearTimeout(thinkingRenderTimer)
+    thinkingRenderTimer = setTimeout(() => {
+      toolDetailOverlay.value = {
+        ...toolDetailOverlay.value,
+        inputHtml: `<div class="thinking-overlay-md">${renderMarkdown(text)}</div>`,
+        done: !loading.value, // Mark done when session completes
+      }
+    }, 300)
+  }
+)
+
+// Clean up thinking overlay state when overlay closes
+watch(() => toolDetailOverlay.value.show, (show) => {
+  if (!show) {
+    activeThinkingOverlay.value = null
+    if (thinkingRenderTimer) { clearTimeout(thinkingRenderTimer); thinkingRenderTimer = null }
+  }
+})
+
 async function handleShowAgentSelector() {
   await agentsComposable.loadAgents()
   // If only one agent exists, skip the selector and create directly
@@ -559,16 +615,31 @@ function handleShowToolDetail(block) {
   }
 }
 
-function handleShowThinkingDetail({ text }) {
+function handleShowThinkingDetail({ text, msgId, blockIdx }) {
+  // Store identifiers for reactive lookup (survives messages array replacement on loadHistory)
+  activeThinkingOverlay.value = { msgId: String(msgId), blockIdx }
+
+  // Initial render
+  const block = findThinkingBlock(activeThinkingOverlay.value)
+  const currentText = block ? block.text : text // fallback to snapshot if lookup fails
+
   toolDetailOverlay.value = {
     show: true,
     name: 'DeepThink',
     summary: '',
-    inputHtml: `<div class="thinking-overlay-md">${renderMarkdown(text)}</div>`,
+    inputHtml: `<div class="thinking-overlay-md">${renderMarkdown(currentText)}</div>`,
     outputHtml: '',
     status: '',
-    done: true,
+    done: !loading.value, // Will update to true when streaming ends
   }
+}
+
+/** Look up the thinking block from the live messages array by msgId + blockIdx */
+function findThinkingBlock({ msgId, blockIdx }) {
+  const msg = messages.value.find(m => String(m.id) === msgId)
+  if (!msg || !msg.blocks) return null
+  const block = msg.blocks[blockIdx]
+  return (block && block.type === 'thinking') ? block : null
 }
 
 function handleFileOpenInOverlay(filePath) {
@@ -603,6 +674,64 @@ function handleToggleSummary(msgId) {
     msg.showingSummary = !msg.showingSummary
 }
 
+// RAG detail drawer
+const ragDetailItem = ref(null)
+
+function handleRagDetail(ragItem) {
+    ragDetailItem.value = ragItem
+}
+
+async function handleResumeFromDetail() {
+    const item = ragDetailItem.value
+    ragDetailItem.value = null
+    if (!item?.sessionId) return
+    const confirmed = await dialog.confirm(
+        t('chat.contentBlocks.ragResumeConfirm', { title: item.sessionTitle || t('chat.contentBlocks.ragUntitled') }),
+        { title: t('chat.contentBlocks.ragResume'), confirmText: t('common.confirm') }
+    )
+    if (!confirmed) return
+    try {
+        const resp = await fetch('/api/ai/session/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: item.sessionId }),
+        })
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}))
+            toast.show(data.error || t('chat.contentBlocks.ragResumeFailed'), { icon: '⚠️', type: 'error' })
+            return
+        }
+        await session.switchSession(item.sessionId)
+    } catch (err) {
+        toast.show(t('chat.contentBlocks.ragResumeFailed'), { icon: '⚠️', type: 'error' })
+    }
+}
+
+// Resume a session from RAG search results (direct event, no detail drawer)
+async function handleResumeSession({ sessionId, sessionTitle }) {
+    if (!sessionId) return
+    const confirmed = await dialog.confirm(
+        t('chat.contentBlocks.ragResumeConfirm', { title: sessionTitle || t('chat.contentBlocks.ragUntitled') }),
+        { title: t('chat.contentBlocks.ragResume'), confirmText: t('common.confirm') }
+    )
+    if (!confirmed) return
+    try {
+        const resp = await fetch('/api/ai/session/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId }),
+        })
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}))
+            toast.show(data.error || t('chat.contentBlocks.ragResumeFailed'), { icon: '⚠️', type: 'error' })
+            return
+        }
+        await session.switchSession(sessionId)
+    } catch (err) {
+        toast.show(t('chat.contentBlocks.ragResumeFailed'), { icon: '⚠️', type: 'error' })
+    }
+}
+
 // Start one-time session load when component mounts
 onMounted(() => {
     // Request notification permission on mount
@@ -622,6 +751,7 @@ onUnmounted(() => {
     stream.disconnectStream()
     stream.stopPolling()
     session.stopMsgCountPolling()
+    if (thinkingRenderTimer) { clearTimeout(thinkingRenderTimer); thinkingRenderTimer = null }
     document.removeEventListener('visibilitychange', session.handleVisibilityChange)
     document.removeEventListener('visibilitychange', manager._visibilityHandler)
     window.removeEventListener('clawbench-summary-update', handleSummaryUpdate)
@@ -826,5 +956,67 @@ onUnmounted(() => {
 .session-indicator-leave-to {
   opacity: 0;
   transform: scale(0.95);
+}
+
+/* RAG detail drawer */
+.rag-detail-content {
+  padding: 8px 16px 16px;
+}
+
+.rag-detail-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.rag-detail-time {
+  font-size: 12px;
+  color: var(--text-muted, #999);
+  margin-bottom: 12px;
+}
+
+.rag-detail-summary {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary, #495057);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rag-detail-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color, #e5e5e5);
+}
+
+.rag-detail-resume-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 0;
+  border: none;
+  border-radius: 8px;
+  background: #8b5cf6;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+:root[data-theme="dark"] .rag-detail-resume-btn {
+  background: #7c3aed;
+}
+
+.rag-detail-resume-btn:hover {
+  opacity: 0.85;
+}
+
+.rag-detail-resume-btn:active {
+  opacity: 0.7;
 }
 </style>

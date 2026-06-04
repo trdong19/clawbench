@@ -1,5 +1,6 @@
 SessionNotRunning: 会话未在运行
 SessionStreamNotFound: 未找到会话流
+SessionStreamBusy: 会话流正在其他设备上查看
 SessionLimitReached: 已达会话数量上限（{{.MaxCount}}），请先删除旧会话
 SessionIdRequired: session_id 为必填项
 NewSession: 新会话
@@ -74,6 +75,12 @@ InvalidBranchName: 无效的分支名
 ModelDiscoveryNotSupported: 该智能体不支持模型自动发现
 ModelDiscoveryFailed: 模型发现未返回结果
 CLINotFound: 未找到CLI工具，请先安装
+CustomURLOpenAIFormat: OpenAI 格式的自定义 URL 应以 /chat/completions 结尾
+CustomURLAnthropicFormat: Anthropic 格式的自定义 URL 应以 /v1/messages 结尾
+CustomURLInvalid: URL 格式无效
+CustomURLInvalidScheme: URL 必须以 http:// 或 https:// 开头
+CustomURLInvalidHost: URL 缺少有效的主机名
+CustomURLUnrecognizedFormat: URL 路径须以 /chat/completions（OpenAI）或 /v1/messages（Anthropic）结尾
 PushTaskCompleted: AI任务完成
 PushSessionEnded: AI会话已结束
 PushScheduledTaskDone: 计划任务已完成

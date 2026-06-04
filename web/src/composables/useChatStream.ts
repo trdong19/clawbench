@@ -167,40 +167,61 @@ export function useChatStream(options: UseChatStreamOptions) {
 
         if (!data.running) {
           stopPolling()
-          messages.value = latestMsgs
-          currentSessionId.value = data.sessionId || currentSessionId.value
-          // Only render and scroll when panel is visible
-          if (isOpen.value) {
-            onRenderNeeded(true)
-            onScrollBottom(true)
-          }
-          loading.value = false
-          onMessage()
-          onStreamEnd?.('done')
-          if (!isOpen.value) {
-            const lastMsg = messages.value[messages.value.length - 1]
-            if (lastMsg?.role === 'assistant') {
-              onToast(gt('chat.stream.aiReplied'), { icon: '🤖', duration: 5000, onClick: () => onOpen() })
-              onNotification(gt('chat.stream.aiReplied'), {
-                body: gt('chat.stream.clickToViewReply'),
-                onClick: () => onOpen()
-              })
+          // Use onLoadHistory() for the final load — it handles the full render
+          // pipeline (KaTeX, annotations, etc.) correctly for completed messages,
+          // and properly manages session state (model sync, expandedTools, etc.)
+          // This avoids the flickering caused by directly replacing messages.value
+          // which destroys and rebuilds the entire Vue component tree.
+          onLoadHistory().finally(() => {
+            loading.value = false
+            onMessage()
+            onStreamEnd?.('done')
+            if (!isOpen.value) {
+              const lastMsg = messages.value[messages.value.length - 1]
+              if (lastMsg?.role === 'assistant') {
+                onToast(gt('chat.stream.aiReplied'), { icon: '🤖', duration: 5000, onClick: () => onOpen() })
+                onNotification(gt('chat.stream.aiReplied'), {
+                  body: gt('chat.stream.clickToViewReply'),
+                  onClick: () => onOpen()
+                })
+              }
             }
-          }
+          })
           return
         }
-        // Session still running — update the streaming message with latest content
-        // so the user sees progress even while polling (not stuck on stale content)
+        // Session still running — incremental update: only mutate the streaming
+        // assistant message's blocks in place to avoid destroying/rebuilding the
+        // entire Vue component tree (which causes severe UI flickering every 2s).
         const lastAssistant = latestMsgs.findLast(m => m.role === 'assistant')
-        if (lastAssistant) {
+        const existingStreaming = messages.value.find((m: any) => m.role === 'assistant' && m.streaming)
+
+        if (lastAssistant && existingStreaming) {
+          // Update blocks in place — Vue tracks array mutations on reactive proxies,
+          // so ContentBlocks.vue picks up the change without a full component rebuild.
+          existingStreaming.blocks = lastAssistant.blocks
+          if (lastAssistant.metadata) existingStreaming.metadata = lastAssistant.metadata
+          if (lastAssistant.cancelled) existingStreaming.cancelled = lastAssistant.cancelled
+        } else if (lastAssistant && !existingStreaming) {
+          // No existing streaming message (shouldn't normally happen after
+          // forceCleanupStreamingState, but handle gracefully) — push new one
           lastAssistant.streaming = true
+          messages.value.push(lastAssistant)
         }
-        messages.value = latestMsgs
+
+        // Add any new non-streaming messages that appeared (e.g., queued user messages)
+        const existingIds = new Set(messages.value.map((m: any) => m.id).filter(Boolean))
+        for (const msg of latestMsgs) {
+          if (msg.id && !existingIds.has(msg.id) && msg !== lastAssistant) {
+            messages.value.push(msg)
+          }
+        }
+
         currentSessionId.value = data.sessionId || currentSessionId.value
-        // Only render and scroll when panel is visible
+        // Incremental render via debounce — same as the SSE streaming path.
+        // NOT onRenderNeeded(true) which triggers full pipeline (KaTeX, annotations)
+        // and causes flickering during streaming.
         if (isOpen.value) {
-          onRenderNeeded(true)
-          onScrollBottom()
+          debouncedRender()
         }
       } catch (err) {
         console.error('Polling error:', err)
@@ -256,9 +277,9 @@ export function useChatStream(options: UseChatStreamOptions) {
     }
 
     eventSource = new EventSource(`/api/ai/chat/stream?session_id=${encodeURIComponent(sessionId)}`, { withCredentials: true })
-    // Capture current EventSource instance — handlers must use esRef instead of
-    // the outer `eventSource` variable, which gets reassigned on reconnect/session
-    // switch. Without this, a stale handler could close the NEW connection.
+    // Capture reference to THIS EventSource instance so event handlers can
+    // safely close only the stale connection without affecting a new session's
+    // EventSource (the `eventSource` variable may be reassigned by connectStream).
     const esRef = eventSource
 
     // Start stream timeout
@@ -293,7 +314,8 @@ export function useChatStream(options: UseChatStreamOptions) {
     eventSource.addEventListener('content', (e) => {
       if (!guard()) return
       resetStreamTimeout()
-      const data = JSON.parse(e.data)
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE content: invalid JSON, skipping'); return }
       // Coalesce content into the most recent text block
       const blocks = streamingMsg.blocks
       const existingText = findLastBlockOfType(blocks, 'text')
@@ -309,7 +331,8 @@ export function useChatStream(options: UseChatStreamOptions) {
     eventSource.addEventListener('thinking', (e) => {
       if (!guard()) return
       resetStreamTimeout()
-      const data = JSON.parse(e.data)
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE thinking: invalid JSON, skipping'); return }
       const blocks = streamingMsg.blocks
       // Coalesce thinking into the most recent thinking block
       const existingThinking = findLastBlockOfType(blocks, 'thinking')
@@ -318,6 +341,8 @@ export function useChatStream(options: UseChatStreamOptions) {
       } else {
         blocks.push({ type: 'thinking', text: data.text })
       }
+      // Trigger debounced render for inline thinking content during streaming
+      debouncedRender()
       // Skip scroll when panel not visible
       if (isOpen.value) {
         onScrollBottom()
@@ -326,7 +351,8 @@ export function useChatStream(options: UseChatStreamOptions) {
 
     eventSource.addEventListener('tool_use', (e) => {
       resetStreamTimeout()
-      const data = JSON.parse(e.data)
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE tool_use: invalid JSON, skipping'); return }
       if (!guard()) return
       const blocks = streamingMsg.blocks
       // Always check for existing block with same ID first — the backend may
@@ -386,7 +412,8 @@ export function useChatStream(options: UseChatStreamOptions) {
 
     eventSource.addEventListener('tool_result', (e) => {
       resetStreamTimeout()
-      const data = JSON.parse(e.data)
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE tool_result: invalid JSON, skipping'); return }
       if (!guard()) return
       const blocks = streamingMsg.blocks
       // Find the matching tool_use block and update output/status
@@ -404,11 +431,21 @@ export function useChatStream(options: UseChatStreamOptions) {
     eventSource.addEventListener('metadata', (e) => {
       if (!guard()) return
       resetStreamTimeout()
-      const data = JSON.parse(e.data)
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE metadata: invalid JSON, skipping'); return }
       streamingMsg.metadata = data
     })
 
     eventSource.addEventListener('done', () => {
+      // ISS-246: check guard() BEFORE touching shared state — if session
+      // changed, this event belongs to a stale connection and must be ignored.
+      if (!guard()) {
+        // Close only the stale EventSource that fired this event, not the
+        // shared `eventSource` variable which may point to a new session.
+        esRef.close()
+        reconnect.reset()
+        return
+      }
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
       clearToolUseTimeouts()
       // Guard FIRST: if session switched, close only the stale esRef, not the
@@ -445,8 +482,14 @@ export function useChatStream(options: UseChatStreamOptions) {
 
     eventSource.addEventListener('cancelled', () => {
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
-      // Guard FIRST: if session switched, close only the stale esRef
+      // ISS-245/ISS-278: check guard() BEFORE disconnectStream().
+      // disconnectStream() closes the shared `eventSource` variable which may
+      // have been reassigned to a new session's EventSource. If the session
+      // changed, this cancelled event is stale — close only THIS EventSource
+      // instance (not the shared variable) and skip state mutations.
       if (!guard()) {
+        // Close only the stale EventSource that fired this event, not the
+        // shared `eventSource` variable which may point to a new session.
         esRef.close()
         return
       }
@@ -464,7 +507,8 @@ export function useChatStream(options: UseChatStreamOptions) {
     eventSource.addEventListener('warning', (e) => {
       if (!guard()) return
       resetStreamTimeout()
-      const data = JSON.parse(e.data)
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE warning: invalid JSON, skipping'); return }
       // Flush any streaming text before adding warning block
       if (streamingMsg.streamingText) {
         streamingMsg.blocks.push({ type: 'text', text: streamingMsg.streamingText })
@@ -484,7 +528,8 @@ export function useChatStream(options: UseChatStreamOptions) {
       // Always update pending queue — it's independent of the streaming message
       onQueueConsume?.()
       if (!guard()) return
-      const data = JSON.parse(e.data)
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE queue_consume: invalid JSON, skipping'); return }
 
       // Add user message bubble (DB message already persisted by backend)
       const userContent = data.text || ''
@@ -521,7 +566,8 @@ export function useChatStream(options: UseChatStreamOptions) {
 
     eventSource.addEventListener('queue_update', (e) => {
       resetStreamTimeout()
-      const data = JSON.parse(e.data)
+      let data: any
+      try { data = JSON.parse(e.data) } catch { console.warn('SSE queue_update: invalid JSON, skipping'); return }
       // Always update pending queue — it's independent of the streaming message
       onQueueUpdate?.(data.queue || [])
     })
@@ -546,13 +592,26 @@ export function useChatStream(options: UseChatStreamOptions) {
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
       if (!guard()) return
       disconnectStream()
-      // Backend reported error (e.g. session not running) — reload from DB for final state
+      // Check if this is an sse_busy error — another client is already consuming
+      // the SSE stream. In this case, do NOT call onLoadHistory() because:
+      // 1. loadHistory() sees data.running=true → sets loading=true → calls
+      //    connectStream() again → gets sse_busy again → infinite loop
+      // 2. The competing onLoadHistory() and onerror's forceCleanupStreamingState()
+      //    cause loading to oscillate between true/false → cancel button flickers
+      // Instead, let onerror handle the fallback to pollUntilDone() which reads
+      // from DB incrementally without re-attempting SSE.
+      let errorData: any
+      try { errorData = JSON.parse(e.data) } catch { /* ignore parse failure */ }
+      if (errorData?.reason === 'sse_busy') {
+        // sse_busy is expected for second clients — skip onLoadHistory to avoid
+        // the reconnection loop. onerror will fall back to polling.
+        return
+      }
+      // Non-sse_busy errors (e.g. session not running) — reload from DB for final state
       onLoadHistory().catch(() => {
         if (!guard()) return
-        const data = JSON.parse(e.data)
-        streamingMsg.content = `${gt('chat.stream.errorPrefix')} ${data.error}`
-        const errorBlock = { type: 'error', text: data.error }
-        if (data.reason) errorBlock.reason = data.reason
+        const errorBlock = { type: 'error', text: errorData?.error || 'Unknown error' }
+        if (errorData?.reason) errorBlock.reason = errorData.reason
         streamingMsg.blocks = [errorBlock]
         _forceCleanupStreamingState(messages.value, { onRenderNeeded, onExtractScheduledTasks })
         loading.value = false
@@ -561,20 +620,29 @@ export function useChatStream(options: UseChatStreamOptions) {
     })
 
     eventSource.onerror = () => {
-      // SSE connection error — reconnect if session is still active
+      // SSE connection error — distinguish recoverable vs non-recoverable.
+      // ISS-248/ISS-279: Use EventSource readyState to detect fatal errors.
+      // CONNECTING (0) / OPEN (1) = transient, safe to reconnect.
+      // CLOSED (2) = permanent failure (e.g. 404, server shutdown), fall back.
       if (streamTimeout) { clearTimeout(streamTimeout); streamTimeout = null }
-      // Use esRef to check if this is a permanent failure (CLOSED = 404, server
-      // shutdown). readyState OPEN/HALF_OPEN may recover automatically — only
-      // intervene for truly dead connections.
-      if (esRef.readyState === EventSource.CLOSED) {
-        disconnectStream()
-        if (currentSessionId.value && loading.value && reconnect.shouldReconnect()) {
-          reconnect.scheduleReconnect()
-        } else {
-          reconnect.reset()
-          forceCleanupStreamingState()
-          pollUntilDone()
-        }
+      // Use esRef (captured at connectStream time) to check readyState,
+      // since `eventSource` may have been reassigned by a new session.
+      const wasRecoverable = esRef.readyState !== EventSource.CLOSED
+      disconnectStream()
+      if (wasRecoverable && currentSessionId.value && loading.value && reconnect.shouldReconnect()) {
+        // Transient error (network blip, server restart) — reconnect SSE
+        reconnect.scheduleReconnect()
+      } else {
+        // Non-recoverable error (404, 403, server shutdown) or max retries —
+        // fall back to polling which will detect the terminal state
+        reconnect.reset() // Clear reconnect state before falling back to polling
+        // Do NOT call forceCleanupStreamingState() here — it deletes the
+        // streaming flag, which makes pollUntilDone's incremental update
+        // unable to find the streaming message. Instead, keep the streaming
+        // message alive and let pollUntilDone update it incrementally.
+        // Only set loading=false momentarily — pollUntilDone will manage it.
+        loading.value = true  // Keep loading true — session is still running
+        pollUntilDone()
       }
     }
   }
