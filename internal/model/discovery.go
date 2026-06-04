@@ -664,32 +664,6 @@ func LoadClaudeCCSwitchOverrides() map[string]string {
 	return overrides
 }
 
-// extractPrintableStrings extracts printable ASCII strings from binary data,
-// mimicking the Unix `strings` command. This is used on Windows where
-// the `strings` utility is not available.
-func extractPrintableStrings(data []byte) []byte {
-	const minLen = 4
-	var result []byte
-	var current []byte
-
-	for _, b := range data {
-		if b >= 0x20 && b < 0x7f {
-			current = append(current, b)
-		} else {
-			if len(current) >= minLen {
-				result = append(result, current...)
-				result = append(result, '\n')
-			}
-			current = current[:0]
-		}
-	}
-	if len(current) >= minLen {
-		result = append(result, current...)
-		result = append(result, '\n')
-	}
-	return result
-}
-
 // claudeIsDateStamped returns true if the model ID contains an 8-digit date segment
 // like "claude-opus-4-20250514", which are snapshot aliases we want to skip.
 func claudeIsDateStamped(modelID string) bool {
@@ -704,7 +678,7 @@ func claudeIsDateStamped(modelID string) bool {
 // DiscoverClaudeModels discovers Claude model IDs by scanning the claude binary
 // with `strings`. Claude CLI does not have a --list-models command, so we extract
 // model IDs from the binary which contains hardcoded model name patterns.
-func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo // binary scanning model discovery
+func DiscoverClaudeModels() []AgentModel { //nolint:gocyclo,gocognit // binary scanning model discovery
 	// Resolve the real path for the claude binary, handling Windows .cmd wrappers
 	path := platform.ResolveCLIPath("claude")
 	if path == "" {
