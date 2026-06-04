@@ -72,6 +72,11 @@ function onTaskCompleted(task: any) {
     } catch {
         // Non-critical
     }
+    // Chat window notification — dispatch event for ChatPanelContent to pick up
+    const taskName = task.name || gt('task.title')
+    window.dispatchEvent(new CustomEvent('clawbench-task-completed', {
+        detail: { taskName, task, message: `✅ 定时任务「${taskName}」已完成` }
+    }))
     // Set just-completed flag for dock flash animation
     store.state.taskJustCompleted = true
     if (justCompletedTimer) clearTimeout(justCompletedTimer)

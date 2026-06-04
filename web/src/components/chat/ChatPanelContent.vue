@@ -667,6 +667,23 @@ function handleSummaryUpdate(e) {
     applySummaryUpdate(msg, data.summary, atBottom)
 }
 
+function handleTaskCompleted(e) {
+    const data = e.detail
+    if (!data?.message) return
+    // Inject a system-style message into the chat
+    messages.value.push({
+        role: 'assistant',
+        content: data.message,
+        blocks: [{ type: 'text', text: data.message }],
+        createdAt: new Date().toISOString(),
+        backend: 'system',
+    })
+    // Scroll to bottom if panel is visible
+    nextTick(() => {
+        messageListRef.value?.scrollToBottom?.(true)
+    })
+}
+
 // Toggle summary/original view for a message
 function handleToggleSummary(msgId) {
     const msg = messages.value.find(m => m.id === msgId)
@@ -742,6 +759,7 @@ onMounted(() => {
     session.loadSessionsOnce()
     document.addEventListener('visibilitychange', session.handleVisibilityChange)
     window.addEventListener('clawbench-summary-update', handleSummaryUpdate)
+    window.addEventListener('clawbench-task-completed', handleTaskCompleted)
 })
 
 // Cleanup preview URLs on unmount
@@ -753,6 +771,7 @@ onUnmounted(() => {
     session.stopMsgCountPolling()
     if (thinkingRenderTimer) { clearTimeout(thinkingRenderTimer); thinkingRenderTimer = null }
     document.removeEventListener('visibilitychange', session.handleVisibilityChange)
+    window.removeEventListener('clawbench-task-completed', handleTaskCompleted)
     document.removeEventListener('visibilitychange', manager._visibilityHandler)
     window.removeEventListener('clawbench-summary-update', handleSummaryUpdate)
     notification.closeAll()
